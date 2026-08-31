@@ -22,21 +22,46 @@ rather than a rewrite.
 the right half of the existing `QSplitter`. That is the only Phase 1 code the
 UI work needs to touch.
 
-## Proposed modules
+## What already exists
+
+Phase 1's hardening pass built the control surface, because it was needed for
+the browser's own tests regardless of any AI:
+
+`app/browser/controller.py` — **`BrowserController`**, a plain browser API with
+no AI in it:
+
+```python
+navigate(url)          go_back()      open_tab(url)     get_current_page()
+reload()               go_forward()   close_tab(index)  get_page_structure(cb)
+stop()                 select_tab(i)  list_tabs()       get_text(cb)
+click(ref)             type_text(ref, text, submit)     scroll(direction)
+```
+
+`get_page_structure()` returns a `PageStructure`: URL, title, readable text,
+scroll position, and a list of `PageElement`s (role, accessible name, value,
+enabled, visible, href) each carrying an opaque handle `e0, e1, e2…`. Actions
+take those handles. A caller never supplies a CSS selector, so it cannot invent
+one that does not exist, and a stale handle is a clean failure rather than a
+click on the wrong element.
+
+This is already what the validation harness uses to drive the browser.
+
+## Modules Phase 2 still needs
 
 ```
 app/agent/
-  interfaces.py     PageSnapshot, PageElement, BrowserController,      [exists]
-                    ConfirmationPolicy, AgentTransport
-  controller.py     BrowserController implemented over BrowserTab
-  page_reader.py    injected JS that builds the snapshot
-  tools.py          Claude tool definitions + dispatch to the controller
+  interfaces.py     PageSnapshot, PageElement, ConfirmationPolicy,     [exists]
+                    AgentTransport
+  tools.py          Claude tool definitions + dispatch to BrowserController
   session.py        the agent loop: message history, tool turns, cancellation
   claude_client.py  Anthropic API transport (streaming)
   safety.py         risk classification + ConfirmationPolicy implementation
 app/ui/
   agent_panel.py    chat transcript, input box, step list, confirm prompts
 ```
+
+Note that `controller.py` moved out of `app/agent/` and into `app/browser/`:
+it turned out to be a browser abstraction, not an agent one.
 
 ## How the agent sees a page
 
@@ -56,8 +81,9 @@ genuinely visual questions ("which of these is the sale badge?").
 
 ## Tools exposed to Claude
 
-Each maps one-to-one onto a `BrowserController` method, which in turn is a thin
-wrapper over `BrowserTab`:
+Each maps one-to-one onto an existing `BrowserController` method. The mapping
+is deliberately mechanical — the agent layer adds a schema and a safety check,
+not new browser capability:
 
 | Tool | Effect | Risk |
 |---|---|---|
@@ -77,6 +103,15 @@ in the panel. Purchases, payments, deletions, sending messages and account
 changes are `SENSITIVE` and always require an explicit click. The agent never
 talks to the UI directly — it asks the policy — so the rule cannot be
 accidentally bypassed by a new tool.
+
+## Gotcha inherited from Phase 1
+
+`BrowserController.click()` clicks through injected JavaScript, which carries no
+user activation. Chromium's History Manipulation Intervention marks the
+resulting history entry as skippable, so one `go_back()` does **not** reliably
+undo one `click()`. An agent doing multi-step navigation should track its own
+trail of URLs rather than counting on back(). This is documented on the method
+and was found by the Phase 1 validation pass.
 
 ## Threading
 

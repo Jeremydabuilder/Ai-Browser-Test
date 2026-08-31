@@ -26,10 +26,15 @@ class TabManager(QTabWidget):
     current_load_progress = Signal(int)
     current_load_finished = Signal(bool)
     status_message = Signal(str)
+    # A load failure on the *current* tab, already translated for humans.
+    load_error = Signal(object)      # LoadError
+    security_message = Signal(str)   # blocked certificate, crashed renderer
     # Fired for any tab that finishes loading - history listens to this.
     page_visited = Signal(str, str)   # url, title
     page_title_resolved = Signal(str, str)
     all_tabs_closed = Signal()
+    # Emitted when the user switches tab; payload is that tab's loading state.
+    current_tab_switched = Signal(bool)
 
     def __init__(self, profile: BrowserProfile, home_url: str, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -88,8 +93,26 @@ class TabManager(QTabWidget):
         tab.load_progress.connect(lambda p, t=tab: self._forward_if_current(t, self.current_load_progress, p))
         tab.load_finished.connect(lambda ok, t=tab: self._on_tab_load_finished(t, ok))
         tab.status_message.connect(self.status_message)
+        tab.load_error.connect(lambda err, t=tab: self._forward_if_current(t, self.load_error, err))
+        tab.page.certificate_rejected.connect(
+            lambda host, desc, t=tab: self._on_security_event(
+                t, f"Blocked {host}: its security certificate could not be trusted."
+            )
+        )
+        tab.page.render_process_crashed.connect(
+            lambda msg, t=tab: self._on_security_event(t, msg)
+        )
         # A tab the engine spawned (window.open / target=_blank) arrives here.
         tab.new_tab_requested.connect(self._adopt_engine_tab)
+
+    def _on_security_event(self, tab: BrowserTab, message: str) -> None:
+        """Security events are shown even for a background tab, but labelled."""
+        if tab is self.current_tab():
+            self.security_message.emit(message)
+        else:
+            index = self.indexOf(tab)
+            label = self.tabText(index) if index != -1 else "a background tab"
+            self.security_message.emit(f"{message} (in {label})")
 
     def _adopt_engine_tab(self, tab: BrowserTab) -> None:
         self.new_tab(tab=tab)
@@ -131,9 +154,12 @@ class TabManager(QTabWidget):
         if tab is None:
             return
         # Re-sync the chrome with whatever the newly selected tab is showing.
+        # Note we do NOT re-emit current_load_finished here: switching tabs is
+        # not a load, and faking one made the window act as though the page had
+        # just finished loading (resetting progress and the reload/stop button).
         self.current_url_changed.emit(tab.url())
         self.current_title_changed.emit(tab.title())
-        self.current_load_finished.emit(True)
+        self.current_tab_switched.emit(tab.is_loading)
         tab.view.setFocus()
 
     # -- closing --------------------------------------------------------

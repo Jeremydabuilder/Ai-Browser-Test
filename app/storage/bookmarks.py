@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from app.storage.database import Database
+from app.storage.history import MAX_TITLE_LENGTH, MAX_URL_LENGTH
 
 
 @dataclass(frozen=True)
@@ -20,14 +21,29 @@ class BookmarkStore:
     def __init__(self, db: Database) -> None:
         self._db = db
 
+    # Bookmarking a blank tab or an error page is never what the user meant.
+    IGNORED_SCHEMES = ("about:", "data:", "chrome-error:", "chrome://", "javascript:", "blob:")
+
+    def is_bookmarkable(self, url: str) -> bool:
+        url = (url or "").strip()
+        if not url or len(url) > MAX_URL_LENGTH:
+            return False
+        return not url.lower().startswith(self.IGNORED_SCHEMES)
+
     def add(self, url: str, title: str = "") -> bool:
-        """Insert a bookmark. Returns False if the URL was already bookmarked."""
-        if not url:
+        """Insert a bookmark. Returns False if it was rejected or already present.
+
+        The UNIQUE constraint on url is the real guard against duplicates; the
+        contains() check just lets us report the outcome without an exception.
+        """
+        url = (url or "").strip()
+        title = (title or "").strip()[:MAX_TITLE_LENGTH]
+        if not self.is_bookmarkable(url):
             return False
         if self.contains(url):
             return False
         self._db.execute(
-            "INSERT INTO bookmarks (url, title, created_at) VALUES (?, ?, ?)",
+            "INSERT OR IGNORE INTO bookmarks (url, title, created_at) VALUES (?, ?, ?)",
             (url, title, datetime.now(timezone.utc).isoformat(timespec="seconds")),
         )
         return True
@@ -40,6 +56,9 @@ class BookmarkStore:
 
     def toggle(self, url: str, title: str = "") -> bool:
         """Bookmark or un-bookmark ``url``. Returns True if it is now bookmarked."""
+        url = (url or "").strip()
+        if not self.is_bookmarkable(url):
+            return False
         if self.contains(url):
             self.remove(url)
             return False
@@ -47,6 +66,7 @@ class BookmarkStore:
         return True
 
     def contains(self, url: str) -> bool:
+        url = (url or "").strip()
         return self._db.query_one(
             "SELECT 1 FROM bookmarks WHERE url = ?", (url,)
         ) is not None

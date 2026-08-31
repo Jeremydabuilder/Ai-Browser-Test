@@ -53,14 +53,25 @@ nss alsa-lib`.
 ## Tests
 
 ```bash
-python -m unittest discover -s tests -v          # 18 unit tests, no GUI needed
+python -m unittest discover -s tests -v          # 39 unit tests, no GUI needed
 python scripts/smoke_test.py                     # headless end-to-end run
 python scripts/smoke_test.py --url https://pypi.org   # also load a real site
+python scripts/validate.py                       # full validation incl. real sites
 ```
 
-`smoke_test.py` boots the real window offscreen against a throwaway profile,
-serves a small JS page locally, and asserts that rendering, JS execution,
-tabs, back/forward, `target=_blank`, history and bookmarks all work.
+* **`tests/`** — pure unit tests for URL parsing, the SQLite stores, the
+  background writer, error mapping and the navigation guard. No GUI, ~0.2s.
+* **`smoke_test.py`** — boots the real window offscreen against a throwaway
+  profile and asserts rendering, JS execution, tabs, back/forward,
+  `target=_blank`, history and bookmarks.
+* **`validate.py`** — the full pass: loads real websites, walks the whole UI
+  (click a link, back, forward, reload, tabs, shortcuts, bookmarks), checks
+  error handling, and restarts the app to verify persistence.
+
+`validate.py` probes every host with `urllib` *before* the browser tries it. If
+an unrelated HTTP client cannot reach a host either, it reports "not testable
+on this network" rather than blaming the browser — and it only calls something
+a browser bug when the real origin served another client successfully.
 
 ## Keyboard shortcuts
 
@@ -109,9 +120,11 @@ app/
     settings.py             SettingsStore  - key/value (home page, search engine)
   browser/                  everything that touches Qt WebEngine
     profile.py              the one shared QWebEngineProfile (cookies, cache, downloads)
-    web_page.py             QWebEnginePage subclass: window.open, TLS errors, JS dialogs
+    web_page.py             QWebEnginePage subclass: window.open, TLS, permissions, auth
     tab.py                  BrowserTab - one web view + a small navigation API
     tab_manager.py          the tab strip; forwards the *current* tab's signals
+    controller.py           BrowserController - the programmatic control surface
+    load_error.py           Chromium net error codes -> plain-English messages
   ui/                       widgets only; no SQL, no WebEngine internals
     main_window.py          chrome, menus, shortcuts, and all the wiring
     navigation_bar.py       toolbar + address bar (emits intent, never navigates)
@@ -141,7 +154,53 @@ it and passes it down.
 **3. Storage is separate from the engine.** Chromium keeps its own cookie/cache
 store; *our* history and bookmarks live in a plain SQLite file we control. That
 keeps the data inspectable, testable without a GUI, and trivially exportable —
-and it's what the Phase 2 agent will read when it needs context.
+and it's what the Phase 2 agent will read when it needs context. History writes
+(one per page load) are queued to a background thread so a disk stall can never
+block the UI; every read drains that queue first, so the asynchrony is
+invisible. Bookmarks and settings stay synchronous because the UI reads them
+back immediately.
+
+**4. One programmatic control surface.** `BrowserController` (in
+`browser/controller.py`) is the supported way to drive the browser from code:
+`navigate`, `go_back`, `go_forward`, `reload`, `open_tab`, `close_tab`,
+`get_current_page`, `get_page_structure`, `click`, `type_text`, `scroll`. It
+addresses page elements by opaque handles (`e0`, `e1`…) that
+`get_page_structure()` hands out, never by caller-supplied CSS selectors. The
+validation harness drives the browser entirely through it — which is the point:
+one audited surface, exercised by the tests, instead of callers reaching into
+Qt widgets.
+
+### Security posture
+
+Set explicitly in `browser/profile.py` and `browser/web_page.py`, and readable
+in one place on purpose:
+
+| Area | Setting | Why |
+|---|---|---|
+| Certificates | Errors always rejected, no click-through | A "proceed anyway" button trains people to click it |
+| Mixed content | `AllowRunningInsecureContent` off | Keeps the padlock honest |
+| Permissions | Camera/mic/screen/location/notifications default-deny, prompt per site | Explicit consent; answers remembered per site |
+| Cookies | `AllowPersistentCookies` | Persists real cookies; **session** cookies still die on quit, as sites intend |
+| `file://` pages | Cannot read other local files or remote URLs | Sandboxing |
+| Protocol handlers | `registerProtocolHandler` refused | Needs a considered UI, not a silent grant |
+| Link auditing | `<a ping>` disabled | Privacy |
+| Autoplay | Requires a user gesture | Matches Chrome |
+| Clipboard | Write allowed, read behind a permission prompt | "Copy" buttons work; reads need consent |
+| User agent | Qt's stock Chromium UA, unmodified | A custom token adds fingerprinting and compat risk for no benefit |
+| Downloads | Accepted into `~/Downloads`, filename de-duplicated, notice shown | Qt cancels downloads you do not accept |
+
+Nothing above is conditional on a hostname. There are no per-site rules
+anywhere in this codebase.
+
+### Error reporting
+
+Qt reports load failures as a Chromium net error code.
+`browser/load_error.py` maps those to a plain sentence plus a category
+(`dns`, `network`, `certificate`, `blocked`, `http`, `content`). The user sees
+"That address could not be found. Check the spelling of the site name." in a
+dismissible notice bar with a Retry button; `ERR_NAME_NOT_RESOLVED (-105)`
+goes in the tooltip. Stack traces are never shown. A certificate rejection
+says plainly that the connection was blocked and offers no bypass.
 
 ### Notes on the tricky parts
 
@@ -157,6 +216,18 @@ and it's what the Phase 2 agent will read when it needs context.
 - **`localhost:8000` is not a URL scheme.** The address bar parser checks for
   `://` before trusting a scheme, and defaults loopback/private addresses to
   `http` rather than `https` — same as Chrome.
+- **`QUrl("http://")` is "valid".** Qt says yes; `setUrl()` on it renders a
+  blank page. `BrowserTab._is_navigable()` additionally requires a host for
+  schemes that need one.
+- **A scripted click is not a user click.** Chromium's History Manipulation
+  Intervention marks history entries created by script-initiated navigation
+  with no user activation as skippable, so a later Back steps over them. Real
+  mouse clicks are unaffected. This is Chromium behaving as designed — and it
+  is worth knowing for Phase 2, since an agent clicking through injected JS
+  will see it.
+- **Back/forward may emit no load signals at all** when served from the
+  back-forward cache. UI state has to follow `urlChanged`, not just
+  `loadFinished`.
 
 ## Phase 2 readiness
 

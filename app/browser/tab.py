@@ -8,6 +8,7 @@ from PySide6.QtWebEngineCore import QWebEnginePage
 from PySide6.QtWebEngineWidgets import QWebEngineView
 from PySide6.QtWidgets import QVBoxLayout, QWidget
 
+from app.browser.load_error import LoadError
 from app.browser.profile import BrowserProfile
 from app.browser.web_page import BrowserPage
 
@@ -31,6 +32,8 @@ class BrowserTab(QWidget):
     # Emitted when this tab wants a sibling tab (target=_blank, window.open).
     new_tab_requested = Signal(object)  # payload: BrowserTab
     status_message = Signal(str)
+    # A load failure, already translated into a human-readable message.
+    load_error = Signal(object)  # payload: LoadError
 
     def __init__(
         self,
@@ -41,6 +44,7 @@ class BrowserTab(QWidget):
         self._profile = profile
         self._loading = False
         self._load_ok = True
+        self._last_error: LoadError | None = None
 
         self._view = QWebEngineView(self)
         self._page = BrowserPage(profile.qt_profile, self._view)
@@ -63,9 +67,9 @@ class BrowserTab(QWidget):
         self._view.loadProgress.connect(self.load_progress)
         self._view.loadFinished.connect(self._on_load_finished)
         self._page.link_hovered_changed.connect(self.link_hovered)
-        self._page.certificate_error_seen.connect(
-            lambda desc: self.status_message.emit(f"Certificate error: {desc}")
-        )
+        self._page.load_error.connect(self._on_load_error)
+        self._page.certificate_rejected.connect(self._on_certificate_rejected)
+        self._page.render_process_crashed.connect(self.status_message)
         self._page.fullScreenRequested.connect(self._on_fullscreen_requested)
 
     def _on_load_started(self) -> None:
@@ -75,11 +79,21 @@ class BrowserTab(QWidget):
     def _on_load_finished(self, ok: bool) -> None:
         self._loading = False
         self._load_ok = ok
-        if not ok:
-            # Chromium already renders its own error page; we only surface a
-            # short message so the user sees something in the status bar.
-            self.status_message.emit(f"Could not load {self.url().toString()}")
         self.load_finished.emit(ok)
+
+    def _on_load_error(self, error: LoadError) -> None:
+        """Chromium renders its own error page; we add a readable explanation."""
+        self._last_error = error
+        self.status_message.emit(error.message)
+        self.load_error.emit(error)
+
+    def _on_certificate_rejected(self, host: str, description: str) -> None:
+        # Phrased for a person, not for a TLS engineer, and it says plainly that
+        # we blocked it - there is no click-through to offer.
+        self.status_message.emit(
+            f"Blocked a connection to {host}: its security certificate could not "
+            f"be trusted ({description})."
+        )
 
     def _create_page_for_new_window(self, window_type):
         """Build the page Chromium asked for, wrapped in a brand-new tab."""
@@ -109,6 +123,11 @@ class BrowserTab(QWidget):
     def is_loading(self) -> bool:
         return self._loading
 
+    @property
+    def last_error(self) -> LoadError | None:
+        """The most recent load failure, or None if the last load succeeded."""
+        return self._last_error
+
     def url(self) -> QUrl:
         return self._view.url()
 
@@ -119,8 +138,35 @@ class BrowserTab(QWidget):
         return self._view.icon()
 
     # -- navigation API (also the surface a future AI agent will use) ----
-    def navigate(self, url: QUrl | str) -> None:
-        self._view.setUrl(QUrl(url) if isinstance(url, str) else url)
+    def navigate(self, url: QUrl | str) -> bool:
+        """Load ``url``. Returns False (and reports) if it is not usable.
+
+        Guarding here means a malformed address produces a clear message
+        instead of a silently blank page.
+        """
+        target = QUrl(url) if isinstance(url, str) else url
+        if not self._is_navigable(target):
+            self.status_message.emit(
+                f"'{target.toString() or url}' is not a valid web address."
+            )
+            return False
+        self._last_error = None
+        self._view.setUrl(target)
+        return True
+
+    @staticmethod
+    def _is_navigable(url: QUrl) -> bool:
+        """Reject addresses Qt calls "valid" but cannot actually load.
+
+        QUrl("http://") passes isValid() with an empty host, and setUrl() on it
+        silently produces a blank page. Schemes that need an authority must
+        actually have one.
+        """
+        if not url.isValid() or url.isEmpty():
+            return False
+        if url.scheme() in ("http", "https", "ftp", "ws", "wss") and not url.host():
+            return False
+        return True
 
     def back(self) -> None:
         self._view.back()

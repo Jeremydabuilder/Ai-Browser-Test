@@ -6,3 +6,4 @@ venv/
 *.sqlite3-journal
 profile/
 .DS_Store
+validation-report.json

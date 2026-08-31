@@ -10,7 +10,11 @@ from __future__ import annotations
 from PySide6.QtCore import QUrl, Qt, Signal
 from PySide6.QtGui import QAction, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
+    QFrame,
+    QVBoxLayout,
+    QHBoxLayout,
     QLabel,
+    QPushButton,
     QMainWindow,
     QMenu,
     QMessageBox,
@@ -21,6 +25,8 @@ from PySide6.QtWidgets import (
 )
 
 from app import APP_NAME
+from app.browser.controller import BrowserController
+from app.browser.load_error import ErrorCategory, LoadError
 from app.browser.profile import BrowserProfile
 from app.browser.tab_manager import TabManager
 from app.storage import BookmarkStore, Database, HistoryStore, SettingsStore
@@ -52,10 +58,25 @@ class MainWindow(QMainWindow):
         self.addToolBar(self.nav_bar)
 
         self.tabs = TabManager(profile, self.settings.home_url, self)
+        # The supported programmatic interface to this window. The UI does not
+        # need it, but keeping one audited control surface (rather than letting
+        # callers poke at widgets) is what Phase 2 will build on.
+        self.controller = BrowserController(self.tabs, self)
+
+        # A dismissible strip above the tabs for things the status bar is too
+        # quiet for: blocked certificates, failed loads, crashed renderers.
+        self.notice = NoticeBar(self)
+
+        content = QWidget(self)
+        content_layout = QVBoxLayout(content)
+        content_layout.setContentsMargins(0, 0, 0, 0)
+        content_layout.setSpacing(0)
+        content_layout.addWidget(self.notice)
+        content_layout.addWidget(self.tabs)
 
         # Splitter: [ tabs | side panel ]. The side panel is empty in Phase 1.
         self.splitter = QSplitter(Qt.Orientation.Horizontal, self)
-        self.splitter.addWidget(self.tabs)
+        self.splitter.addWidget(content)
         self.splitter.setChildrenCollapsible(False)
         self.setCentralWidget(self.splitter)
         self._side_panel: QWidget | None = None
@@ -144,11 +165,25 @@ class MainWindow(QMainWindow):
         self.tabs.current_load_started.connect(self._on_load_started)
         self.tabs.current_load_progress.connect(self._on_load_progress)
         self.tabs.current_load_finished.connect(self._on_load_finished)
+        self.tabs.current_tab_switched.connect(self._on_tab_switched)
         self.tabs.status_message.connect(self._show_status)
+        self.tabs.load_error.connect(self._on_load_error)
+        self.tabs.security_message.connect(
+            lambda text: self.notice.show_message(text, level="warning")
+        )
         self.tabs.page_visited.connect(self.history.add_visit)
         self.tabs.page_title_resolved.connect(self.history.update_title)
         # Closing the last tab closes the window, like Chrome.
         self.tabs.all_tabs_closed.connect(self.close)
+        # A download that gives no feedback looks like a dead link.
+        self._profile.download_started.connect(
+            lambda dl: self.notice.show_message(
+                f"Downloading {dl.downloadFileName()} to {dl.downloadDirectory()}"
+            )
+        )
+        self._profile.download_finished.connect(
+            lambda dl: self._show_status(f"Finished downloading {dl.downloadFileName()}")
+        )
 
     def _install_shortcuts(self) -> None:
         """Shortcuts that have no natural menu entry."""
@@ -241,6 +276,7 @@ class MainWindow(QMainWindow):
         self.setWindowTitle(f"{title} — {APP_NAME}" if title else APP_NAME)
 
     def _on_load_started(self) -> None:
+        self.notice.hide()
         self.nav_bar.set_loading(True)
         self._progress.setValue(0)
         self._progress.show()
@@ -262,6 +298,18 @@ class MainWindow(QMainWindow):
         # Feed the address bar's autocomplete from recent history.
         self.nav_bar.set_completions([entry.url for entry in self.history.recent(50)])
 
+    def _on_tab_switched(self, loading: bool) -> None:
+        """Re-point the chrome at the newly selected tab without faking a load."""
+        self.notice.hide()
+        self.nav_bar.set_loading(loading)
+        self._progress.setVisible(loading)
+        tab = self._current()
+        if tab is not None:
+            self.nav_bar.set_url_text(url_utils.display_text(tab.url()))
+            self.nav_bar.set_bookmarked(self.bookmarks.contains(tab.url().toString()))
+            self._on_title_changed(tab.title())
+        self._sync_navigation_state()
+
     def _sync_navigation_state(self) -> None:
         tab = self._current()
         if tab is None:
@@ -271,6 +319,23 @@ class MainWindow(QMainWindow):
 
     def _show_status(self, message: str) -> None:
         self._status_label.setText(message)
+
+    def _on_load_error(self, error: LoadError) -> None:
+        """Surface a failed load in plain language.
+
+        Chromium already renders its own error page in the viewport; the notice
+        bar adds a one-line explanation and, where it makes sense, a Retry
+        button. Technical detail (ERR_... and the numeric code) goes in the
+        tooltip only - never in the user-facing sentence.
+        """
+        retry = None if error.category == ErrorCategory.CERTIFICATE else self._reload
+        self.notice.show_message(
+            error.message,
+            tooltip=f"{error.url}\n{error.technical}",
+            action_text=None if retry is None else "Retry",
+            action=retry,
+        )
+        self._show_status(error.message)
 
     # ------------------------------------------------------------------
     # bookmarks / history UI
@@ -332,6 +397,71 @@ class MainWindow(QMainWindow):
         for tab in self.tabs.tabs():
             tab.page.deleteLater()
         super().closeEvent(event)
+
+
+class NoticeBar(QFrame):
+    """A thin, dismissible message strip shown above the page.
+
+    Used for things a user must actually notice - a blocked certificate, a
+    failed load, a crashed page - which a status-bar line is too easy to miss.
+    """
+
+    _STYLES = {
+        "info": "background:#e8f0fe; color:#1a3a6b; border-bottom:1px solid #c6d9f7;",
+        "warning": "background:#fdf1d6; color:#6b4e00; border-bottom:1px solid #f0d79a;",
+    }
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._action = None
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(10, 5, 6, 5)
+        layout.setSpacing(8)
+
+        self._label = QLabel("", self)
+        self._label.setWordWrap(True)
+        layout.addWidget(self._label, 1)
+
+        self._action_button = QPushButton("", self)
+        self._action_button.setFlat(True)
+        self._action_button.clicked.connect(self._on_action)
+        self._action_button.hide()
+        layout.addWidget(self._action_button)
+
+        close_button = QPushButton("✕", self)
+        close_button.setFlat(True)
+        close_button.setFixedWidth(24)
+        close_button.setToolTip("Dismiss")
+        close_button.clicked.connect(self.hide)
+        layout.addWidget(close_button)
+
+        self.hide()
+
+    def show_message(
+        self,
+        text: str,
+        *,
+        tooltip: str = "",
+        level: str = "info",
+        action_text: str | None = None,
+        action=None,
+    ) -> None:
+        self._label.setText(text)
+        self._label.setToolTip(tooltip)
+        self.setStyleSheet(self._STYLES.get(level, self._STYLES["info"]))
+        self._action = action
+        if action_text and action is not None:
+            self._action_button.setText(action_text)
+            self._action_button.show()
+        else:
+            self._action_button.hide()
+        self.show()
+
+    def _on_action(self) -> None:
+        action, self._action = self._action, None
+        self.hide()
+        if action is not None:
+            action()
 
 
 # Extra windows opened with Ctrl+N live here so they are not garbage collected.
