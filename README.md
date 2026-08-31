@@ -58,7 +58,7 @@ nss alsa-lib`.
 ## Tests
 
 ```bash
-python -m unittest discover -s tests -v          # 248 tests
+python -m unittest discover -s tests -v          # 267 tests
 python scripts/smoke_test.py                     # headless end-to-end run
 python scripts/smoke_test.py --url https://pypi.org   # also load a real site
 python scripts/validate.py                       # full validation incl. real sites
@@ -293,20 +293,28 @@ You: Open the second page and tell me its heading.
 Claude: The heading is "Second page".
 ```
 
-**Setup.** Get an API key from the [Anthropic Console](https://console.anthropic.com/),
-then either:
+**Setup — you do not need an API key.** Any of these works; the first two store
+no secret in this browser at all:
 
-* launch the browser and use **Tools → Configure AI Agent…** to store it in your
-  OS keyring (recommended); or
-* export it before launching:
+```bash
+# 1. Sign in with the Anthropic CLI (recommended - nothing is stored here)
+ant auth login && python main.py
 
-  ```bash
-  export ANTHROPIC_API_KEY="sk-ant-..."
-  python main.py
-  ```
+# 2. Use cloud credentials you already have
+PYBROWSER_AGENT_BACKEND=bedrock AWS_REGION=us-east-1 python main.py
+PYBROWSER_AGENT_BACKEND=vertex GOOGLE_CLOUD_PROJECT=my-project python main.py
 
-Open the panel with **Ctrl+Shift+A** (or Tools → Show AI Agent). The key is
-never written to the database, the repository, or any config file.
+# 3. A bearer token, or an API key, from the environment
+export ANTHROPIC_AUTH_TOKEN="..."   # or ANTHROPIC_API_KEY="sk-ant-..."
+python main.py
+```
+
+Or paste an API key into **Tools → Configure AI Agent…**, which stores it in
+your OS keyring. That dialog shows every option and which one is currently in
+use. Nothing is ever written to the database, the repository, or any config
+file. Details: [`docs/ai_agent.md`](docs/ai_agent.md) §3.
+
+Open the panel with **Ctrl+Shift+A** (or Tools → Show AI Agent).
 
 Sensitive actions — purchases, deletion, sending messages, credentials, payment
 details, legal agreements, executable downloads — pause for an explicit

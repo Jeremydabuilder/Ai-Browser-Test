@@ -75,6 +75,22 @@ class ApiKeyStore:
         self.account = account
 
     # -- reading ---------------------------------------------------------
+    def get_keyring_key(self) -> str | None:
+        """The key stored in the OS keyring, or None. Never raises.
+
+        Separate from get_key() so credentials.py can decide the precedence
+        between the keyring, environment variables and an OAuth profile
+        itself, rather than having it baked in here.
+        """
+        try:
+            value = _keyring().get_password(self.service, self.account)
+            return value.strip() if value else None
+        except KeyringUnavailable:
+            return None
+        except BaseException as exc:  # noqa: BLE001
+            _guard(exc)
+            return None
+
     def get_key(self) -> str | None:
         """Return the key, or None. Prefers the keyring, falls back to env."""
         try:

@@ -62,22 +62,43 @@ Errors are mapped to typed, human-readable failures — auth, permission, model
 not found, rate limit, timeout, connection, 5xx — each carrying a `retryable`
 flag. `ERR_`-style detail stays out of the message shown to the user.
 
-## 3. API key storage
+## 3. Credentials — an API key is *not* required
 
-Order of preference:
+An API key is the most familiar option and the worst one: a long-lived secret
+the user pastes somewhere and this application then has to store. Several
+alternatives work, and `app/agent/credentials.py` uses whichever the user
+already has.
 
-1. **OS keyring** — macOS Keychain, Windows Credential Locker, GNOME
-   Keyring/KWallet. Set it via **Tools → Configure AI Agent…**.
-2. **`ANTHROPIC_API_KEY`** environment variable, for headless machines.
+Preference order, highest first:
 
-The key is **never** written to the SQLite database, source code, any file in
-the repository, browsing history, or bookmarks. `keys.py` hands it to `keyring`
-and forgets it; `describe()` reports only *where* a key came from, never any
-part of it — not even a prefix.
+| # | Way in | Secret stored by this browser? | How |
+|---|---|---|---|
+| 1 | **Amazon Bedrock / Google Vertex AI** | **None** | `PYBROWSER_AGENT_BACKEND=bedrock` + `AWS_REGION`, or `=vertex` + `GOOGLE_CLOUD_PROJECT`. Uses your existing IAM role / `gcloud` credentials |
+| 2 | API key in the **OS keyring** | Yes, by the OS | **Tools → Configure AI Agent…** |
+| 3 | `ANTHROPIC_API_KEY` | No, by you | Environment variable |
+| 4 | `ANTHROPIC_AUTH_TOKEN` | No, by you | A bearer token rather than a key |
+| 5 | **OAuth profile** from `ant auth login` | **None** | Sign in once with the Anthropic CLI |
 
-A broken or absent keyring degrades to the environment variable rather than
-crashing. (This is not hypothetical: the container these tests ran in has a
-keyring backend that raises on import.)
+**The best option for a desktop browser is #5**: `ant auth login` writes a
+profile the SDK reads and refreshes itself. Nothing secret ever passes through
+this application, the token is short-lived, and it can be revoked centrally.
+Option #1 is equally good where the user already has cloud credentials — there
+is no Anthropic secret at all.
+
+An explicit choice outranks a discovered one, which is why a key you deliberately
+stored in the keyring beats a profile that happens to be on disk. Remove the
+stored key in the same dialog to fall through to it.
+
+Nothing here is written to the SQLite database, source code, any file in the
+repository, browsing history, or bookmarks. `describe()` reports only *where* a
+credential came from — never any part of it, not even a prefix. `resolve()` is
+guaranteed never to raise: it is called while building the agent panel, and a
+credential lookup that throws would take the browser down with it. That is not
+hypothetical — a broken keyring backend once raised a Rust panic (a
+`BaseException`, not an `Exception`) and did exactly that.
+
+Bedrock namespaces its model ids, so the model becomes `anthropic.claude-opus-5`
+there and stays `claude-opus-5` everywhere else.
 
 ## 4. Tools
 

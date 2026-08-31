@@ -78,22 +78,65 @@ class ClaudeTransport(Protocol):
 
 
 class ClaudeClient:
-    """The real transport, backed by the official Anthropic Python SDK."""
+    """The real transport, backed by the official Anthropic Python SDK.
 
-    def __init__(self, api_key: str, config: AgentConfig | None = None) -> None:
-        if not api_key:
-            raise ClaudeError("No Anthropic API key is configured.")
+    Takes a ``Credential`` rather than an API key, because a key is only one of
+    several ways in - and the worst of them. See ``app/agent/credentials.py``.
+    """
+
+    def __init__(self, credential, config: AgentConfig | None = None) -> None:
+        from app.agent.credentials import Credential, Mode
+
+        # A bare string still works, so existing callers and tests are unaffected.
+        if isinstance(credential, str):
+            credential = Credential(Mode.ENV_KEY, "API key", secret=credential)
+        if credential is None or not credential.available:
+            raise ClaudeError("No way to authenticate to Claude is configured.")
+
         self.config = config or AgentConfig()
+        self.credential = credential
         # Imported here so the browser starts fine without the SDK installed;
         # the agent panel reports it as unconfigured instead of the app dying.
         import anthropic
 
         self._anthropic = anthropic
-        self._client = anthropic.Anthropic(
-            api_key=api_key,
-            timeout=self.config.request_timeout_s,
-            max_retries=self.config.max_retries,
-        )
+        self._client = self._build_client(anthropic, credential)
+        self._model = self._model_id(credential, self.config.model)
+
+    def _build_client(self, anthropic, credential):
+        """Construct whichever SDK client this credential calls for."""
+        from app.agent.credentials import Mode
+
+        common = {"timeout": self.config.request_timeout_s,
+                  "max_retries": self.config.max_retries}
+        try:
+            if credential.mode in (Mode.KEYRING, Mode.ENV_KEY):
+                return anthropic.Anthropic(api_key=credential.secret, **common)
+            if credential.mode == Mode.AUTH_TOKEN:
+                return anthropic.Anthropic(auth_token=credential.secret, **common)
+            if credential.mode == Mode.OAUTH_PROFILE:
+                # No secret passed: the SDK reads the profile written by
+                # `ant auth login` and refreshes the token itself.
+                return anthropic.Anthropic(**common)
+            if credential.mode == Mode.BEDROCK:
+                return anthropic.AnthropicBedrockMantle(
+                    aws_region=credential.region, **common)
+            if credential.mode == Mode.VERTEX:
+                return anthropic.AnthropicVertex(
+                    project_id=credential.project, region=credential.region, **common)
+        except Exception as exc:  # noqa: BLE001
+            raise ClaudeError(
+                f"Could not set up {credential.label}.", detail=str(exc)) from exc
+        raise ClaudeError(f"Unsupported credential type '{credential.mode}'.")
+
+    @staticmethod
+    def _model_id(credential, model: str) -> str:
+        """Bedrock namespaces its model ids; the others use the plain one."""
+        from app.agent.credentials import Mode
+
+        if credential.mode == Mode.BEDROCK and not model.startswith("anthropic."):
+            return f"anthropic.{model}"
+        return model
 
     def send(
         self,
@@ -106,7 +149,7 @@ class ClaudeClient:
         anthropic = self._anthropic
         try:
             response = self._client.messages.create(
-                model=self.config.model,
+                model=self._model,
                 max_tokens=self.config.max_tokens,
                 system=system,
                 messages=messages,
@@ -117,7 +160,8 @@ class ClaudeClient:
             )
         except anthropic.AuthenticationError as exc:
             raise ClaudeError(
-                "Claude rejected the API key. Check the key in Settings.",
+                f"Claude rejected the credential ({self.credential.label}). "
+                "Check it in Tools \u2192 Configure AI Agent.",
                 detail=str(exc),
             ) from exc
         except anthropic.PermissionDeniedError as exc:
@@ -127,7 +171,7 @@ class ClaudeClient:
             ) from exc
         except anthropic.NotFoundError as exc:
             raise ClaudeError(
-                f"The model '{self.config.model}' is not available to this account.",
+                f"The model '{self._model}' is not available via {self.credential.label}.",
                 detail=str(exc),
             ) from exc
         except anthropic.RateLimitError as exc:
