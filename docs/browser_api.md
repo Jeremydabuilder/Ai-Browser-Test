@@ -79,6 +79,7 @@ already holds and return an `ActionResult` directly.
 |---|---|---|
 | `get_current_page(tab_id=None)` | result | Cheap: URL, title, loading, history, last error |
 | `get_page_structure(...)` | future | The structured snapshot — see §3 |
+| `find_elements(queries, role=…, limit=…)` | future | Search the whole page by label; returns ranked candidates with scores |
 | `get_page_text(tab_id=None, max_chars=…)` | future | Readable text only, no references |
 | `inspect_element(ref, tab_id=None)` | future | Re-read one element; the cheap staleness check |
 
@@ -212,6 +213,29 @@ not from its placeholder.
 `.buttons`, `.text_fields`, `.checkboxes`, `.radios`, `.selects`, plus
 `.find(role=…, name_contains=…)`, `.first(…)` and `.by_ref(ref)`.
 `.to_dict()` / `.to_json()` produce the form above.
+
+### Shadow DOM
+
+`querySelectorAll` does not cross shadow boundaries, so on a site built from web
+components almost every control would be invisible. The page script walks the
+tree in document order and steps into every **open** shadow root, at any depth.
+Everything works there exactly as in the light DOM: elements are listed,
+references resolve, clicks and typing land, `wait_for_element` and
+`find_elements` see them, and `aria-labelledby` resolves against the element's
+own root rather than the document.
+
+**Closed** shadow roots stay invisible. That is the platform's decision, not a
+gap to work around.
+
+The traversal is capped at 40,000 node visits so a pathological page cannot make
+inspection hang.
+
+### Frames
+
+Inspection and element references address the **main frame only**. Content
+inside an `<iframe>` is not listed and cannot be clicked. This is the largest
+remaining compatibility gap; addressing it needs a frame-qualified reference
+scheme, which has not been built.
 
 ### What is deliberately excluded
 

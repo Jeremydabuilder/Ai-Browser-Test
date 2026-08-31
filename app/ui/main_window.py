@@ -7,7 +7,7 @@ panel into that slot without touching any of this code's structure.
 
 from __future__ import annotations
 
-from PySide6.QtCore import QUrl, Qt, Signal
+from PySide6.QtCore import QTimer, QUrl, Qt, Signal
 from PySide6.QtGui import QAction, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QFrame,
@@ -31,6 +31,7 @@ from app.browser.profile import BrowserProfile
 from app.browser.tab_manager import TabManager
 from app.storage import BookmarkStore, Database, HistoryStore, SettingsStore
 from app.ui.dialogs import BookmarksDialog, HistoryDialog
+from app.ui.find_bar import FindBar
 from app.ui.navigation_bar import NavigationBar
 from app.utils import urls as url_utils
 
@@ -73,6 +74,8 @@ class MainWindow(QMainWindow):
         content_layout.setSpacing(0)
         content_layout.addWidget(self.notice)
         content_layout.addWidget(self.tabs)
+        self.find_bar = FindBar(self)
+        content_layout.addWidget(self.find_bar)
 
         # Splitter: [ tabs | side panel ]. The side panel is empty in Phase 1.
         self.splitter = QSplitter(Qt.Orientation.Horizontal, self)
@@ -81,6 +84,7 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(self.splitter)
         self._side_panel: QWidget | None = None
         self._agent_session = None
+        self._find_sequence = 0
 
         self._build_status_bar()
         self._build_menus()
@@ -123,6 +127,10 @@ class MainWindow(QMainWindow):
         self._add_action(view_menu, "&Actual Size", "Ctrl+0", lambda: self._zoom(None))
         view_menu.addSeparator()
         self._add_action(view_menu, "&Full Screen", "F11", self._toggle_fullscreen)
+        view_menu.addSeparator()
+        self._add_action(view_menu, "&Find in Page…", "Ctrl+F", self._open_find)
+        self._add_action(view_menu, "Find &Next", "Ctrl+G", lambda: self._find_step(False))
+        self._add_action(view_menu, "Find &Previous", "Ctrl+Shift+G", lambda: self._find_step(True))
 
         history_menu: QMenu = menubar.addMenu("&History")
         self._add_action(history_menu, "&Back", "Alt+Left", self._back)
@@ -166,6 +174,8 @@ class MainWindow(QMainWindow):
         self.nav_bar.home_requested.connect(self._go_home)
         self.nav_bar.navigate_requested.connect(self._navigate_from_address_bar)
         self.nav_bar.bookmark_toggled.connect(self._toggle_bookmark)
+        self.find_bar.search_requested.connect(self._run_find)
+        self.find_bar.closed.connect(self._clear_find)
 
         self.tabs.current_url_changed.connect(self._on_url_changed)
         self.tabs.current_title_changed.connect(self._on_title_changed)
@@ -252,6 +262,57 @@ class MainWindow(QMainWindow):
 
     def _focus_address_bar(self) -> None:
         self.nav_bar.address_bar.focus_and_select()
+
+    # -- find in page ----------------------------------------------------
+    def _open_find(self) -> None:
+        self.find_bar.open_bar()
+
+    def _run_find(self, text: str, backward: bool) -> None:
+        """Search the current tab, ignoring results from superseded searches.
+
+        Searching as the user types starts a new search on every keystroke, and
+        Qt reports the *cancelled* one with zero matches. Those late zeros
+        arrive after the real answer and would leave the bar saying "No
+        results" for a phrase that is plainly on the page, so each search
+        carries a sequence number and only the newest one may update the count.
+        """
+        tab = self._current()
+        if tab is None:
+            return
+        self._find_sequence += 1
+        token = self._find_sequence
+        if not text:
+            tab.find_text("")          # clears the highlight
+            self.find_bar.report(0, 0)
+            return
+
+        def report(active: int, total: int, retried: bool = False) -> None:
+            if token != self._find_sequence:
+                return                      # a newer search has superseded this
+            if total == 0 and not retried:
+                # Qt's first findText after focus moves into the find field
+                # reports zero for a phrase that is plainly on the page, and an
+                # immediate second call reports zero too - it needs a turn of
+                # the event loop. Re-issue once, shortly, before believing a
+                # zero. If the phrase genuinely is not there the retry also
+                # returns zero and we report that honestly.
+                QTimer.singleShot(120, lambda: tab.find_text(
+                    text, backward, lambda a, t: report(a, t, retried=True)))
+                return
+            self.find_bar.report(active, total)
+
+        tab.find_text(text, backward, report)
+
+    def _find_step(self, backward: bool) -> None:
+        if not self.find_bar.isVisible():
+            self._open_find()
+            return
+        self._run_find(self.find_bar.field.text(), backward)
+
+    def _clear_find(self) -> None:
+        tab = self._current()
+        if tab is not None:
+            tab.find_text("")
 
     def _zoom(self, delta: float | None) -> None:
         tab = self._current()

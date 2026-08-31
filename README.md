@@ -58,19 +58,20 @@ nss alsa-lib`.
 ## Tests
 
 ```bash
-python -m unittest discover -s tests -v          # 187 tests
+python -m unittest discover -s tests -v          # 248 tests
 python scripts/smoke_test.py                     # headless end-to-end run
 python scripts/smoke_test.py --url https://pypi.org   # also load a real site
 python scripts/validate.py                       # full validation incl. real sites
-python scripts/agent_smoke.py --url https://pypi.org   # agent against a real site
+python scripts/real_sites.py                     # browser + agent vs. real sites
 ```
 
 * **`tests/`** — 39 pure unit tests (URL parsing, SQLite stores, background
   writer, error mapping, navigation guard), 88 BrowserController tests, and 60
-  agent tests. All deterministic: the browser is real, the fixture server is
-  local (`tests/fixture_server.py`), and the model is scripted
-  (`tests/fake_claude.py`), so the agent suite needs no API key and makes no
-  network calls.
+  60 agent tests and 52 Phase 3 tests (shadow DOM, element targeting,
+  multi-step tasks, prompt injection, find-in-page). All deterministic: the
+  browser is real, the fixture server is local (`tests/fixture_server.py`), and
+  the model is scripted (`tests/fake_claude.py`), so the agent suite needs no
+  API key and makes no network calls.
 * **`smoke_test.py`** — boots the real window offscreen against a throwaway
   profile and asserts rendering, JS execution, tabs, back/forward,
   `target=_blank`, history and bookmarks.
@@ -94,6 +95,8 @@ a browser bug when the real origin served another client successfully.
 | `Ctrl+Tab` | Next tab | | `Alt+←` / `Alt+→` | Back / Forward |
 | `Ctrl+1`…`9` | Jump to tab (9 = last) | | `Ctrl+D` | Bookmark this page |
 | `Ctrl+H` | History | | `Ctrl+Shift+O` | Bookmarks |
+| `Ctrl+F` | Find in page | | `Ctrl+G` / `Ctrl+Shift+G` | Find next / previous |
+| `Ctrl+Shift+A` | Show AI agent | | | |
 | `Ctrl+±` / `Ctrl+0` | Zoom | | `F11` | Full screen |
 
 ## Where your data lives

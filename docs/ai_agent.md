@@ -28,7 +28,7 @@ MainWindow
 | File | Role |
 |---|---|
 | `app/agent/claude_client.py` | Anthropic SDK client; normalises a turn |
-| `app/agent/tools.py` | 18 tool schemas, argument validation, dispatch, untrusted fencing |
+| `app/agent/tools.py` | 19 tool schemas, argument validation, dispatch, untrusted fencing |
 | `app/agent/session.py` | The loop, agent state, cancellation, confirmation, threading |
 | `app/agent/prompt.py` | System prompt and the trust boundary |
 | `app/agent/keys.py` | API key from the OS keyring |
@@ -81,16 +81,39 @@ keyring backend that raises on import.)
 
 ## 4. Tools
 
-18 tools, each mapping to exactly one `BrowserController` method:
+19 tools, each mapping to exactly one `BrowserController` method:
 
 ```
 browser_get_page          browser_click        browser_back
 browser_get_page_text     browser_type         browser_forward
-browser_navigate          browser_submit       browser_reload
-browser_scroll            browser_select       browser_open_tab
-browser_scroll_to_element browser_set_checked  browser_close_tab
-browser_wait_for_element  browser_list_tabs    browser_select_tab
+browser_find_elements     browser_submit       browser_reload
+browser_navigate          browser_select       browser_open_tab
+browser_scroll            browser_set_checked  browser_close_tab
+browser_scroll_to_element browser_list_tabs    browser_select_tab
+browser_wait_for_element
 ```
+
+### Finding elements the way a person names them
+
+A user says "click the login button", not "click s3:e12". `browser_find_elements`
+searches the **whole** page - not just the capped snapshot - and returns a short
+ranked list with match scores:
+
+```json
+{"matches": [{"ref": "s4:e0", "role": "button", "name": "Sign in",
+              "match_score": 100}],
+ "total_matches": 1}
+```
+
+Matching is textual and knows no synonyms, deliberately: "login" meaning "Sign
+in" is language knowledge and belongs on the model's side, not baked into the
+browser. The agent supplies the alternatives - `["login", "log in", "sign in"]` -
+and the browser does the matching. There is no synonym table anywhere in the
+codebase and no site-specific rule.
+
+When several candidates score similarly the result is marked `ambiguous`, with
+an instruction to inspect further or ask the user. The tool only *finds*
+elements; it never activates one.
 
 **There is no `execute_javascript` tool and there must never be one.** A test
 asserts no tool name contains `java`, `script`, `eval` or `exec`.
@@ -239,6 +262,7 @@ Configurable in `app/agent/config.py`:
 | Limit | Default | Purpose |
 |---|---|---|
 | `max_elements` | 120 | Interactive elements per snapshot |
+| | | (`browser_find_elements` is not subject to this - see §4) |
 | `max_page_text` | 6 000 | Characters of page text per snapshot |
 | `max_tool_result_chars` | 24 000 | Cap on any single tool result |
 | `max_history_messages` | 60 | Conversation turns retained |
@@ -275,9 +299,10 @@ page`, `→ Clicking "Search"`. Internal chain-of-thought is never surfaced.
 
 ## 12. Testing
 
-`tests/test_agent.py` — **60 tests**, fully deterministic and offline. The
-model is scripted via `tests/fake_claude.py`; the browser, tools, loop, safety
-layer and threading are all real.
+`tests/test_agent.py` — **60 tests** and `tests/test_phase3.py` — **52 tests**,
+fully deterministic and offline. The model is scripted via
+`tests/fake_claude.py`; the browser, tools, loop, safety layer and threading
+are all real.
 
 Covered: reading and answering, clicking, typing, form submission, dropdowns and
 checkboxes, parallel tool calls, multi-step navigation, tabs, delayed content,
@@ -286,11 +311,43 @@ unknown tools, load failures, API errors, worker crashes, confirmation
 (allow/deny/cancel), sensitive-data redaction, prompt-injection fencing,
 cancellation, threading, context limits, and session state.
 
-`scripts/agent_smoke.py` drives the agent against a **real website**.
+`scripts/real_sites.py` drives browser *and* agent against real websites and
+reports network reach, browser load, page inspection and agent interaction
+separately, so a blocked host is never mistaken for a browser fault.
 
-## 13. Known limitations
+## 13. Real website testing
+
+Run `python scripts/real_sites.py`. It reports network reach, browser load,
+page inspection and agent interaction **separately**, so a host the network
+blocks is never mistaken for a browser fault.
+
+Results from the development sandbox (which permits only package-registry
+hosts). Your machine will reach far more:
+
+| Site | Network | Browser | Inspection | Agent |
+|---|---|---|---|---|
+| pypi.org | reachable | loaded | 54 elements, 5 headings, 2 forms | 3 actions |
+| proxy.golang.org | reachable | loaded | 28 elements, 12 headings | 3 actions |
+| index.crates.io | reachable | loaded | 7 elements | 3 actions |
+| www.wikipedia.org | **blocked by test environment** | — | — | — |
+| www.google.com | **blocked by test environment** | — | — | — |
+| www.youtube.com | **blocked by test environment** | — | — | — |
+| www.reddit.com | **blocked by test environment** | — | — | — |
+
+The four blocked hosts return `403` to a `CONNECT` from an unrelated HTTP
+client as well, so nothing is known about them either way — that is a statement
+about the sandbox, not about the browser. Zero genuine browser failures.
+
+## 14. Known limitations
 
 * Prompt injection is mitigated, not solved (§9).
+* Content inside **iframes is invisible** to the agent. The page script runs in
+  every frame, but inspection and element references address the main frame
+  only, so a control inside an embedded frame cannot be seen or clicked. This
+  is the largest remaining compatibility gap.
+* **Closed** shadow roots are invisible. Open ones are fully supported
+  (including nested roots); closed ones are private by the platform's design
+  and there is no supported way in.
 * The sensitivity classifier is heuristic and English-biased (§9).
 * An in-flight Claude request cannot be aborted mid-HTTP; its result is
   discarded instead (§6).

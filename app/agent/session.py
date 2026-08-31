@@ -383,32 +383,38 @@ class AgentSession(QObject):
         })
 
     def _trim_history(self) -> None:
-        """Keep the conversation bounded.
+        """Keep the conversation bounded without destroying it.
 
-        Drops whole turns from the front, never the first user message (the
-        task) - losing that would leave the agent working on nothing. A pair of
-        assistant tool_use and user tool_result blocks must stay together, so
-        trimming happens only at turn boundaries.
+        Drops the oldest exchanges, and never the first user message - losing
+        that would leave the agent working on nothing.
+
+        The subtlety is that a ``tool_result`` is only valid if the
+        ``tool_use`` it answers is still present, so dropping an assistant turn
+        means dropping the results that answer it. An earlier version skipped
+        forward past *every* subsequent tool message, which collapsed a
+        seven-message history to one and threw away all the context the agent
+        needed to finish a multi-step task. Now only the orphaned results are
+        removed, one exchange at a time.
         """
-        limit = self.config.limits.max_history_messages
+        limit = max(3, self.config.limits.max_history_messages)
         if len(self._messages) <= limit:
             return
         first, rest = self._messages[:1], self._messages[1:]
-        # Drop from the oldest, but never leave a tool_result without its
-        # tool_use: skip forward to the next plain user message.
         while len(first) + len(rest) > limit and rest:
             rest.pop(0)
-            while rest and self._is_tool_continuation(rest[0]):
+            # Whatever that message was, any tool_result now at the front has
+            # lost its tool_use and must go with it - but stop there.
+            while rest and self._holds_tool_result(rest[0]):
                 rest.pop(0)
         self._messages = first + rest
 
     @staticmethod
-    def _is_tool_continuation(message: dict[str, Any]) -> bool:
+    def _holds_tool_result(message: dict[str, Any]) -> bool:
         content = message.get("content")
         if isinstance(content, list):
             for block in content:
                 kind = block.get("type") if isinstance(block, dict) else getattr(block, "type", "")
-                if kind in ("tool_result", "tool_use"):
+                if kind == "tool_result":
                     return True
         return False
 

@@ -97,6 +97,24 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
           "Returns untrusted web page content.",
           {"tab_id": _TAB}),
 
+    _tool("browser_find_elements",
+          "Search the whole page for elements by what they are called, and get back a "
+          "short ranked list of candidates with match scores. Use this when you know "
+          "what you are looking for but have not found it in the page structure - it "
+          "searches every element, not just the first page-worth. "
+          "Pass several phrasings in `queries`: the browser matches text literally and "
+          "does not know synonyms, so to find a login button send "
+          "[\"login\", \"log in\", \"sign in\"]. "
+          "This only finds elements - it never activates them. If several candidates "
+          "look plausible, inspect further or ask the user which one they meant rather "
+          "than guessing. Returns untrusted web page content.",
+          {"queries": {"type": "array", "items": {"type": "string"},
+                       "description": "Alternative phrasings of the element's visible label."},
+           "role": {"type": "string",
+                    "description": "Optional role filter, e.g. button, link, textbox, checkbox."},
+           "limit": {"type": "integer", "description": "Maximum candidates. Defaults to 10."},
+           "tab_id": _TAB}),
+
     _tool("browser_navigate",
           "Load a URL in a tab and wait for it to finish loading.",
           {"url": {"type": "string", "description": "Absolute URL, including the scheme."},
@@ -173,9 +191,15 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
 
 TOOL_NAMES = {schema["name"] for schema in TOOL_SCHEMAS}
 
+#: Tools that change only which tab is in front - no page effect, nothing to
+#: confirm. Listed explicitly so `assess` can fail closed on anything else.
+_UNCLASSIFIED_SAFE = {"browser_select_tab", "browser_close_tab",
+                      "browser_back", "browser_forward", "browser_reload"}
+
 #: Tools that only read. Used to skip confirmation checks entirely.
 READ_ONLY_TOOLS = {
     "browser_get_page", "browser_get_page_text", "browser_list_tabs",
+    "browser_find_elements",
     "browser_wait_for_element", "browser_scroll", "browser_scroll_to_element",
 }
 
@@ -256,7 +280,10 @@ class ToolRegistry:
             return {"level": "normal", "reasons": [], "requires_confirmation": False}
         ref = args.get("ref")
         tab_id = self._tab(args) if isinstance(args.get("tab_id"), int) else None
-        if name == "browser_navigate":
+        if name in ("browser_navigate", "browser_open_tab"):
+            # Both load a URL, so both must face the same check. Routing only
+            # navigate through it left open_tab as a way to reach a flagged URL
+            # (an executable download, say) without the user being asked.
             return self._strip(self._browser.describe_action(
                 "navigate", url=self._string(args, "url"), tab_id=tab_id))
         if name == "browser_type":
@@ -268,7 +295,13 @@ class ToolRegistry:
             return self._strip(self._browser.describe_action("submit", ref=ref, tab_id=tab_id))
         if name in ("browser_set_checked", "browser_select"):
             return self._strip(self._browser.describe_action("set_checked", ref=ref, tab_id=tab_id))
-        return {"level": "normal", "reasons": [], "requires_confirmation": False}
+        if name in _UNCLASSIFIED_SAFE:
+            return {"level": "normal", "reasons": [], "requires_confirmation": False}
+        # A tool nobody thought to classify is treated as a write, not as
+        # harmless. Failing closed here means adding a tool cannot accidentally
+        # create a hole in the confirmation gate.
+        return {"level": "elevated", "reasons": ["changes browser state"],
+                "requires_confirmation": False}
 
     def _element_name(self, args: dict[str, Any]) -> str:
         """The accessible name of the element this call targets, if known."""
@@ -298,6 +331,10 @@ class ToolRegistry:
                 return "Reading the page"
             if name == "browser_get_page_text":
                 return "Reading the page text"
+            if name == "browser_find_elements":
+                queries = args.get("queries") or []
+                shown = str(queries[0]) if queries else self._string(args, "role")
+                return f'Looking for "{shown}"' if shown else "Searching the page"
             if name in ("browser_click", "browser_submit", "browser_set_checked",
                         "browser_select", "browser_scroll_to_element", "browser_type"):
                 # Ask the browser what this element is called. assess() would
@@ -354,6 +391,17 @@ class ToolRegistry:
             max_text=self._limits.max_page_text,
             include_invisible=self._bool(args, "include_invisible"),
         ))
+
+    def _run_find_elements(self, args: dict) -> ToolOutcome:
+        queries = args.get("queries") or []
+        if not isinstance(queries, list) or not all(isinstance(q, str) for q in queries):
+            raise ToolError("'queries' must be a list of strings.")
+        role = self._string(args, "role") or None
+        if not queries and not role:
+            raise ToolError("Give 'queries', a 'role', or both.")
+        return ToolOutcome(future=self._browser.find_elements(
+            queries, role=role, limit=self._int(args, "limit", 10) or 10,
+            tab_id=self._tab(args)))
 
     def _run_get_page_text(self, args: dict) -> ToolOutcome:
         return ToolOutcome(future=self._browser.get_page_text(
@@ -501,9 +549,27 @@ class ToolRegistry:
         """The final string handed back as the tool_result content."""
         structure = result.data.get("structure")
         text = result.data.get("text")
+        # wait_for_element also reports a key called "matches", but as a count.
+        # Only a list is a find_elements result.
+        matches = result.data.get("matches")
+        if not isinstance(matches, list):
+            matches = None
         blocks = [json.dumps(payload, ensure_ascii=False)]
         if structure is not None:
             blocks.append(wrap_untrusted(self._trim_structure(structure)))
+        elif matches is not None:
+            total = result.data.get("total_matches", len(matches))
+            summary: dict[str, Any] = {"matches": matches, "total_matches": total}
+            if total > len(matches):
+                summary["note"] = (f"{total} elements matched; the {len(matches)} best are "
+                                   "listed. Narrow the query if the one you want is missing.")
+            if len(matches) > 1 and matches[0].get("match_score", 0) - \
+                    matches[1].get("match_score", 0) < 20:
+                summary["ambiguous"] = True
+                summary["note_ambiguous"] = (
+                    "Several candidates scored similarly. Do not guess - inspect them, "
+                    "or ask the user which one they meant.")
+            blocks.append(wrap_untrusted(summary))
         elif text is not None:
             blocks.append(wrap_untrusted({"page_text": text,
                                           "truncated": result.data.get("truncated", False)}))

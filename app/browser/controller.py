@@ -496,6 +496,67 @@ class BrowserController(QObject):
             "get_page_text", tab, started, ErrorCode.TIMEOUT, "Reading the page took too long."))
         return future
 
+    def find_elements(
+        self,
+        queries: list[str] | None = None,
+        *,
+        role: str | None = None,
+        limit: int = 10,
+        include_invisible: bool = False,
+        tab_id: int | None = None,
+    ) -> BrowserFuture:
+        """Search the whole page for elements matching any of ``queries``.
+
+        Unlike ``get_page_structure`` this is not capped at the element limit:
+        the control a caller wants is often past the cap on a large page. It
+        returns a short ranked list with match scores and a total count, so the
+        caller can distinguish one obvious match from several plausible ones.
+
+        The references it hands back come from a real snapshot, so they resolve
+        and go stale on exactly the same terms as any others.
+        """
+        started = time.monotonic()
+        tab = self._tab_for(tab_id)
+        if tab is None:
+            return resolved("find_elements", self._no_tab("find_elements", started))
+        future = BrowserFuture("find_elements", self)
+        options = json.dumps({
+            "queries": [str(q) for q in (queries or []) if str(q).strip()],
+            "role": role or "",
+            "limit": max(1, min(limit, 40)),
+            "include_invisible": include_invisible,
+        })
+
+        def on_result(raw: Any) -> None:
+            if not isinstance(raw, dict):
+                self._finish(future, self._failure(
+                    "find_elements", tab, started, ErrorCode.SCRIPT_FAILED,
+                    "The page could not be searched. It may still be loading."))
+                return
+            known = {f.name for f in PageElement.__dataclass_fields__.values()}  # type: ignore[attr-defined]
+            matches = [
+                {**{k: v for k, v in item.items() if k in known},
+                 "match_score": item.get("match_score", 0)}
+                for item in raw.get("matches", [])
+            ]
+            self._finish(future, self._success(
+                "find_elements", tab, started,
+                data={"matches": matches,
+                      "total_matches": raw.get("total_matches", len(matches)),
+                      "snapshot_id": raw.get("snapshot_id", "")}))
+
+        def run() -> None:
+            self._call_page(tab, f"window.__pb.search({options})", on_result)
+
+        if tab.is_loading:
+            self.wait_for_load(tab_id).then(lambda _r: run())
+        else:
+            run()
+        future.set_timeout(DEFAULT_TIMEOUT_MS, lambda: self._failure(
+            "find_elements", tab, started, ErrorCode.TIMEOUT,
+            "Searching the page took too long."))
+        return future
+
     def inspect_element(self, ref: str, tab_id: int | None = None) -> BrowserFuture:
         """Re-read one element - the cheap way to check a reference is still good."""
         return self._page_action("inspect_element", {"op": "inspect", "ref": ref}, ref, tab_id,

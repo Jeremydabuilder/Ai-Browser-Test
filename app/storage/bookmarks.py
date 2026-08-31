@@ -42,11 +42,11 @@ class BookmarkStore:
             return False
         if self.contains(url):
             return False
-        self._db.execute(
+        cursor = self._db.execute(
             "INSERT OR IGNORE INTO bookmarks (url, title, created_at) VALUES (?, ?, ?)",
             (url, title, datetime.now(timezone.utc).isoformat(timespec="seconds")),
         )
-        return True
+        return cursor is not None
 
     def remove(self, url: str) -> None:
         self._db.execute("DELETE FROM bookmarks WHERE url = ?", (url,))

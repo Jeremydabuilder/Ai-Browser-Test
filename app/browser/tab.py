@@ -213,9 +213,21 @@ class BrowserTab(QWidget):
         else:
             self._page.runJavaScript(script, ISOLATED_WORLD, callback)
 
-    def find_text(self, text: str, backward: bool = False) -> None:
+    def find_text(self, text: str, backward: bool = False, callback=None) -> None:
+        """Find-in-page. ``callback`` receives (active_match, total_matches).
+
+        Passing an empty string clears the highlight, which is what the find
+        bar does when it closes.
+        """
         flags = QWebEnginePage.FindFlag.FindBackward if backward else QWebEnginePage.FindFlag(0)
-        self._view.findText(text, flags)
+        if callback is None:
+            self._page.findText(text, flags)
+            return
+
+        def on_result(result) -> None:
+            callback(result.activeMatch(), result.numberOfMatches())
+
+        self._page.findText(text, flags, on_result)
 
     def set_zoom(self, factor: float) -> None:
         self._view.setZoomFactor(max(0.25, min(5.0, factor)))

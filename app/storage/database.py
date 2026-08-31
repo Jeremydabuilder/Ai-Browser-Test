@@ -169,13 +169,23 @@ class Database:
             deadline.cancel()
 
     # -- synchronous access ----------------------------------------------
-    def execute(self, sql: str, params: Sequence[Any] = ()) -> sqlite3.Cursor:
+    #
+    # Reads and writes after close() are no-ops rather than errors. Qt delivers
+    # queued signals during shutdown - a urlChanged arriving after the database
+    # has gone was enough to raise "Cannot operate on a closed database" out of
+    # a UI slot and take the window down on the way out. Nothing useful can be
+    # stored at that point, and crashing on exit helps nobody.
+    def execute(self, sql: str, params: Sequence[Any] = ()) -> sqlite3.Cursor | None:
+        if self._closed:
+            return None
         with self._lock:
             cursor = self._conn.execute(sql, params)
             self._conn.commit()
             return cursor
 
     def query(self, sql: str, params: Sequence[Any] = ()) -> list[sqlite3.Row]:
+        if self._closed:
+            return []
         with self._lock:
             return self._conn.execute(sql, params).fetchall()
 
@@ -184,6 +194,8 @@ class Database:
         return rows[0] if rows else None
 
     def executemany(self, sql: str, seq: Iterable[Sequence[Any]]) -> None:
+        if self._closed:
+            return
         with self._lock:
             self._conn.executemany(sql, seq)
             self._conn.commit()

@@ -47,6 +47,40 @@
     ' [role="checkbox"], [role="radio"], [role="combobox"], [role="switch"],' +
     ' [role="menuitem"], [role="tab"], [role="option"], [role="slider"]';
 
+  /* querySelectorAll does not cross shadow boundaries, so on a site built
+     from web components almost every control is invisible to it - buttons,
+     inputs, links, the lot. This walks the tree in document order and steps
+     into every OPEN shadow root as it goes.
+
+     Closed shadow roots stay invisible; that is the platform's decision, not
+     ours, and there is no supported way around it.
+
+     The budget caps how many nodes we visit so a pathological page cannot
+     make inspection hang. */
+  function deepQuery(selector, limit) {
+    var out = [];
+    var budget = { nodes: 40000 };
+
+    function walk(node) {
+      if (budget.nodes <= 0 || out.length >= limit) { return; }
+      var children = node.children;
+      if (!children) { return; }
+      for (var i = 0; i < children.length; i++) {
+        if (budget.nodes <= 0 || out.length >= limit) { return; }
+        budget.nodes--;
+        var el = children[i];
+        try {
+          if (el.matches && el.matches(selector)) { out.push(el); }
+        } catch (e) { /* an exotic selector on an exotic node; skip it */ }
+        if (el.shadowRoot) { walk(el.shadowRoot); }
+        walk(el);
+      }
+    }
+
+    walk(document.documentElement || document);
+    return out;
+  }
+
   function text(value, limit) {
     return (value == null ? "" : String(value)).replace(/\s+/g, " ").trim().slice(0, limit || 300);
   }
@@ -86,8 +120,12 @@
   function accessibleName(el) {
     var byId = el.getAttribute && el.getAttribute("aria-labelledby");
     if (byId) {
+      // IDs are scoped to the shadow root that contains them, so resolve
+      // against the element's own root rather than always the document.
+      var scope = (el.getRootNode && el.getRootNode()) || document;
+      if (!scope.getElementById) { scope = document; }
       var parts = byId.split(/\s+/).map(function (id) {
-        var node = document.getElementById(id);
+        var node = scope.getElementById(id);
         return node ? node.textContent : "";
       }).join(" ");
       if (text(parts)) { return text(parts); }
@@ -236,7 +274,9 @@
       return i === -1 ? null : i;
     };
 
-    var candidates = document.querySelectorAll(INTERACTIVE);
+    // Ask for one more than we need, so we can tell "exactly at the limit"
+    // from "there were more".
+    var candidates = deepQuery(INTERACTIVE, maxElements * 3 + 50);
     var truncated = false;
     for (var i = 0; i < candidates.length; i++) {
       if (reported.length >= maxElements) { truncated = true; break; }
@@ -250,9 +290,8 @@
       reported.push(describe(el, ref, formIndexOf(el)));
     }
 
-    var headings = Array.prototype.slice.call(
-      document.querySelectorAll("h1, h2, h3, h4, h5, h6, [role='heading']"), 0, 60
-    ).filter(isVisible).map(function (h) {
+    var headings = deepQuery("h1, h2, h3, h4, h5, h6, [role='heading']", 200)
+      .filter(isVisible).slice(0, 60).map(function (h) {
       return {
         level: parseInt(h.getAttribute("aria-level") || h.tagName.slice(1), 10) || 2,
         text: text(h.innerText || h.textContent, 200)
@@ -445,6 +484,102 @@
     return { status: "unknown_op" };
   }
 
+  /* ---------------------------------------------------------------- search */
+  /* Find elements by what they are called, across the WHOLE page rather than
+     the capped snapshot - the control someone means is often past the element
+     limit on a large page.
+
+     Matching is textual and deliberately dumb: several alternative phrasings
+     come in from the caller and each is scored against the element's
+     accessible name and nearby attributes. There is no synonym table here, and
+     there should not be: "login" meaning "Sign in" is language knowledge, and
+     it belongs on the caller's side, not baked into the browser.
+
+     Scores are returned so the caller can tell one obvious match from three
+     plausible ones and decide - or ask - rather than guessing. */
+  function score(haystacks, needle) {
+    if (!needle) { return 0; }
+    var best = 0;
+    for (var i = 0; i < haystacks.length; i++) {
+      var hay = (haystacks[i] || "").toLowerCase().trim();
+      if (!hay) { continue; }
+      var weight = i === 0 ? 1 : 0.5;   // the accessible name matters most
+      var value = 0;
+      if (hay === needle) { value = 100; }
+      else if (hay.replace(/[^a-z0-9]+/g, " ").trim() === needle.replace(/[^a-z0-9]+/g, " ").trim()) { value = 95; }
+      else if (hay.indexOf(needle) === 0) { value = 80; }
+      else if (new RegExp("\\b" + needle.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "\\b").test(hay)) { value = 65; }
+      else if (hay.indexOf(needle) !== -1) { value = 45; }
+      best = Math.max(best, value * weight);
+    }
+    return best;
+  }
+
+  function search(options) {
+    options = options || {};
+    var queries = (options.queries || []).map(function (q) {
+      return String(q || "").toLowerCase().trim();
+    }).filter(Boolean);
+    var wantRole = options.role || "";
+    var limit = options.limit || 10;
+    var snapshotId = "s" + (++state.nextSnapshot);
+
+    var scored = [];
+    var candidates = deepQuery(INTERACTIVE, 3000);
+    for (var i = 0; i < candidates.length; i++) {
+      var el = candidates[i];
+      var role = roleOf(el);
+      if (role === "hidden") { continue; }
+      if (wantRole && role !== wantRole) { continue; }
+      if (!options.include_invisible && !isVisible(el)) { continue; }
+
+      var name = accessibleName(el);
+      var haystacks = [name,
+                       el.getAttribute && el.getAttribute("placeholder"),
+                       el.getAttribute && el.getAttribute("title"),
+                       el.getAttribute && el.getAttribute("name"),
+                       el.getAttribute && el.getAttribute("value")];
+      var best = 0;
+      for (var q = 0; q < queries.length; q++) {
+        best = Math.max(best, score(haystacks, queries[q]));
+      }
+      // With no query at all, a role filter alone is a valid search.
+      if (!queries.length) { best = wantRole ? 50 : 0; }
+      if (best > 0) { scored.push({ el: el, role: role, score: best }); }
+    }
+
+    scored.sort(function (a, b) { return b.score - a.score; });
+    var chosen = scored.slice(0, limit);
+
+    var elements = [];
+    var fingerprints = [];
+    var reported = [];
+    for (var j = 0; j < chosen.length; j++) {
+      var node = chosen[j].el;
+      var ref = snapshotId + ":e" + j;
+      elements.push(node);
+      fingerprints.push(fingerprint(node));
+      var described = describe(node, ref, null);
+      described.match_score = Math.round(chosen[j].score);
+      reported.push(described);
+    }
+    state.snapshots.set(snapshotId, {
+      docId: state.docId, elements: elements, fingerprints: fingerprints, formCount: 0
+    });
+    while (state.snapshots.size > state.maxSnapshots) {
+      state.snapshots.delete(state.snapshots.keys().next().value);
+    }
+
+    return {
+      snapshot_id: snapshotId,
+      url: location.href,
+      title: document.title || "",
+      dom_revision: state.domRevision,
+      total_matches: scored.length,
+      matches: reported
+    };
+  }
+
   /* Cheap poll used by wait_for_*: no snapshot is created, nothing is stored. */
   function probe(query) {
     query = query || {};
@@ -455,7 +590,7 @@
         matches = 1;
       }
     } else {
-      var nodes = document.querySelectorAll(INTERACTIVE);
+      var nodes = deepQuery(INTERACTIVE, 600);
       for (var i = 0; i < nodes.length && matches < 200; i++) {
         var el = nodes[i];
         if (query.role && roleOf(el) !== query.role) { continue; }
@@ -485,5 +620,6 @@
     };
   }
 
-  window.__pb = { capture: capture, act: act, probe: probe, status: status };
+  window.__pb = { capture: capture, act: act, probe: probe, status: status,
+                  search: search };
 })();
