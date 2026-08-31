@@ -320,6 +320,48 @@ Sensitive actions — purchases, deletion, sending messages, credentials, paymen
 details, legal agreements, executable downloads — pause for an explicit
 **Allow / Deny**, decided by the *browser*, not by the model.
 
+### Keeping the cost down
+
+An agent re-sends the whole conversation on every turn, so a multi-step task can
+get expensive quickly. Three things are done about it, cheapest first:
+
+1. **Prompt caching, on by default.** The tool schemas and system prompt are
+   cached with a one-hour lifetime, and the growing conversation is cached
+   automatically. Cached input bills at about a tenth of the normal rate and
+   nothing about the answers changes. Anthropic measures this at a 2.5×–3.7×
+   reduction in agent-loop cost. There is no setting for it because there is no
+   reason to want it off.
+2. **Effort**, defaulting to `medium` — in Anthropic's measurements that matched
+   the model's own default accuracy at 70–85% of the cost. `low` is cheaper
+   again and gives up a little accuracy.
+3. **Model choice**, last, because a cheaper model is cheaper by being less
+   capable. Claude Opus 5 (default), Sonnet 5, Haiku 4.5 and Fable 5 are
+   offered, and the dialog says plainly what each gives up — Haiku 4.5 costs
+   about a tenth of Opus 5 per question and answers 63% of them correctly
+   against 92%, which suits short checkable tasks rather than long browsing
+   sessions.
+
+Model and effort live in **Tools → Configure AI Agent…**, or:
+
+```bash
+PYBROWSER_AGENT_MODEL=claude-sonnet-5 PYBROWSER_AGENT_EFFORT=low python main.py
+```
+
+The panel shows what the task in progress has cost — tokens, the share served
+from cache, and a rough dollar estimate for models with a published price.
+Token counts are exact; the money figure is labelled an estimate, and no figure
+is shown at all for a model whose price is not published rather than a guessed
+one.
+
+To check that caching is really working against the live API (it fails
+silently when it fails):
+
+```bash
+python scripts/cache_probe.py     # spends a few cents; exits non-zero on a miss
+```
+
+Full reasoning in [`docs/ai_agent.md`](docs/ai_agent.md) §10a.
+
 See [`docs/ai_agent.md`](docs/ai_agent.md) for the architecture, the threading
 model, context limits, and an honest account of the security limitations.
 

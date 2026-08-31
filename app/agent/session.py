@@ -42,6 +42,7 @@ from app.agent.claude_client import AgentResponse, ClaudeError, ClaudeTransport,
 from app.agent.config import AgentConfig
 from app.agent.prompt import SYSTEM_PROMPT
 from app.agent.tools import TOOL_SCHEMAS, ToolError, ToolRegistry
+from app.agent.usage import Usage
 from app.browser.controller import BrowserController
 
 
@@ -112,6 +113,7 @@ class AgentSession(QObject):
     error = Signal(str)                          # something went wrong
     finished = Signal()                          # task over (done or stopped)
     confirmation_required = Signal(object)       # ConfirmationRequest
+    usage_updated = Signal(object)               # Usage for the current task
     #: Emitted with the outgoing request so a worker thread can pick it up.
     _dispatch = Signal(str, list, list)
 
@@ -139,6 +141,17 @@ class AgentSession(QObject):
         self._assistant_content: Any = None
         self._confirmation: ConfirmationRequest | None = None
         self._confirming_call: ToolCall | None = None
+
+        # -- what this is costing ----------------------------------------
+        #: Tokens for the task in progress, reset on every `send()`.
+        self.task_usage = Usage()
+        #: Tokens since the browser started. Never reset.
+        self.session_usage = Usage()
+        #: tool_use_id -> tool name, so `_prune_snapshots` can tell which
+        #: results are bulky page captures without re-parsing their JSON.
+        self._result_tools: dict[str, str] = {}
+        #: Results already collapsed, so a prune never runs twice on one block.
+        self._pruned: set[str] = set()
 
         # -- worker thread ------------------------------------------------
         self._thread = QThread()
@@ -177,6 +190,8 @@ class AgentSession(QObject):
         self._cancelled = False
         self._turns = 0
         self._tool_calls_made = 0
+        self.task_usage.reset()
+        self.usage_updated.emit(self.task_usage)
         self._messages.append({"role": "user", "content": message})
         self._trim_history()
         self._request()
@@ -246,6 +261,9 @@ class AgentSession(QObject):
     def _on_response(self, response: AgentResponse) -> None:
         if self._cancelled:
             return
+        self.task_usage.add(response)
+        self.session_usage.add(response)
+        self.usage_updated.emit(self.task_usage)
         if response.text:
             self.assistant_message.emit(response.text)
         if not response.wants_tools:
@@ -282,6 +300,7 @@ class AgentSession(QObject):
             self._messages.append({"role": "user", "content": self._results})
             self._results = []
             self._trim_history()
+            self._prune_snapshots()
             self._request()
             return
 
@@ -339,7 +358,8 @@ class AgentSession(QObject):
         if outcome.immediate is not None:
             import json
 
-            self._record_result(call.id, json.dumps(outcome.immediate, ensure_ascii=False))
+            self._record_result(call.id, json.dumps(outcome.immediate, ensure_ascii=False),
+                                tool_name=call.name)
             self._advance()
             return
 
@@ -352,7 +372,7 @@ class AgentSession(QObject):
             else:
                 payload = self._tools.encode(result)
                 self._record_result(call.id, self._tools.render(result, payload),
-                                    is_error=not result.ok)
+                                    is_error=not result.ok, tool_name=call.name)
             self._advance()
 
         outcome.future.then(on_done)
@@ -364,12 +384,15 @@ class AgentSession(QObject):
         self._next_tool()
 
     # -- helpers ----------------------------------------------------------
-    def _record_result(self, tool_use_id: str, content: str, *, is_error: bool = False) -> None:
+    def _record_result(self, tool_use_id: str, content: str, *,
+                       is_error: bool = False, tool_name: str = "") -> None:
         block: dict[str, Any] = {
             "type": "tool_result", "tool_use_id": tool_use_id, "content": content,
         }
         if is_error:
             block["is_error"] = True
+        if tool_name:
+            self._result_tools[tool_use_id] = tool_name
         self._results.append(block)
 
     @staticmethod
@@ -381,6 +404,65 @@ class AgentSession(QObject):
             "error": {"code": code, "message": message, "recoverable": code != "TOOL_FAILED"},
             "hint": "Fix the arguments and try again, or choose a different approach.",
         })
+
+    #: Tools whose results are large and go out of date the moment the next
+    #: one runs, because element references are scoped to their snapshot.
+    _SNAPSHOT_TOOLS = frozenset({
+        "browser_get_page", "browser_get_page_text", "browser_find_elements",
+    })
+
+    _PRUNED_NOTE = (
+        '{"ok": true, "note": "This page snapshot was replaced by a newer one and '
+        'has been collapsed to keep the conversation small. Its element references '
+        'are no longer valid.", '
+        '"hint": "Call browser_get_page again if you need to look at this page."}'
+    )
+
+    def _prune_snapshots(self) -> None:
+        """Collapse superseded page snapshots once they add up to real weight.
+
+        A browsing task accumulates one page capture per step, and every one of
+        them is resent on every subsequent turn. The older ones are not merely
+        bulky, they are *dead*: element references are scoped to the snapshot
+        that produced them, so the moment a newer capture exists the older
+        references cannot be used for anything. Replacing them with a sentence
+        saying so is both cheaper and more accurate than leaving stale refs in
+        front of the model.
+
+        The threshold is high and the newest snapshot is always kept whole. A
+        prune rewrites the conversation, which costs one cold cache miss on the
+        next request - so this must happen rarely and in one large batch, never
+        a little every turn. Below the threshold, doing nothing is cheaper than
+        tidying.
+        """
+        limit = self.config.limits.prune_stale_after_chars
+        if limit <= 0:
+            return
+
+        found: list[tuple[dict[str, Any], int]] = []
+        for message in self._messages:
+            content = message.get("content")
+            if not isinstance(content, list):
+                continue
+            for block in content:
+                if not isinstance(block, dict) or block.get("type") != "tool_result":
+                    continue
+                ref = block.get("tool_use_id")
+                if ref in self._pruned:
+                    continue
+                if self._result_tools.get(ref) not in self._SNAPSHOT_TOOLS:
+                    continue
+                body = block.get("content")
+                if isinstance(body, str):
+                    found.append((block, len(body)))
+
+        superseded = found[:-1]          # never touch the most recent snapshot
+        if sum(size for _, size in superseded) < limit:
+            return
+        for block, _ in superseded:
+            block["content"] = self._PRUNED_NOTE
+            block.pop("is_error", None)
+            self._pruned.add(block.get("tool_use_id"))
 
     def _trim_history(self) -> None:
         """Keep the conversation bounded without destroying it.

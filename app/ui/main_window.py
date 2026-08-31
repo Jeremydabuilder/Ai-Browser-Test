@@ -453,7 +453,8 @@ class MainWindow(QMainWindow):
         from app.ui.agent_setup import build_session
 
         if self._agent_session is None:
-            self._agent_session, reason = build_session(self.controller, self)
+            self._agent_session, reason = build_session(
+                self.controller, self, self.settings)
             if self._agent_session is None:
                 self._show_status(f"AI agent unavailable: {reason}")
         self.set_side_panel(AgentPanel(self._agent_session, self))
@@ -462,7 +463,43 @@ class MainWindow(QMainWindow):
     def _configure_agent(self) -> None:
         from app.ui.agent_setup import ApiKeyDialog
 
-        ApiKeyDialog(self).exec()
+        ApiKeyDialog(self, self.settings).exec()
+        self._apply_agent_settings()
+
+    def _apply_agent_settings(self) -> None:
+        """Rebuild the agent if the model or effort preference changed.
+
+        Both settings are fixed for the life of a session rather than read per
+        request, and that is deliberate: the prompt cache is scoped to the model
+        and is invalidated by a change of effort, so switching either one
+        part-way through a conversation would silently discard everything
+        cached so far - the opposite of the saving the settings exist to make.
+        Rebuilding starts a fresh conversation, which is the honest way to
+        change them.
+        """
+        session = self._agent_session
+        if session is None:
+            return
+        from app.agent.config import AgentConfig
+
+        wanted = AgentConfig.from_environment(self.settings)
+        if (wanted.model, wanted.effort) == (session.config.model, session.config.effort):
+            return
+        if session.busy:
+            self._show_status(
+                "The new model applies once the current task finishes.")
+            return
+
+        showing = self._side_panel is not None
+        if showing:
+            self.set_side_panel(None)
+        session.shutdown()
+        self._agent_session = None
+        self._show_status(f"AI agent now using {wanted.model_choice.label}.")
+        if showing:
+            self._toggle_agent_panel()
+        else:
+            self._agent_action.setChecked(False)
 
     # ------------------------------------------------------------------
     # Panel plumbing

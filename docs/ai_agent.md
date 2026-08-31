@@ -43,9 +43,10 @@ both suites.
 
 ## 2. Claude API integration
 
-Uses the official **`anthropic` Python SDK** (1.x), model **`claude-opus-5`**
-with `thinking={"type": "adaptive"}` — that model thinks by default and rejects
-`budget_tokens`, so adaptive is the whole configuration.
+Uses the official **`anthropic` Python SDK** (1.x), by default the model
+**`claude-opus-5`** with `thinking={"type": "adaptive"}` — that model thinks by
+default and rejects `budget_tokens`, so adaptive is the whole configuration.
+The model is selectable; see §10a.
 
 The loop is written by hand rather than using the SDK's beta tool runner, for
 three reasons the runner cannot accommodate:
@@ -299,9 +300,124 @@ task, and never splits a `tool_use` from its `tool_result`.
 Internal bookkeeping (`doc_id`, `dom_revision`) is stripped before sending — it
 costs tokens every turn and the model has no use for it.
 
-Room to improve later: prompt caching on the system prompt and tool list,
-diffing snapshots instead of resending them, and a cheaper model for
-reading-heavy steps.
+## 10a. What a task costs, and the three levers on it
+
+An agent loop is the most expensive shape of API use there is: **every turn
+re-sends the entire conversation so far**, and a browser agent's conversation is
+mostly page snapshots. A ten-step task sends the same system prompt and the same
+nineteen tool schemas ten times.
+
+Three levers are applied, in the order that gives up the least quality per pound
+saved. The order is not arbitrary — it is cheapest-first, and model choice comes
+last because it is the only one that lowers the ceiling on what the agent can do.
+
+### Lever 1 — prompt caching (free, on by default)
+
+Cached input is billed at roughly a tenth of the normal input price. Nothing
+about the answers changes. Anthropic's own measurements put this at a **2.5× to
+3.7× reduction in agent-loop cost** at 81–90% hit rates.
+
+The prompt has two parts that change at very different rates, so it gets two
+breakpoints:
+
+| Part | Changes | Treatment |
+|---|---|---|
+| Tool schemas + system prompt (~3 400 tokens) | never | one **explicit** `cache_control` breakpoint on the system block, **1-hour TTL** |
+| The conversation | every turn | **automatic** top-level caching, which moves its breakpoint forward as the conversation grows |
+
+Tools render before `system` in the request, so a single marker on the system
+block caches both together. The prefix uses the one-hour TTL rather than the
+default five minutes for a specific reason: this agent **stops and waits for a
+human** whenever it wants to do something sensitive, and a five-minute entry
+expires during that pause. A one-hour entry costs 2× to write instead of 1.25×
+and pays that back the first time a confirmation takes longer than five minutes.
+
+Neither parameter is universally available — the older Amazon Bedrock
+integration rejects a top-level `cache_control`. Rather than keep a table of
+which platform supports what and be wrong about it, `ClaudeClient._create()`
+asks and believes the answer: on a 400 naming one of these parameters it drops
+that parameter, remembers it for the session, and re-sends. The task then costs
+more and **works**, instead of failing.
+
+Caching regressions are silent — requests still succeed, answers are still
+correct, only the bill changes — so there are two standing checks:
+
+* `tests/test_cost.py` asserts the exact shape of the outgoing request, offline.
+* `python scripts/cache_probe.py` sends the real prefix to the real API twice
+  and fails if the second request reads nothing from the cache. Run it after
+  **any** change to how the prompt is assembled. It spends real money, so it is
+  never part of the test suite.
+
+One honest caveat: the static prefix is about 3 400 tokens, which clears the
+minimum cacheable size on Claude Opus 5 (512) and Claude Sonnet 5 (1 024) but
+**not** Claude Haiku 4.5 (4 096). On Haiku the explicit prefix breakpoint may
+write nothing; the automatic breakpoint still covers the whole prompt from the
+second turn on, once the conversation pushes the total past the minimum.
+
+### Lever 2 — effort (nearly free)
+
+`output_config.effort` caps how much the model deliberates before answering.
+The default here is **`medium`**, which in Anthropic's measurements matched the
+model's own default accuracy at 70–85% of its cost on research-shaped work.
+`low` gives up 1–3 accuracy points for a third to a half off.
+
+Effort is **pinned for the life of a session**, never varied per request:
+changing it invalidates the message cache, which would cost far more than the
+thinking it saves.
+
+### Lever 3 — model (a real trade)
+
+Last, because a cheaper model is cheaper by being less capable. The catalogue in
+`app/agent/config.py` says what each one gives up, and the settings dialog shows
+that text next to the choice. In particular Claude Haiku 4.5 answers knowledge
+questions at about a tenth of Claude Opus 5's cost — at 63% accuracy against
+92%. That suits short, checkable tasks; a long browsing session, where an early
+mistake compounds into more steps, is exactly where it is a false economy.
+
+Changing the model or effort **restarts the agent and begins a fresh
+conversation**. That is deliberate: prompt caches are scoped to a model, so
+switching part-way through a task would discard everything cached so far.
+
+### Where the settings live
+
+| Setting | Dialog | Environment | Stored in |
+|---|---|---|---|
+| Model | Tools → Configure AI Agent | `PYBROWSER_AGENT_MODEL` | `settings` table (`agent_model`) |
+| Effort | Tools → Configure AI Agent | `PYBROWSER_AGENT_EFFORT` | `settings` table (`agent_effort`) |
+| Caching | — (no reason to turn it off) | `PYBROWSER_AGENT_CACHE=off` | — |
+
+The environment wins over the stored preference, so a shell variable can
+override the dialog for one run. These are preferences, not secrets, so unlike
+the API key they are perfectly at home in the settings table.
+
+### Pruning superseded snapshots
+
+Element references are scoped to the snapshot that produced them, so the moment
+a newer page capture exists, the older ones are not merely bulky — they are
+**dead**, and their references cannot be used for anything. Once superseded
+snapshots add up to 40 000 characters, `AgentSession._prune_snapshots()`
+replaces them with one sentence saying so, and always leaves the newest capture
+whole.
+
+The threshold is high on purpose. A prune rewrites the conversation and costs
+one cold cache miss on the next request, so it has to happen rarely and in one
+large batch. Below the threshold, doing nothing is cheaper than tidying.
+
+### Seeing the number
+
+The panel shows, per task: tokens in and out, the share served from cache, and —
+for models whose list price Anthropic publishes — a rough figure in dollars and
+what caching saved. Token counts are exact; money is labelled as an estimate,
+and models without a published price show **no** figure rather than a
+made-up one.
+
+Read the meters correctly: `input_tokens` from the API is *only the uncached
+remainder*, not the prompt size. The prompt size is `input_tokens +
+cache_read_input_tokens + cache_creation_input_tokens`, which is what
+`Usage.prompt_tokens` reports.
+
+Still to do: diffing snapshots instead of re-sending them, and delegating
+reading-heavy steps to a cheaper model.
 
 ## 11. How the agent behaves
 
@@ -320,8 +436,8 @@ page`, `→ Clicking "Search"`. Internal chain-of-thought is never surfaced.
 
 ## 12. Testing
 
-`tests/test_agent.py` — **60 tests** and `tests/test_phase3.py` — **52 tests**,
-fully deterministic and offline. The model is scripted via
+`tests/test_agent.py` — **60 tests**, `tests/test_phase3.py` — **52 tests** and
+`tests/test_cost.py` — **37 tests**, fully deterministic and offline. The model is scripted via
 `tests/fake_claude.py`; the browser, tools, loop, safety layer and threading
 are all real.
 
@@ -331,6 +447,12 @@ script-generated elements, stale-reference recovery, malformed arguments,
 unknown tools, load failures, API errors, worker crashes, confirmation
 (allow/deny/cancel), sensitive-data redaction, prompt-injection fencing,
 cancellation, threading, context limits, and session state.
+
+`tests/test_cost.py` covers the cost machinery specifically: the exact shape of
+the cached request, the fallback when a platform rejects a cost parameter,
+token accounting, and snapshot pruning. It asserts on the outgoing request
+rather than on a reimplementation of it, because a caching regression produces
+no error to catch.
 
 `scripts/real_sites.py` drives browser *and* agent against real websites and
 reports network reach, browser load, page inspection and agent interaction

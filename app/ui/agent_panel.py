@@ -88,7 +88,13 @@ class AgentPanel(QWidget):
         layout.setContentsMargins(8, 8, 8, 8)
         layout.setSpacing(6)
 
-        header = QLabel("<b>AI Agent</b>", self)
+        model = ""
+        if session is not None:
+            model = session.config.model_choice.label
+        header = QLabel(
+            "<b>AI Agent</b>" + (f" <span style='color:#777'>{model}</span>" if model else ""),
+            self)
+        header.setTextFormat(Qt.TextFormat.RichText)
         layout.addWidget(header)
 
         self.transcript = QTextBrowser(self)
@@ -100,6 +106,15 @@ class AgentPanel(QWidget):
         self.status.setWordWrap(True)
         self.status.setStyleSheet("color:#666;")
         layout.addWidget(self.status)
+
+        # Spend, shown while it is still possible to do something about it.
+        # Hidden entirely until the first task, so an idle panel is not
+        # cluttered with zeroes.
+        self.usage = QLabel("", self)
+        self.usage.setWordWrap(True)
+        self.usage.setStyleSheet("color:#888; font-size:11px;")
+        self.usage.hide()
+        layout.addWidget(self.usage)
 
         self.confirmation = ConfirmationBar(self)
         layout.addWidget(self.confirmation)
@@ -134,6 +149,7 @@ class AgentPanel(QWidget):
         session.state_changed.connect(self._on_state)
         session.confirmation_required.connect(self.confirmation.ask)
         session.finished.connect(self._on_finished)
+        session.usage_updated.connect(self._on_usage)
 
     def _show_unconfigured(self) -> None:
         self.input.setEnabled(False)
@@ -185,6 +201,23 @@ class AgentPanel(QWidget):
             AgentState.CANCELLING: "Stopping…",
             AgentState.IDLE: "",
         }.get(state, ""))
+
+    def _on_usage(self, usage) -> None:
+        """Show what this task has cost so far.
+
+        Token counts are exact; any money figure is an estimate from published
+        list prices and is labelled as one. It is shown per task rather than as
+        a running total because a per-task number is the one a person can act
+        on - it tells them whether the way they phrased the request was
+        expensive.
+        """
+        model = self._session.config.model if self._session is not None else ""
+        line = usage.summary(model)
+        if not line:
+            self.usage.hide()
+            return
+        self.usage.setText(f"This task: {line}")
+        self.usage.show()
 
     def _on_finished(self) -> None:
         self.confirmation.hide()
