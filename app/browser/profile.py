@@ -13,11 +13,13 @@ readable in one place rather than inferred from what was left unconfigured.
 from __future__ import annotations
 
 import os
+from pathlib import Path
 
 from PySide6.QtCore import QObject, Signal
 from PySide6.QtWebEngineCore import (
     QWebEngineDownloadRequest,
     QWebEngineProfile,
+    QWebEngineScript,
     QWebEngineSettings,
 )
 
@@ -42,6 +44,7 @@ class BrowserProfile(QObject):
         self._configure_storage()
         self._configure_identity()
         self._configure_settings()
+        self._install_automation_script()
         self._profile.downloadRequested.connect(self._on_download_requested)
 
     # -- storage ---------------------------------------------------------
@@ -138,6 +141,31 @@ class BrowserProfile(QObject):
         }
         for attribute in disabled:
             settings.setAttribute(attribute, False)
+
+    # -- automation support ----------------------------------------------
+    def _install_automation_script(self) -> None:
+        """Inject the DOM-inspection script into an isolated world.
+
+        ApplicationWorld shares the DOM with the page but not its JavaScript
+        globals. That means:
+
+        * the page cannot read, call, replace or spy on our automation
+          helpers - a hostile page cannot forge a page snapshot or make a
+          click land somewhere else;
+        * we never have to stamp data-* attributes onto the page to track
+          elements, so nothing we do is observable in the page's own DOM.
+
+        Injecting at DocumentCreation on every frame means the script is ready
+        before any page code runs, including on pages that navigate instantly.
+        """
+        source = Path(__file__).with_name("page_script.js").read_text(encoding="utf-8")
+        script = QWebEngineScript()
+        script.setName("pybrowser-automation")
+        script.setSourceCode(source)
+        script.setInjectionPoint(QWebEngineScript.InjectionPoint.DocumentCreation)
+        script.setWorldId(QWebEngineScript.ScriptWorldId.ApplicationWorld)
+        script.setRunsOnSubFrames(True)
+        self._profile.scripts().insert(script)
 
     # -- accessors -------------------------------------------------------
     @property

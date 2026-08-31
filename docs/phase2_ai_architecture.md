@@ -27,8 +27,9 @@ UI work needs to touch.
 Phase 1's hardening pass built the control surface, because it was needed for
 the browser's own tests regardless of any AI:
 
-`app/browser/controller.py` — **`BrowserController`**, a plain browser API with
-no AI in it:
+See **[`browser_api.md`](browser_api.md)** for the full reference. In short,
+`app/browser/controller.py` provides **`BrowserController`**, a plain browser
+API with no AI in it:
 
 ```python
 navigate(url)          go_back()      open_tab(url)     get_current_page()
@@ -37,14 +38,21 @@ stop()                 select_tab(i)  list_tabs()       get_text(cb)
 click(ref)             type_text(ref, text, submit)     scroll(direction)
 ```
 
-`get_page_structure()` returns a `PageStructure`: URL, title, readable text,
-scroll position, and a list of `PageElement`s (role, accessible name, value,
-enabled, visible, href) each carrying an opaque handle `e0, e1, e2…`. Actions
-take those handles. A caller never supplies a CSS selector, so it cannot invent
-one that does not exist, and a stale handle is a clean failure rather than a
-click on the wrong element.
+`get_page_structure()` returns a `PageStructure`: URL, title, headings, forms,
+readable text, scroll position, and a list of `PageElement`s (role, accessible
+name, value, placeholder, disabled, visible, href, options…) each carrying a
+snapshot-scoped reference like `s3:e12`. Actions take those references. A
+caller never supplies a CSS selector, so it cannot invent one that does not
+exist, and a reference to an element that was removed *or recycled for
+different content* fails cleanly rather than clicking the wrong thing.
 
-This is already what the validation harness uses to drive the browser.
+Also already built: structured `ActionResult`s with machine-readable error
+codes, `BrowserFuture` for the async model, and `safety.py` /
+`describe_action()`, which classify how consequential an action is **before**
+it runs — the hook Phase 2's confirmation policy will read.
+
+This is what the validation harness and the 88 controller tests use to drive
+the browser.
 
 ## Modules Phase 2 still needs
 
@@ -55,7 +63,8 @@ app/agent/
   tools.py          Claude tool definitions + dispatch to BrowserController
   session.py        the agent loop: message history, tool turns, cancellation
   claude_client.py  Anthropic API transport (streaming)
-  safety.py         risk classification + ConfirmationPolicy implementation
+  confirm.py        turns requires_confirmation into an actual prompt
+                    (classification itself already lives in app/browser/safety.py)
 app/ui/
   agent_panel.py    chat transcript, input box, step list, confirm prompts
 ```

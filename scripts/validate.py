@@ -108,6 +108,19 @@ class Validator:
         self.site_results: list[dict] = []
 
     # -- helpers ---------------------------------------------------------
+    def _tab(self):
+        """The window's active tab widget.
+
+        The validation harness reaches past BrowserController deliberately: it
+        has to synthesise real mouse events and read raw DOM values to check
+        the browser itself. An automation caller gets no such access - see
+        tests/test_browser_controller.py::ApiBoundaryTests.
+        """
+        return self.window.tabs.current_tab()
+
+    def url(self) -> str:
+        return self.browser.get_current_page().page.url
+
     def check(self, name: str, ok: bool, detail: object = "") -> bool:
         (self.passed if ok else self.failed).append(name)
         print(f"  {'PASS' if ok else 'FAIL'}  {name}" + (f"  ({detail})" if detail != "" else ""))
@@ -125,7 +138,7 @@ class Validator:
         return predicate()
 
     def wait_load(self, tab=None, timeout_ms: int = 45000) -> bool:
-        tab = tab or self.browser.current_tab()
+        tab = tab or self._tab()
         done: list[bool] = []
         tab.load_finished.connect(done.append)
         self.pump(lambda: bool(done), timeout_ms)
@@ -136,29 +149,32 @@ class Validator:
         return bool(done) and done[-1]
 
     def js(self, script: str, tab=None, timeout_ms: int = 15000):
-        tab = tab or self.browser.current_tab()
+        tab = tab or self._tab()
         box: dict = {}
         tab.run_javascript(script, functools.partial(box.__setitem__, "v"))
         self.pump(lambda: "v" in box, timeout_ms)
         return box.get("v")
 
-    def real_click(self, ref: str, timeout_ms: int = 15000) -> bool:
+    def real_click(self, selector: str, timeout_ms: int = 15000) -> bool:
         """Click an element with a genuine mouse event at its real position.
 
-        Looks the element's viewport rectangle up first, so this works whatever
-        the page layout is, then delivers the click to the render widget the
-        way the windowing system would.
+        Takes a CSS selector against this harness's own fixture page - the
+        browser no longer stamps marker attributes into pages, by design, so
+        there is nothing to look an element reference up by from outside
+        BrowserController. That is the correct trade: an automation caller
+        addresses elements by reference, and this harness owns its fixture.
         """
         rect = self.js(
-            "(function(){var e=document.querySelector('[data-pybrowser-ref=\"%s\"]');"
+            "(function(){var e=document.querySelector(%s);"
             "if(!e)return '';e.scrollIntoView({block:'center'});"
             "var r=e.getBoundingClientRect();"
-            "return Math.round(r.left+r.width/2)+','+Math.round(r.top+r.height/2);})()" % ref
+            "return Math.round(r.left+r.width/2)+','+Math.round(r.top+r.height/2);})()"
+            % json.dumps(selector)
         )
         if not rect or "," not in str(rect):
             return False
         x, y = (int(float(v)) for v in str(rect).split(","))
-        view = self.browser.current_tab().view
+        view = self._tab().view
         target = view.focusProxy() or view
         QTest.mouseClick(target, Qt.MouseButton.LeftButton,
                          Qt.KeyboardModifier.NoModifier, QPoint(x, y))
@@ -166,9 +182,12 @@ class Validator:
 
     def structure(self, timeout_ms: int = 15000):
         box: dict = {}
-        self.browser.get_page_structure(functools.partial(box.__setitem__, "v"))
-        self.pump(lambda: "v" in box, timeout_ms)
-        return box.get("v")
+        result = self.browser.get_page_structure().wait(timeout_ms)
+        if result is None or not result.ok:
+            self.check("page structure could be captured", False,
+                       result.error.code if result and result.error else "no result")
+            return None
+        return result.data.get("structure")
 
     # -- part 1: real websites -------------------------------------------
     def test_sites(self, sites: list[str]) -> None:
@@ -180,9 +199,8 @@ class Validator:
             verdict, evidence = probe_host(url)
             print(f"  network probe (urllib, not the browser): {verdict} - {evidence}")
 
-            tab = self.browser.current_tab()
-            self.browser.navigate(url)
-            loaded = self.wait_load(tab, 60000)
+            tab = self._tab()
+            loaded = self.browser.navigate(url).wait(65000).ok
             error = tab.last_error
             result = {
                 "url": url,
@@ -254,8 +272,7 @@ class Validator:
         tabs = self.window.tabs
         nav = self.window.nav_bar
 
-        self.browser.navigate(base)
-        self.check("navigate to a website", self.wait_load())
+        self.check("navigate to a website", self.browser.navigate(base).wait().ok)
         self.check("page title updates", tabs.tabText(tabs.currentIndex()).startswith("JS Test"),
                    tabs.tabText(tabs.currentIndex()))
         self.check("URL updates in the address bar", nav.address_bar.text().startswith(base))
@@ -264,11 +281,10 @@ class Validator:
         nav.address_bar.setText(base + "second.html")
         nav.address_bar.returnPressed.emit()
         self.check("enter another URL", self.wait_load() and
-                   self.browser.get_current_page()["url"].endswith("second.html"))
+                   self.url().endswith("second.html"))
 
         # Click a real link via the controller's element handles.
-        self.browser.navigate(base)
-        self.wait_load()
+        self.browser.navigate(base).wait()
         struct = self.structure()
         self.check("page structure exposes elements", struct.element_count > 0, struct.element_count)
 
@@ -283,68 +299,55 @@ class Validator:
         # what an earlier version of this test tripped over and misreported as
         # a browser bug. (Worth knowing for Phase 2: an agent clicking through
         # injected JS will see the same effect.)
-        internal = next((e for e in struct.elements
-                         if e.role == "a" and "internal" in e.name.lower()), None)
-        clicked = self.real_click(internal.ref) if internal else False
-        self.pump(lambda: self.browser.get_current_page()["url"].endswith("second.html"), 15000)
-        self.check("click a link", clicked and
-                   self.browser.get_current_page()["url"].endswith("second.html"),
-                   self.browser.get_current_page()["url"])
+        clicked = self.real_click("#internal")
+        self.pump(lambda: self.url().endswith("second.html"), 15000)
+        self.check("click a link", clicked and self.url().endswith("second.html"), self.url())
 
         # Separately: the controller's programmatic click must still work.
-        self.browser.navigate(base)
-        self.wait_load()
+        self.browser.navigate(base).wait()
         struct = self.structure()
-        link = next((e for e in struct.elements if e.role == "a" and "internal" in e.name.lower()), None)
+        link = next((e for e in struct.elements if e.role == "link" and "internal" in e.name.lower()), None)
         if link:
             box: dict = {}
-            self.browser.click(link.ref, functools.partial(box.__setitem__, "v"))
-            self.pump(lambda: self.browser.get_current_page()["url"].endswith("second.html"), 15000)
+            self.browser.click(link.ref).wait()
+            self.pump(lambda: self.url().endswith("second.html"), 15000)
             self.check("controller.click() follows a link",
-                       self.browser.get_current_page()["url"].endswith("second.html"))
+                       self.url().endswith("second.html"))
         else:
             self.check("controller.click() follows a link", False, "no link element found")
 
         # Re-establish a clean history for the back/forward checks: base -> second
         # via a real click, so no entry is marked skippable.
-        self.browser.navigate(base)
-        self.wait_load()
-        struct = self.structure()
-        internal = next((e for e in struct.elements
-                         if e.role == "a" and "internal" in e.name.lower()), None)
-        if internal:
-            self.real_click(internal.ref)
-            self.pump(lambda: self.browser.get_current_page()["url"].endswith("second.html"), 15000)
+        self.browser.navigate(base).wait()
+        self.real_click("#internal")
+        self.pump(lambda: self.url().endswith("second.html"), 15000)
 
         # Back/forward can be served from the back-forward cache, in which case
         # Chromium emits no loadStarted/loadFinished at all. Waiting on a load
         # signal is therefore the wrong assertion - wait for the URL to change,
         # which is what the user and the address bar actually care about.
-        started = self.browser.go_back()
-        self.pump(lambda: not self.browser.get_current_page()["url"].endswith("second.html"), 20000)
+        started = self.browser.go_back().wait().ok
+        self.pump(lambda: not self.url().endswith("second.html"), 20000)
         self.check("go back", started and
-                   not self.browser.get_current_page()["url"].endswith("second.html"),
-                   self.browser.get_current_page()["url"])
-        started = self.browser.go_forward()
-        self.pump(lambda: self.browser.get_current_page()["url"].endswith("second.html"), 20000)
+                   not self.url().endswith("second.html"),
+                   self.url())
+        started = self.browser.go_forward().wait().ok
+        self.pump(lambda: self.url().endswith("second.html"), 20000)
         self.check("go forward", started and
-                   self.browser.get_current_page()["url"].endswith("second.html"),
-                   self.browser.get_current_page()["url"])
+                   self.url().endswith("second.html"),
+                   self.url())
         self.check("address bar follows back/forward",
                    self.window.nav_bar.address_bar.text().endswith("second.html"),
                    self.window.nav_bar.address_bar.text())
-        self.browser.reload()
-        self.check("reload", self.wait_load())
+        self.check("reload", self.browser.reload().wait().ok)
 
         # Typing into a field, through the controller.
-        self.browser.navigate(base)
-        self.wait_load()
+        self.browser.navigate(base).wait()
         struct = self.structure()
-        field = next((e for e in struct.elements if e.role in ("text", "search")), None)
+        field = next((e for e in struct.elements if e.role in ("textbox", "searchbox")), None)
         if field:
             box = {}
-            self.browser.type_text(field.ref, "hello world", callback=functools.partial(box.__setitem__, "v"))
-            self.pump(lambda: "v" in box, 10000)
+            self.browser.type_text(field.ref, "hello world").wait()
             self.check("type into a field",
                        self.js("document.getElementById('q').value") == "hello world")
         else:
@@ -352,17 +355,19 @@ class Validator:
 
         # Scrolling through the controller.
         before = self.js("window.scrollY")
-        self.browser.scroll(ScrollDirection.DOWN)
+        self.browser.scroll(ScrollDirection.DOWN).wait()
         self.pump(lambda: self.js("window.scrollY") != before, 5000)
         self.check("scroll down", self.js("window.scrollY") > before,
                    f"{before} -> {self.js('window.scrollY')}")
-        self.browser.scroll(ScrollDirection.TOP)
+        self.browser.scroll(ScrollDirection.TOP).wait()
         self.pump(lambda: self.js("window.scrollY") == 0, 5000)
         self.check("scroll back to top", self.js("window.scrollY") == 0)
 
         # Tabs.
         count = tabs.count()
-        second = self.browser.open_tab(base + "second.html")
+        opened = self.browser.open_tab(base + "second.html").wait()
+        second_id = opened.effects.new_tab_id
+        second = self.window.tabs.current_tab()
         self.check("open a new tab", tabs.count() == count + 1)
         self.wait_load(second)
         self.check("new tab navigates independently",
@@ -389,7 +394,7 @@ class Validator:
         self.check("Ctrl+R reloads", self.wait_load())
 
         # Bookmarks.
-        current_url = self.browser.get_current_page()["url"]
+        current_url = self.url()
         self.window._toggle_bookmark()
         self.check("Ctrl+D adds a bookmark", self.window.bookmarks.contains(current_url))
 
@@ -406,7 +411,7 @@ class Validator:
             ("http://127.0.0.1:1/", "blocked"),
         ]
         for url, expected in cases:
-            tab = self.browser.current_tab()
+            tab = self._tab()
             self.browser.navigate(url)
             self.wait_load(tab, 30000)
             error = tab.last_error
@@ -421,16 +426,17 @@ class Validator:
                            self.window.notice.isVisible())
 
         # An unusable address must not silently blank the page.
-        ok = self.browser.navigate("http://")
-        self.check("invalid URL is rejected, not silently ignored", ok is False)
+        result = self.browser.navigate("http://").wait()
+        self.check("invalid URL is rejected, not silently ignored",
+                   not result.ok and result.error.code == "INVALID_URL",
+                   result.error.code if result.error else "no error")
 
     # -- part 4: persistence ----------------------------------------------
     def test_persistence(self, base: str) -> dict:
         print("\n" + "=" * 72)
         print("PERSISTENCE (before restart)")
         print("=" * 72)
-        self.browser.navigate(base + "second.html")
-        self.wait_load()
+        self.browser.navigate(base + "second.html").wait()
         # Toggling the page bookmarked earlier would REMOVE it; bookmark a
         # different page so we are testing persistence, not the toggle.
         self.window._toggle_bookmark()

@@ -53,14 +53,16 @@ nss alsa-lib`.
 ## Tests
 
 ```bash
-python -m unittest discover -s tests -v          # 39 unit tests, no GUI needed
+python -m unittest discover -s tests -v          # 127 tests
 python scripts/smoke_test.py                     # headless end-to-end run
 python scripts/smoke_test.py --url https://pypi.org   # also load a real site
 python scripts/validate.py                       # full validation incl. real sites
 ```
 
-* **`tests/`** — pure unit tests for URL parsing, the SQLite stores, the
-  background writer, error mapping and the navigation guard. No GUI, ~0.2s.
+* **`tests/`** — 39 pure unit tests (URL parsing, SQLite stores, background
+  writer, error mapping, navigation guard) plus 88 BrowserController tests
+  driving a real browser against the deterministic fixture server in
+  `tests/fixture_server.py`.
 * **`smoke_test.py`** — boots the real window offscreen against a throwaway
   profile and asserts rendering, JS execution, tabs, back/forward,
   `target=_blank`, history and bookmarks.
@@ -124,6 +126,10 @@ app/
     tab.py                  BrowserTab - one web view + a small navigation API
     tab_manager.py          the tab strip; forwards the *current* tab's signals
     controller.py           BrowserController - the programmatic control surface
+    page_script.js          DOM inspection, injected into an isolated JS world
+    results.py              ActionResult / ActionError / error codes
+    futures.py              BrowserFuture - the async primitive
+    safety.py               sensitivity classification (advisory only)
     load_error.py           Chromium net error codes -> plain-English messages
   ui/                       widgets only; no SQL, no WebEngine internals
     main_window.py          chrome, menus, shortcuts, and all the wiring
@@ -161,14 +167,26 @@ invisible. Bookmarks and settings stay synchronous because the UI reads them
 back immediately.
 
 **4. One programmatic control surface.** `BrowserController` (in
-`browser/controller.py`) is the supported way to drive the browser from code:
-`navigate`, `go_back`, `go_forward`, `reload`, `open_tab`, `close_tab`,
-`get_current_page`, `get_page_structure`, `click`, `type_text`, `scroll`. It
-addresses page elements by opaque handles (`e0`, `e1`…) that
-`get_page_structure()` hands out, never by caller-supplied CSS selectors. The
-validation harness drives the browser entirely through it — which is the point:
-one audited surface, exercised by the tests, instead of callers reaching into
-Qt widgets.
+`browser/controller.py`) is the supported way to drive the browser from code —
+a general-purpose automation API with no AI in it. Full reference:
+**[`docs/browser_api.md`](docs/browser_api.md)**. Three properties define the
+boundary, each enforced by tests:
+
+* **Nothing Qt crosses it.** Every method takes and returns plain JSON-able
+  data. Tabs are addressed by a stable `tab_id`, never by index, and ids are
+  never reused.
+* **No arbitrary JavaScript.** There is no `execute_script`. DOM inspection is
+  implemented in *our* script, injected into Chromium's isolated
+  ApplicationWorld — invisible to the page, and not something a caller can
+  supply or influence.
+* **Asynchronous, and honest about it.** Operations return a `BrowserFuture`
+  resolving to a structured `ActionResult` that reports what the action
+  actually caused: `navigated`, `dom_changed`, `opened_tab`.
+
+Element references (`s3:e12`) are scoped to the snapshot that produced them and
+resolve to the exact DOM node captured — not to whatever a re-derived selector
+would match now. A node that was removed, or recycled for different content,
+produces a specific recoverable error instead of a click on the wrong thing.
 
 ### Security posture
 
@@ -228,6 +246,22 @@ says plainly that the connection was blocked and offers no bypass.
 - **Back/forward may emit no load signals at all** when served from the
   back-forward cache. UI state has to follow `urlChanged`, not just
   `loadFinished`.
+
+## Automation API
+
+`BrowserController` exposes the browser to code without exposing Qt:
+
+```python
+browser.navigate("https://example.com").wait()
+structure = browser.get_page_structure().wait().data["structure"]
+field = structure.first(role="searchbox")
+browser.type_text(field.ref, "cats", submit=True).then(handle_result)
+```
+
+See **[`docs/browser_api.md`](docs/browser_api.md)** for the page-structure
+format, the element-reference lifecycle and staleness rules, the error codes,
+the async model, and which operations should eventually require user
+confirmation.
 
 ## Phase 2 readiness
 

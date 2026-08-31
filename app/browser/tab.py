@@ -4,13 +4,16 @@ from __future__ import annotations
 
 from PySide6.QtCore import QUrl, Signal
 from PySide6.QtGui import QIcon
-from PySide6.QtWebEngineCore import QWebEnginePage
+from PySide6.QtWebEngineCore import QWebEnginePage, QWebEngineScript
 from PySide6.QtWebEngineWidgets import QWebEngineView
 from PySide6.QtWidgets import QVBoxLayout, QWidget
 
 from app.browser.load_error import LoadError
 from app.browser.profile import BrowserProfile
 from app.browser.web_page import BrowserPage
+
+MAIN_WORLD = QWebEngineScript.ScriptWorldId.MainWorld
+ISOLATED_WORLD = QWebEngineScript.ScriptWorldId.ApplicationWorld
 
 
 class BrowserTab(QWidget):
@@ -187,11 +190,28 @@ class BrowserTab(QWidget):
         return self._view.history().canGoForward()
 
     def run_javascript(self, script: str, callback=None) -> None:
-        """Evaluate JS in the page. The result is delivered asynchronously."""
+        """Evaluate JS in the page's own world.
+
+        Used by the browser's own features and by tests. This is NOT part of
+        the automation API: BrowserController never exposes it, so an
+        automation caller cannot run arbitrary script against a page.
+        """
         if callback is None:
-            self._page.runJavaScript(script)
+            self._page.runJavaScript(script, MAIN_WORLD)
         else:
-            self._page.runJavaScript(script, 0, callback)
+            self._page.runJavaScript(script, MAIN_WORLD, callback)
+
+    def run_isolated_javascript(self, script: str, callback=None) -> None:
+        """Run one of the browser's own scripts in the isolated world.
+
+        The automation support script (page_script.js) lives in
+        ApplicationWorld, where the page cannot see or tamper with it. Reaching
+        it requires evaluating in that same world.
+        """
+        if callback is None:
+            self._page.runJavaScript(script, ISOLATED_WORLD)
+        else:
+            self._page.runJavaScript(script, ISOLATED_WORLD, callback)
 
     def find_text(self, text: str, backward: bool = False) -> None:
         flags = QWebEnginePage.FindFlag.FindBackward if backward else QWebEnginePage.FindFlag(0)
