@@ -1,8 +1,19 @@
-# Phase 2 — AI agent architecture (design only)
+# Phase 2 — AI agent architecture (design notes)
 
-Nothing described here is implemented. This document records the design the
-Phase 1 code was built to accommodate, so that adding the agent is additive
-rather than a rewrite.
+> **Superseded.** Phase 2 is implemented. This file is kept for the record
+> of how it was designed before it was built; the description of what
+> actually shipped lives in **[`ai_agent.md`](ai_agent.md)**, and the
+> browser API it sits on is in **[`browser_api.md`](browser_api.md)**.
+>
+> The design below held up, with two changes worth noting:
+>
+> * `BrowserController` moved to `app/browser/` during the preparation
+>   pass — it turned out to be a browser abstraction, not an agent one.
+> * `app/agent/interfaces.py` (the Protocol sketches) was deleted once the
+>   real implementation existed, rather than left to drift out of date.
+
+This document records the design the Phase 1 code was built to accommodate, so
+that adding the agent would be additive rather than a rewrite. It was.
 
 ## Target layout
 

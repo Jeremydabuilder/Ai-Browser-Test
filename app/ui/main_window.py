@@ -80,6 +80,7 @@ class MainWindow(QMainWindow):
         self.splitter.setChildrenCollapsible(False)
         self.setCentralWidget(self.splitter)
         self._side_panel: QWidget | None = None
+        self._agent_session = None
 
         self._build_status_bar()
         self._build_menus()
@@ -136,6 +137,12 @@ class MainWindow(QMainWindow):
         self._add_action(
             bookmarks_menu, "Show &Bookmarks", "Ctrl+Shift+O", self._show_bookmarks
         )
+
+        tools_menu: QMenu = menubar.addMenu("&Tools")
+        self._agent_action = self._add_action(
+            tools_menu, "Show &AI Agent", "Ctrl+Shift+A", self._toggle_agent_panel)
+        self._agent_action.setCheckable(True)
+        self._add_action(tools_menu, "&Configure AI Agent…", None, self._configure_agent)
 
         help_menu: QMenu = menubar.addMenu("&Help")
         self._add_action(help_menu, f"&About {APP_NAME}", None, self._show_about)
@@ -373,7 +380,31 @@ class MainWindow(QMainWindow):
         )
 
     # ------------------------------------------------------------------
-    # Phase 2 hook: a place for the AI agent panel
+    # The AI agent panel
+    # ------------------------------------------------------------------
+    def _toggle_agent_panel(self) -> None:
+        """Show or hide the agent. Built lazily, on first use."""
+        if self._side_panel is not None:
+            self.set_side_panel(None)
+            self._agent_action.setChecked(False)
+            return
+        from app.ui.agent_panel import AgentPanel
+        from app.ui.agent_setup import build_session
+
+        if self._agent_session is None:
+            self._agent_session, reason = build_session(self.controller, self)
+            if self._agent_session is None:
+                self._show_status(f"AI agent unavailable: {reason}")
+        self.set_side_panel(AgentPanel(self._agent_session, self))
+        self._agent_action.setChecked(True)
+
+    def _configure_agent(self) -> None:
+        from app.ui.agent_setup import ApiKeyDialog
+
+        ApiKeyDialog(self).exec()
+
+    # ------------------------------------------------------------------
+    # Panel plumbing
     # ------------------------------------------------------------------
     def set_side_panel(self, panel: QWidget | None) -> None:
         """Install (or remove) the right-hand panel.
@@ -392,6 +423,10 @@ class MainWindow(QMainWindow):
 
     # ------------------------------------------------------------------
     def closeEvent(self, event) -> None:  # noqa: N802
+        # Stop the agent's worker thread before the window goes away.
+        if self._agent_session is not None:
+            self._agent_session.shutdown()
+            self._agent_session = None
         # Tear down render processes explicitly; otherwise Qt can emit warnings
         # about pages outliving their profile during interpreter shutdown.
         for tab in self.tabs.tabs():

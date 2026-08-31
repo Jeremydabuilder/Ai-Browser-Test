@@ -3,10 +3,15 @@
 A real desktop web browser written in Python. It renders actual websites with
 Qt WebEngine (Chromium) — no Node.js, no Electron, no npm, no mocked pages.
 
-**Phase 1 (this repo, working):** tabbed browsing, navigation, persistent
-history and bookmarks in SQLite, keyboard shortcuts.
-**Phase 2 (designed, not implemented):** a Claude-powered agent panel — see
-[`docs/phase2_ai_architecture.md`](docs/phase2_ai_architecture.md).
+**Phase 1:** tabbed browsing, navigation, persistent history and bookmarks in
+SQLite, keyboard shortcuts.
+**Phase 2:** a Claude-powered AI agent that operates web pages through the
+browser's structured API — see [`docs/ai_agent.md`](docs/ai_agent.md).
+
+> ⚠️ **This is an experimental AI browser, not a production one.** The agent
+> mitigates prompt injection but does not solve it, and its sensitivity
+> detection is heuristic. Read [`docs/ai_agent.md`](docs/ai_agent.md) §9 before
+> using it anywhere that matters.
 
 ---
 
@@ -53,16 +58,19 @@ nss alsa-lib`.
 ## Tests
 
 ```bash
-python -m unittest discover -s tests -v          # 127 tests
+python -m unittest discover -s tests -v          # 187 tests
 python scripts/smoke_test.py                     # headless end-to-end run
 python scripts/smoke_test.py --url https://pypi.org   # also load a real site
 python scripts/validate.py                       # full validation incl. real sites
+python scripts/agent_smoke.py --url https://pypi.org   # agent against a real site
 ```
 
 * **`tests/`** — 39 pure unit tests (URL parsing, SQLite stores, background
-  writer, error mapping, navigation guard) plus 88 BrowserController tests
-  driving a real browser against the deterministic fixture server in
-  `tests/fixture_server.py`.
+  writer, error mapping, navigation guard), 88 BrowserController tests, and 60
+  agent tests. All deterministic: the browser is real, the fixture server is
+  local (`tests/fixture_server.py`), and the model is scripted
+  (`tests/fake_claude.py`), so the agent suite needs no API key and makes no
+  network calls.
 * **`smoke_test.py`** — boots the real window offscreen against a throwaway
   profile and asserts rendering, JS execution, tabs, back/forward,
   `target=_blank`, history and bookmarks.
@@ -136,7 +144,14 @@ app/
     navigation_bar.py       toolbar + address bar (emits intent, never navigates)
     dialogs.py              history and bookmark managers
   utils/urls.py             "what the user typed" -> QUrl (or a search)
-  agent/interfaces.py       Phase 2 contracts only - not wired into the app
+  agent/                    the Claude agent (no Qt, no DOM, tools only)
+    claude_client.py        Anthropic SDK client, runs on a worker thread
+    tools.py                18 tool schemas, validation, untrusted fencing
+    session.py              the agent loop, state, cancellation, confirmation
+    prompt.py               system prompt and the trust boundary
+    keys.py                 API key from the OS keyring
+    config.py               model and context limits
+  ui/agent_panel.py         transcript, activity, input, Allow/Deny
 tests/                      unit tests (no GUI)
 scripts/smoke_test.py       headless end-to-end test
 docs/                       Phase 2 design
@@ -262,6 +277,40 @@ See **[`docs/browser_api.md`](docs/browser_api.md)** for the page-structure
 format, the element-reference lifecycle and staleness rules, the error codes,
 the async model, and which operations should eventually require user
 confirmation.
+
+## The AI agent
+
+Give the browser a task in English and it drives itself:
+
+```
+You: Open the second page and tell me its heading.
+  → Reading the page
+  → Clicking "Second page"
+  → Reading the page
+Claude: The heading is "Second page".
+```
+
+**Setup.** Get an API key from the [Anthropic Console](https://console.anthropic.com/),
+then either:
+
+* launch the browser and use **Tools → Configure AI Agent…** to store it in your
+  OS keyring (recommended); or
+* export it before launching:
+
+  ```bash
+  export ANTHROPIC_API_KEY="sk-ant-..."
+  python main.py
+  ```
+
+Open the panel with **Ctrl+Shift+A** (or Tools → Show AI Agent). The key is
+never written to the database, the repository, or any config file.
+
+Sensitive actions — purchases, deletion, sending messages, credentials, payment
+details, legal agreements, executable downloads — pause for an explicit
+**Allow / Deny**, decided by the *browser*, not by the model.
+
+See [`docs/ai_agent.md`](docs/ai_agent.md) for the architecture, the threading
+model, context limits, and an honest account of the security limitations.
 
 ## Phase 2 readiness
 

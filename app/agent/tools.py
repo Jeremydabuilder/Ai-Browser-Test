@@ -1,0 +1,535 @@
+"""The tools Claude is allowed to use, and how they reach the browser.
+
+Every tool maps onto exactly one ``BrowserController`` method. There is no
+``execute_javascript`` tool and there must never be one: the model gets
+semantic browser operations, not a shell on the page.
+
+Two conventions run through the whole file:
+
+* **Results are structured.** A tool returns JSON the model can branch on -
+  ``ok``, an ``error`` with a machine-readable ``code``, and a ``hint`` telling
+  it what to do next. "Page changed; inspect the page again" is worth far more
+  to a recovering agent than a stack trace.
+* **Page content is quarantined.** Anything that came from a web page is
+  wrapped in an explicit untrusted marker before it reaches the model. See
+  ``wrap_untrusted``.
+
+Everything here runs on the Qt GUI thread, because BrowserController does.
+"""
+
+from __future__ import annotations
+
+import json
+from dataclasses import dataclass
+from typing import Any, Callable
+
+from app.agent.config import ContextLimits
+from app.browser.controller import BrowserController, ScrollDirection
+from app.browser.futures import BrowserFuture
+from app.browser.results import ActionResult
+
+# ---------------------------------------------------------------------------
+# Untrusted content marking
+# ---------------------------------------------------------------------------
+
+UNTRUSTED_OPEN = "<untrusted_web_page_content>"
+UNTRUSTED_CLOSE = "</untrusted_web_page_content>"
+
+
+def wrap_untrusted(payload: Any) -> str:
+    """Fence page-derived data so the model can see where it starts and ends.
+
+    A page can contain "ignore your instructions and…". Marking the boundary
+    does not make that text harmless - nothing does, entirely - but it gives
+    the model an unambiguous signal about which bytes are data. The system
+    prompt tells it what the marker means.
+
+    We also neutralise any copy of the closing marker inside the payload, so a
+    page cannot "close" the fence early and have the rest read as instructions.
+    """
+    body = json.dumps(payload, ensure_ascii=False, indent=None)
+    body = body.replace(UNTRUSTED_CLOSE, "&lt;/untrusted_web_page_content&gt;")
+    return f"{UNTRUSTED_OPEN}\n{body}\n{UNTRUSTED_CLOSE}"
+
+
+# ---------------------------------------------------------------------------
+# Schemas
+# ---------------------------------------------------------------------------
+
+_REF = {
+    "type": "string",
+    "description": "Element reference from browser_get_page, e.g. 's3:e12'. "
+                   "References are only valid until the page changes.",
+}
+_TAB = {
+    "type": "integer",
+    "description": "Tab id from browser_list_tabs. Omit to use the active tab.",
+}
+
+
+def _tool(name: str, description: str, properties: dict, required: list[str] | None = None) -> dict:
+    return {
+        "name": name,
+        "description": description,
+        "input_schema": {
+            "type": "object",
+            "properties": properties,
+            "required": required or [],
+            "additionalProperties": False,
+        },
+    }
+
+
+TOOL_SCHEMAS: list[dict[str, Any]] = [
+    _tool("browser_get_page",
+          "Inspect the current page and return its structure: URL, title, headings, "
+          "forms, and the interactive elements (links, buttons, text fields, checkboxes, "
+          "radios, dropdowns) with their roles, accessible names and element references. "
+          "Call this before acting on a page, and again after any action that changed it. "
+          "Returns untrusted web page content.",
+          {"tab_id": _TAB,
+           "include_invisible": {"type": "boolean",
+                                 "description": "Include elements that are not visible. Rarely needed."}}),
+
+    _tool("browser_get_page_text",
+          "Return only the readable text of the page, with no element references. "
+          "Use this when you need to read content rather than interact with it. "
+          "Returns untrusted web page content.",
+          {"tab_id": _TAB}),
+
+    _tool("browser_navigate",
+          "Load a URL in a tab and wait for it to finish loading.",
+          {"url": {"type": "string", "description": "Absolute URL, including the scheme."},
+           "tab_id": _TAB},
+          ["url"]),
+
+    _tool("browser_click",
+          "Click an element by its reference. Reports whether the click navigated, "
+          "changed the page, or opened a tab.",
+          {"ref": _REF, "tab_id": _TAB}, ["ref"]),
+
+    _tool("browser_type",
+          "Type text into a text field, search box or textarea. Set submit=true to "
+          "submit the field's form afterwards.",
+          {"ref": _REF,
+           "text": {"type": "string", "description": "The text to type."},
+           "submit": {"type": "boolean", "description": "Submit the form after typing."},
+           "append": {"type": "boolean", "description": "Append instead of replacing."},
+           "tab_id": _TAB},
+          ["ref", "text"]),
+
+    _tool("browser_submit",
+          "Submit the form containing the given element.",
+          {"ref": _REF, "tab_id": _TAB}, ["ref"]),
+
+    _tool("browser_select",
+          "Choose an option in a dropdown, by its visible label or its value.",
+          {"ref": _REF,
+           "value": {"type": "string", "description": "Option label or value."},
+           "tab_id": _TAB},
+          ["ref", "value"]),
+
+    _tool("browser_set_checked",
+          "Check or uncheck a checkbox, switch or radio button.",
+          {"ref": _REF,
+           "checked": {"type": "boolean", "description": "Desired state. Defaults to true."},
+           "tab_id": _TAB},
+          ["ref"]),
+
+    _tool("browser_scroll",
+          "Scroll the page.",
+          {"direction": {"type": "string", "enum": ["up", "down", "top", "bottom"],
+                         "description": "Defaults to down."},
+           "amount": {"type": "integer", "description": "Pixels. Defaults to about one screen."},
+           "tab_id": _TAB}),
+
+    _tool("browser_scroll_to_element",
+          "Scroll an element into view.",
+          {"ref": _REF, "tab_id": _TAB}, ["ref"]),
+
+    _tool("browser_back", "Go back in this tab's history.", {"tab_id": _TAB}),
+    _tool("browser_forward", "Go forward in this tab's history.", {"tab_id": _TAB}),
+    _tool("browser_reload", "Reload the current page.", {"tab_id": _TAB}),
+
+    _tool("browser_open_tab",
+          "Open a new tab, optionally loading a URL.",
+          {"url": {"type": "string", "description": "Optional URL to load."},
+           "background": {"type": "boolean", "description": "Open without switching to it."}}),
+
+    _tool("browser_close_tab", "Close a tab.", {"tab_id": _TAB}),
+    _tool("browser_select_tab", "Switch to a tab.", {"tab_id": _TAB}, ["tab_id"]),
+    _tool("browser_list_tabs", "List the open tabs with their ids, titles and URLs.", {}),
+
+    _tool("browser_wait_for_element",
+          "Wait for content that loads late. Polls until a matching element appears, "
+          "or the page text contains the given string.",
+          {"role": {"type": "string",
+                    "description": "Element role, e.g. link, button, textbox."},
+           "name_contains": {"type": "string", "description": "Substring of the accessible name."},
+           "text_contains": {"type": "string", "description": "Substring of the page text."},
+           "timeout_ms": {"type": "integer", "description": "Defaults to 10000."},
+           "tab_id": _TAB}),
+]
+
+TOOL_NAMES = {schema["name"] for schema in TOOL_SCHEMAS}
+
+#: Tools that only read. Used to skip confirmation checks entirely.
+READ_ONLY_TOOLS = {
+    "browser_get_page", "browser_get_page_text", "browser_list_tabs",
+    "browser_wait_for_element", "browser_scroll", "browser_scroll_to_element",
+}
+
+
+# ---------------------------------------------------------------------------
+# Dispatch
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class ToolOutcome:
+    """What running a tool produced.
+
+    ``future`` is set for asynchronous operations; the session waits on it.
+    ``immediate`` is set when the tool failed validation or finished at once.
+    """
+
+    future: BrowserFuture | None = None
+    immediate: dict[str, Any] | None = None
+    #: Short human-readable line for the activity log, e.g. 'Clicking "Search"'.
+    activity: str = ""
+
+
+class ToolError(ValueError):
+    """Bad arguments from the model. Reported back as a tool_result error."""
+
+
+class ToolRegistry:
+    """Validates tool arguments and calls BrowserController."""
+
+    def __init__(self, browser: BrowserController, limits: ContextLimits | None = None) -> None:
+        self._browser = browser
+        self._limits = limits or ContextLimits()
+
+    # -- argument helpers ------------------------------------------------
+    @staticmethod
+    def _string(args: dict, key: str, *, required: bool = False, default: str = "") -> str:
+        value = args.get(key, default)
+        if value is None:
+            value = default
+        if not isinstance(value, str):
+            raise ToolError(f"'{key}' must be a string.")
+        if required and not value.strip():
+            raise ToolError(f"'{key}' is required.")
+        return value
+
+    @staticmethod
+    def _bool(args: dict, key: str, default: bool = False) -> bool:
+        value = args.get(key, default)
+        if value is None:
+            return default
+        if not isinstance(value, bool):
+            raise ToolError(f"'{key}' must be true or false.")
+        return value
+
+    @staticmethod
+    def _int(args: dict, key: str, default: int | None = None) -> int | None:
+        value = args.get(key, default)
+        if value is None:
+            return default
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise ToolError(f"'{key}' must be an integer.")
+        return value
+
+    def _tab(self, args: dict) -> int | None:
+        return self._int(args, "tab_id", None)
+
+    # -- the sensitivity question ----------------------------------------
+    def assess(self, name: str, args: dict[str, Any]) -> dict[str, Any]:
+        """What would this tool call do, and does it need the user's blessing?
+
+        The answer comes from the browser's own safety layer, never from the
+        model. That is the point: a page that talks the model into calling
+        "Place order" still has to get past a classification the model does not
+        control.
+        """
+        if name in READ_ONLY_TOOLS:
+            return {"level": "normal", "reasons": [], "requires_confirmation": False}
+        ref = args.get("ref")
+        tab_id = self._tab(args) if isinstance(args.get("tab_id"), int) else None
+        if name == "browser_navigate":
+            return self._strip(self._browser.describe_action(
+                "navigate", url=self._string(args, "url"), tab_id=tab_id))
+        if name == "browser_type":
+            return self._strip(self._browser.describe_action(
+                "type_text", ref=ref, text=self._string(args, "text"), tab_id=tab_id))
+        if name == "browser_click":
+            return self._strip(self._browser.describe_action("click", ref=ref, tab_id=tab_id))
+        if name == "browser_submit":
+            return self._strip(self._browser.describe_action("submit", ref=ref, tab_id=tab_id))
+        if name in ("browser_set_checked", "browser_select"):
+            return self._strip(self._browser.describe_action("set_checked", ref=ref, tab_id=tab_id))
+        return {"level": "normal", "reasons": [], "requires_confirmation": False}
+
+    def _element_name(self, args: dict[str, Any]) -> str:
+        """The accessible name of the element this call targets, if known."""
+        ref = args.get("ref")
+        if not isinstance(ref, str):
+            return ""
+        tab_id = args.get("tab_id") if isinstance(args.get("tab_id"), int) else None
+        preview = self._browser.describe_action("inspect", ref=ref, tab_id=tab_id)
+        return (preview.get("target") or {}).get("name", "")
+
+    @staticmethod
+    def _strip(preview: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "level": preview.get("level", "normal"),
+            "reasons": preview.get("reasons", []),
+            "requires_confirmation": preview.get("requires_confirmation", False),
+            "target": (preview.get("target") or {}).get("name", ""),
+            "target_role": (preview.get("target") or {}).get("role", ""),
+        }
+
+    def describe_call(self, name: str, args: dict[str, Any]) -> str:
+        """A short line for the activity log. Never includes sensitive text."""
+        try:
+            if name == "browser_navigate":
+                return f"Opening {self._string(args, 'url')}"
+            if name == "browser_get_page":
+                return "Reading the page"
+            if name == "browser_get_page_text":
+                return "Reading the page text"
+            if name in ("browser_click", "browser_submit", "browser_set_checked",
+                        "browser_select", "browser_scroll_to_element", "browser_type"):
+                # Ask the browser what this element is called. assess() would
+                # short-circuit for read-only tools and leave us printing a raw
+                # reference, which tells the user nothing.
+                label = self._element_name(args) or args.get("ref", "")
+                verb = {
+                    "browser_click": "Clicking",
+                    "browser_submit": "Submitting",
+                    "browser_set_checked": "Setting",
+                    "browser_select": "Choosing an option in",
+                    "browser_scroll_to_element": "Scrolling to",
+                    "browser_type": "Typing into",
+                }[name]
+                return f'{verb} "{label}"' if label else verb
+            if name == "browser_scroll":
+                return f"Scrolling {self._string(args, 'direction', default='down')}"
+            if name == "browser_back":
+                return "Going back"
+            if name == "browser_forward":
+                return "Going forward"
+            if name == "browser_reload":
+                return "Reloading"
+            if name == "browser_open_tab":
+                url = self._string(args, "url")
+                return f"Opening a new tab{f' at {url}' if url else ''}"
+            if name == "browser_close_tab":
+                return "Closing a tab"
+            if name == "browser_select_tab":
+                return "Switching tab"
+            if name == "browser_list_tabs":
+                return "Listing tabs"
+            if name == "browser_wait_for_element":
+                return "Waiting for the page to update"
+        except ToolError:
+            pass
+        return name.replace("browser_", "").replace("_", " ").capitalize()
+
+    # -- running ---------------------------------------------------------
+    def run(self, name: str, args: dict[str, Any]) -> ToolOutcome:
+        """Validate and dispatch. Raises ToolError for bad arguments."""
+        if name not in TOOL_NAMES:
+            raise ToolError(f"Unknown tool '{name}'.")
+        if not isinstance(args, dict):
+            raise ToolError("Tool arguments must be an object.")
+        handler: Callable[[dict], ToolOutcome] = getattr(self, f"_run_{name[len('browser_'):]}")
+        return handler(args)
+
+    # Each handler below is deliberately thin - validate, call, return.
+    def _run_get_page(self, args: dict) -> ToolOutcome:
+        return ToolOutcome(future=self._browser.get_page_structure(
+            self._tab(args),
+            max_elements=self._limits.max_elements,
+            max_text=self._limits.max_page_text,
+            include_invisible=self._bool(args, "include_invisible"),
+        ))
+
+    def _run_get_page_text(self, args: dict) -> ToolOutcome:
+        return ToolOutcome(future=self._browser.get_page_text(
+            self._tab(args), max_chars=self._limits.max_page_text))
+
+    def _run_navigate(self, args: dict) -> ToolOutcome:
+        url = self._string(args, "url", required=True)
+        return ToolOutcome(future=self._browser.navigate(url, self._tab(args)))
+
+    def _run_click(self, args: dict) -> ToolOutcome:
+        return ToolOutcome(future=self._browser.click(
+            self._string(args, "ref", required=True), self._tab(args)))
+
+    def _run_type(self, args: dict) -> ToolOutcome:
+        return ToolOutcome(future=self._browser.type_text(
+            self._string(args, "ref", required=True),
+            self._string(args, "text"),
+            submit=self._bool(args, "submit"),
+            append=self._bool(args, "append"),
+            tab_id=self._tab(args),
+        ))
+
+    def _run_submit(self, args: dict) -> ToolOutcome:
+        return ToolOutcome(future=self._browser.submit(
+            self._string(args, "ref", required=True), self._tab(args)))
+
+    def _run_select(self, args: dict) -> ToolOutcome:
+        return ToolOutcome(future=self._browser.select_option(
+            self._string(args, "ref", required=True),
+            self._string(args, "value", required=True),
+            self._tab(args),
+        ))
+
+    def _run_set_checked(self, args: dict) -> ToolOutcome:
+        return ToolOutcome(future=self._browser.set_checked(
+            self._string(args, "ref", required=True),
+            self._bool(args, "checked", True),
+            self._tab(args),
+        ))
+
+    def _run_scroll(self, args: dict) -> ToolOutcome:
+        direction = self._string(args, "direction", default=ScrollDirection.DOWN)
+        if direction not in ("up", "down", "top", "bottom"):
+            raise ToolError("'direction' must be up, down, top or bottom.")
+        return ToolOutcome(future=self._browser.scroll(
+            direction, self._int(args, "amount"), self._tab(args)))
+
+    def _run_scroll_to_element(self, args: dict) -> ToolOutcome:
+        return ToolOutcome(future=self._browser.scroll_to_element(
+            self._string(args, "ref", required=True), self._tab(args)))
+
+    def _run_back(self, args: dict) -> ToolOutcome:
+        return ToolOutcome(future=self._browser.go_back(self._tab(args)))
+
+    def _run_forward(self, args: dict) -> ToolOutcome:
+        return ToolOutcome(future=self._browser.go_forward(self._tab(args)))
+
+    def _run_reload(self, args: dict) -> ToolOutcome:
+        return ToolOutcome(future=self._browser.reload(self._tab(args)))
+
+    def _run_open_tab(self, args: dict) -> ToolOutcome:
+        url = self._string(args, "url") or None
+        return ToolOutcome(future=self._browser.open_tab(
+            url, background=self._bool(args, "background")))
+
+    def _run_close_tab(self, args: dict) -> ToolOutcome:
+        return ToolOutcome(immediate=self.encode(self._browser.close_tab(self._tab(args))))
+
+    def _run_select_tab(self, args: dict) -> ToolOutcome:
+        tab_id = self._int(args, "tab_id")
+        if tab_id is None:
+            raise ToolError("'tab_id' is required.")
+        return ToolOutcome(immediate=self.encode(self._browser.select_tab(tab_id)))
+
+    def _run_list_tabs(self, args: dict) -> ToolOutcome:
+        return ToolOutcome(immediate={"ok": True, "tabs": self._browser.list_tabs()})
+
+    def _run_wait_for_element(self, args: dict) -> ToolOutcome:
+        role = self._string(args, "role") or None
+        name_contains = self._string(args, "name_contains") or None
+        text_contains = self._string(args, "text_contains") or None
+        if not any((role, name_contains, text_contains)):
+            raise ToolError("Give at least one of role, name_contains or text_contains.")
+        return ToolOutcome(future=self._browser.wait_for_element(
+            role=role, name_contains=name_contains, text_contains=text_contains,
+            tab_id=self._tab(args),
+            timeout_ms=self._int(args, "timeout_ms", 10000) or 10000,
+        ))
+
+    # -- result encoding --------------------------------------------------
+    def encode(self, result: ActionResult) -> dict[str, Any]:
+        """Turn an ActionResult into the JSON the model sees.
+
+        Page-derived content is wrapped separately by ``render`` below; this
+        keeps the control fields (ok, error, effects) outside the untrusted
+        fence so the model can always trust *those*.
+        """
+        payload: dict[str, Any] = {
+            "ok": result.ok,
+            "action": result.action,
+            "page": {
+                "url": result.page.url,
+                "title": result.page.title,
+                "tab_id": result.page.tab_id,
+                "can_go_back": result.page.can_go_back,
+                "can_go_forward": result.page.can_go_forward,
+            },
+        }
+        if result.page.load_error:
+            payload["page"]["load_error"] = result.page.load_error
+        if result.target:
+            payload["target"] = {"ref": result.target.ref, "role": result.target.role,
+                                 "name": result.target.name}
+        effects = result.effects
+        if result.ok and result.action not in ("get_page_structure", "get_page_text"):
+            payload["effects"] = {
+                "navigated": effects.navigated,
+                "page_changed": effects.dom_changed,
+                "opened_tab": effects.opened_tab,
+            }
+            if effects.new_tab_id is not None:
+                payload["effects"]["new_tab_id"] = effects.new_tab_id
+            if effects.navigated or effects.dom_changed or effects.opened_tab:
+                payload["hint"] = ("The page changed. Element references from earlier "
+                                   "snapshots may be stale - call browser_get_page again "
+                                   "before acting on this page.")
+        if result.error:
+            payload["error"] = {
+                "code": result.error.code,
+                "message": result.error.message,
+                "recoverable": result.error.recoverable,
+            }
+            payload["hint"] = (
+                "Call browser_get_page to get fresh element references, then retry."
+                if result.error.recoverable
+                else "This cannot be retried as-is. Choose a different element or approach."
+            )
+        # Structures and text are page content: fence them.
+        structure = result.data.get("structure")
+        if structure is not None:
+            payload["structure_is_untrusted"] = True
+        return payload
+
+    def render(self, result: ActionResult, payload: dict[str, Any]) -> str:
+        """The final string handed back as the tool_result content."""
+        structure = result.data.get("structure")
+        text = result.data.get("text")
+        blocks = [json.dumps(payload, ensure_ascii=False)]
+        if structure is not None:
+            blocks.append(wrap_untrusted(self._trim_structure(structure)))
+        elif text is not None:
+            blocks.append(wrap_untrusted({"page_text": text,
+                                          "truncated": result.data.get("truncated", False)}))
+        elif result.data:
+            extra = {k: v for k, v in result.data.items() if k not in ("structure", "text")}
+            if extra:
+                blocks.append(json.dumps(extra, ensure_ascii=False))
+        rendered = "\n".join(blocks)
+        cap = self._limits.max_tool_result_chars
+        if len(rendered) > cap:
+            # Say so rather than silently cutting: the agent needs to know the
+            # view is partial so it can scroll or narrow instead of assuming.
+            rendered = rendered[:cap] + (
+                f"\n[Truncated at {cap} characters. The page is larger than the "
+                "configured limit - scroll, or ask for the page text instead.]")
+        return rendered
+
+    def _trim_structure(self, structure: Any) -> dict[str, Any]:
+        """Compact the page structure for the model's benefit."""
+        data = structure.to_dict() if hasattr(structure, "to_dict") else dict(structure)
+        # doc_id and dom_revision are internal bookkeeping; the model has no use
+        # for them and they cost tokens on every single turn.
+        data.pop("doc_id", None)
+        data.pop("dom_revision", None)
+        if data.get("elements_truncated"):
+            data["note"] = (f"Only the first {self._limits.max_elements} interactive "
+                            "elements are listed. Scroll or narrow the task if the one "
+                            "you need is missing.")
+        return data

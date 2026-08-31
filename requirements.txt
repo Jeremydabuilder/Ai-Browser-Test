@@ -2,3 +2,8 @@
 # PySide6 pulls in Qt WebEngine (Chromium), which does the actual page rendering.
 # Everything else we need (sqlite3, pathlib, argparse) ships with CPython 3.11+.
 PySide6>=6.6,<7
+
+# Phase 2 (the AI agent). The browser itself runs without these; the agent
+# panel reports that it is unconfigured if they are missing.
+anthropic>=1.0,<2
+keyring>=24            # OS keychain for the API key - never a file in the repo
