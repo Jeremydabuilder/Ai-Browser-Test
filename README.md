@@ -58,7 +58,7 @@ nss alsa-lib`.
 ## Tests
 
 ```bash
-python -m unittest discover -s tests -v          # 267 tests
+python -m unittest discover -s tests -v          # 304 tests
 python scripts/smoke_test.py                     # headless end-to-end run
 python scripts/smoke_test.py --url https://pypi.org   # also load a real site
 python scripts/validate.py                       # full validation incl. real sites
@@ -66,9 +66,11 @@ python scripts/real_sites.py                     # browser + agent vs. real site
 ```
 
 * **`tests/`** — 39 pure unit tests (URL parsing, SQLite stores, background
-  writer, error mapping, navigation guard), 88 BrowserController tests, and 60
-  60 agent tests and 52 Phase 3 tests (shadow DOM, element targeting,
-  multi-step tasks, prompt injection, find-in-page). All deterministic: the
+  writer, error mapping, navigation guard), 88 BrowserController tests, 60
+  agent tests, 52 Phase 3 tests (shadow DOM, element targeting, multi-step
+  tasks, prompt injection, find-in-page), 28 credential and key tests, and 37
+  cost tests (request caching shape, token accounting, snapshot pruning). All
+  deterministic: the
   browser is real, the fixture server is local (`tests/fixture_server.py`), and
   the model is scripted (`tests/fake_claude.py`), so the agent suite needs no
   API key and makes no network calls.
