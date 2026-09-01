@@ -58,19 +58,21 @@ nss alsa-lib`.
 ## Tests
 
 ```bash
-python -m unittest discover -s tests -v          # 304 tests
+python -m unittest discover -s tests -v          # 355 tests
 python scripts/smoke_test.py                     # headless end-to-end run
 python scripts/smoke_test.py --url https://pypi.org   # also load a real site
 python scripts/validate.py                       # full validation incl. real sites
 python scripts/real_sites.py                     # browser + agent vs. real sites
 ```
 
+* **`ARCHITECTURE.md`** — how the layers fit together, the permission tiers,
+  and where each unbuilt AI capability would go.
 * **`tests/`** — 39 pure unit tests (URL parsing, SQLite stores, background
   writer, error mapping, navigation guard), 88 BrowserController tests, 60
   agent tests, 52 Phase 3 tests (shadow DOM, element targeting, multi-step
   tasks, prompt injection, find-in-page), 28 credential and key tests, and 37
-  cost tests (request caching shape, token accounting, snapshot pruning). All
-  deterministic: the
+  cost tests (request caching shape, token accounting, snapshot pruning), 28
+  new-tab tests, 14 download tests and 9 AI-panel tests. All deterministic: the
   browser is real, the fixture server is local (`tests/fixture_server.py`), and
   the model is scripted (`tests/fake_claude.py`), so the agent suite needs no
   API key and makes no network calls.
@@ -98,7 +100,8 @@ a browser bug when the real origin served another client successfully.
 | `Ctrl+1`…`9` | Jump to tab (9 = last) | | `Ctrl+D` | Bookmark this page |
 | `Ctrl+H` | History | | `Ctrl+Shift+O` | Bookmarks |
 | `Ctrl+F` | Find in page | | `Ctrl+G` / `Ctrl+Shift+G` | Find next / previous |
-| `Ctrl+Shift+A` | Show AI agent | | | |
+| `Ctrl+Shift+A` | Show AI agent | | `Ctrl+J` | Downloads |
+| `Ctrl+,` | Settings | | | |
 | `Ctrl+±` / `Ctrl+0` | Zoom | | `F11` | Full screen |
 
 ## Where your data lives
@@ -121,6 +124,16 @@ Inspect it with any SQLite client:
 sqlite3 ~/.local/share/PyBrowser/browser.sqlite3 \
   "SELECT title, url, visited_at FROM history ORDER BY id DESC LIMIT 10;"
 ```
+
+## The new tab page
+
+New tabs open **PyBrowser New Tab**, a real page served from `pybrowser://newtab/`
+inside the browser — instant, works offline, sends nothing anywhere. It carries
+the search box, recent pages, bookmarks and an entry point to the AI panel.
+
+The search provider is where searches *go*; it is not the home page. Change
+either in **Tools → Settings** (`Ctrl+,`): new tabs can open PyBrowser New Tab,
+your search provider's home page, a custom address, or a blank page.
 
 ## Architecture
 
