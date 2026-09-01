@@ -60,6 +60,7 @@ nss alsa-lib`.
 ```bash
 python -m unittest discover -s tests -v          # 355 tests
 python scripts/smoke_test.py                     # headless end-to-end run
+python scripts/feature_check.py                  # 28-point feature checklist
 python scripts/smoke_test.py --url https://pypi.org   # also load a real site
 python scripts/validate.py                       # full validation incl. real sites
 python scripts/real_sites.py                     # browser + agent vs. real sites
