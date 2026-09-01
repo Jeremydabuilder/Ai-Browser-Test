@@ -204,6 +204,14 @@ class DataTests(unittest.TestCase):
         self.assertIn("data:image", html, "Py is missing from the new tab page")
         self.assertIn("Hey, I\u2019m Py", html)
 
+    def test_py_is_inlined_exactly_once(self) -> None:
+        """The artwork is large; inlining it twice doubles every new tab.
+
+        It happened: the substitution token was also named in a comment, and a
+        plain string replace does not know the difference.
+        """
+        self.assertEqual(render(NewTabData()).count("data:image"), 1)
+
     def test_the_offers_say_what_they_are_for(self) -> None:
         # "Compare" on its own is a word, not an offer.
         html = render(NewTabData())
@@ -369,3 +377,43 @@ class RenderedPageTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ThemeTests(unittest.TestCase):
+    """The page must not disagree with the window around it."""
+
+    def test_the_theme_is_stated_explicitly(self) -> None:
+        # Chromium's prefers-color-scheme comes from the platform and the
+        # chrome's theme comes from the Qt palette; a page left to guess showed
+        # a white page inside a dark browser.
+        self.assertIn('data-theme="dark"', render(NewTabData(), dark=True))
+        self.assertIn('data-theme="light"', render(NewTabData(), dark=False))
+
+    def test_the_dark_palette_is_defined_for_the_explicit_attribute(self) -> None:
+        html = render(NewTabData(), dark=True)
+        self.assertIn(':root[data-theme="dark"]', html)
+
+    def test_prefers_color_scheme_still_works_as_a_fallback(self) -> None:
+        html = render(NewTabData(), dark=False)
+        self.assertIn("prefers-color-scheme: dark", html)
+        # ...but never overrides an explicit light choice.
+        self.assertIn(':root:not([data-theme="light"])', html)
+
+    def test_a_broken_theme_lookup_falls_back_instead_of_raising(self) -> None:
+        """A theme lookup must never be able to cost someone a new tab.
+
+        The first version of this test patched the function it meant to
+        exercise and proved nothing; this breaks what that function depends on
+        and checks the guard inside it actually catches.
+        """
+        from app.browser import newtab
+        from app.ui import theme
+
+        original = theme.palette_for
+        theme.palette_for = lambda _app: (_ for _ in ()).throw(RuntimeError("no palette"))
+        try:
+            self.assertFalse(newtab._browser_is_dark())
+            # The wordmark is split as Py<span>Browser</span>.
+            self.assertIn("Py<span>Browser</span>", render(NewTabData()))
+        finally:
+            theme.palette_for = original

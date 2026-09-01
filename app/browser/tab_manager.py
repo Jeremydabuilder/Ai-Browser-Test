@@ -219,8 +219,12 @@ class TabManager(QTabWidget):
         tab's rectangle is not yet its final one - positioning from it put the
         button on top of the second-to-last tab. Deferring by one event-loop
         turn is the difference between measuring the strip and guessing at it.
+
+        The timer is bound to this widget as its context object so Qt cancels
+        it if the tab manager is destroyed first - otherwise a torn-down window
+        still gets one last callback, and it raises on the dead C++ object.
         """
-        QTimer.singleShot(0, self._position_new_tab_button)
+        QTimer.singleShot(0, self, self._position_new_tab_button)
 
     # -- loading indicator --------------------------------------------------
     def _advance_spinner(self) -> None:

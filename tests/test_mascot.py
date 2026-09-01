@@ -30,11 +30,14 @@ from app.ui.mascot import (  # noqa: E402
     ALL_STATES,
     COMPANION_TEXT,
     TOOLTIPS,
+    VARIANTS,
     Mascot,
     MascotState,
+    Variant,
     asset_for,
     has_final_artwork,
     is_animated,
+    reduced_motion,
     state_for_agent,
 )
 
@@ -73,12 +76,21 @@ class _Assets:
 class ShippedArtworkTests(unittest.TestCase):
     """What the repository actually carries today."""
 
-    def test_a_placeholder_exists_for_every_state(self) -> None:
+    def test_a_placeholder_exists_for_every_state_and_crop(self) -> None:
         for state in ALL_STATES:
-            path = asset_for(state)
-            self.assertIsNotNone(path, f"nothing to draw for {state}")
-            self.assertTrue(os.path.basename(path).startswith(state),
-                            f"{state} fell back to {os.path.basename(path)}")
+            for variant in VARIANTS:
+                path = asset_for(state, variant)
+                self.assertIsNotNone(path, f"nothing to draw for {state}/{variant}")
+                self.assertEqual(os.path.basename(path), f"{state}-{variant}.svg",
+                                 f"{state}/{variant} fell back unexpectedly")
+
+    def test_the_two_crops_are_different_drawings(self) -> None:
+        # A bust is not a full body scaled down - cramming the whole figure
+        # into a 40px slot is what this variant system exists to avoid.
+        for state in ALL_STATES:
+            full = asset_for(state, Variant.FULL)
+            panel = asset_for(state, Variant.PANEL)
+            self.assertNotEqual(full, panel, state)
 
     def test_the_placeholders_are_kept_apart_from_the_final_artwork(self) -> None:
         # The final Py drops into assets/mascot/; the stand-in lives one level
@@ -308,3 +320,124 @@ class UnknownStateTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class VariantTests(unittest.TestCase):
+    """Two crops of one character, with the old naming still working."""
+
+    def test_a_state_prefers_the_crop_it_was_asked_for(self) -> None:
+        with _Assets() as assets:
+            assets.write(assets.final, "working-panel.svg")
+            assets.write(assets.final, "working-full.svg")
+            self.assertTrue(
+                asset_for("working", Variant.FULL).endswith("working-full.svg"))
+            self.assertTrue(
+                asset_for("working", Variant.PANEL).endswith("working-panel.svg"))
+
+    def test_the_old_plain_names_still_work(self) -> None:
+        """Backwards compatibility: a set with no -full/-panel suffixes."""
+        with _Assets() as assets:
+            for state in ALL_STATES:
+                assets.write(assets.final, f"{state}.svg")
+            for variant in VARIANTS:
+                self.assertTrue(
+                    asset_for("thinking", variant).endswith("thinking.svg"),
+                    f"the plain filename stopped working for {variant}")
+
+    def test_this_state_uncropped_beats_idle_in_the_right_crop(self) -> None:
+        # A drawing of the right moment matters more than a drawing of the
+        # right shape, so "working.svg" wins over "idle-panel.svg".
+        with _Assets() as assets:
+            assets.write(assets.final, "working.svg")
+            assets.write(assets.final, "idle-panel.svg")
+            self.assertTrue(
+                asset_for("working", Variant.PANEL).endswith("working.svg"))
+
+    def test_a_missing_crop_falls_back_to_idle_in_that_crop(self) -> None:
+        with _Assets() as assets:
+            assets.write(assets.final, "idle-full.svg")
+            self.assertTrue(
+                asset_for("approval", Variant.FULL).endswith("idle-full.svg"))
+
+    def test_one_final_file_outranks_the_whole_placeholder_set(self) -> None:
+        with _Assets() as assets:
+            for state in ALL_STATES:
+                for variant in VARIANTS:
+                    assets.write(assets.placeholder, f"{state}-{variant}.svg")
+            assets.write(assets.final, "idle-full.svg")
+            self.assertEqual(os.path.dirname(asset_for("complete", Variant.FULL)),
+                             assets.final)
+            self.assertTrue(has_final_artwork())
+
+    def test_an_unknown_variant_is_treated_as_the_panel_crop(self) -> None:
+        self.assertEqual(asset_for("idle", "sideways"), asset_for("idle", Variant.PANEL))
+
+    def test_the_widget_keeps_a_tall_box(self) -> None:
+        full = Mascot(120, variant=Variant.FULL, height=168)
+        self.assertEqual((full.width(), full.height()), (120, 168))
+        for state in ALL_STATES:
+            full.set_state(state)
+            self.assertFalse(full.pixmap().isNull(), state)
+
+    def test_resizing_can_change_both_dimensions(self) -> None:
+        full = Mascot(100, variant=Variant.FULL, height=140)
+        full.set_size(80, 112)
+        self.assertEqual((full.width(), full.height()), (80, 112))
+
+    def test_the_new_tab_page_uses_the_full_crop(self) -> None:
+        import base64
+
+        from app.browser.newtab import NewTabData, render
+
+        html = render(NewTabData())
+        payload = html.split("base64,", 1)[1].split('"', 1)[0]
+        drawing = base64.b64decode(payload).decode("utf-8")
+        # Compared against the file itself rather than against a viewBox the
+        # artwork happens to have today: the whole point of the drop-in
+        # contract is that the final drawing may be any size it likes.
+        with open(asset_for(MascotState.IDLE, Variant.FULL), encoding="utf-8") as handle:
+            self.assertEqual(drawing, handle.read(),
+                             "the new tab page is not using the full-body crop")
+        self.assertNotEqual(asset_for(MascotState.IDLE, Variant.FULL),
+                            asset_for(MascotState.IDLE, Variant.PANEL))
+
+
+class ArtworkFirstMotionTests(unittest.TestCase):
+    """Real artwork keeps its own expression."""
+
+    def test_the_placeholder_is_allowed_to_be_warped(self) -> None:
+        mascot = Mascot(40)
+        mascot.set_state(MascotState.THINKING)
+        mascot._blinking = 2
+        self.assertFalse(has_final_artwork())
+        self.assertFalse(mascot._animated_frame(mascot._still).isNull())
+
+    def test_real_artwork_is_never_squashed_or_leaned(self) -> None:
+        """A squash reads as a blink on flat shapes and as a fault on a drawing.
+
+        Checked by comparing frames: with real artwork installed, the only
+        motion left is a translation, so a frame with blinking forced on must
+        be identical to one without it.
+        """
+        with _Assets() as assets:
+            for variant in VARIANTS:
+                assets.write(assets.final, f"idle-{variant}.svg")
+            self.assertTrue(has_final_artwork())
+            mascot = Mascot(40)
+            mascot.set_state(MascotState.THINKING)
+            mascot._elapsed = 0
+            plain = mascot._animated_frame(mascot._still).toImage()
+            mascot._blinking = 2
+            mascot._elapsed = 0
+            blinking = mascot._animated_frame(mascot._still).toImage()
+            self.assertEqual(plain, blinking,
+                             "the synthetic blink was applied to real artwork")
+
+    @unittest.skipIf(reduced_motion(), "the machine asked for no animation")
+    def test_real_artwork_still_breathes(self) -> None:
+        # Translation cannot distort a drawing, so it stays.
+        with _Assets() as assets:
+            for variant in VARIANTS:
+                assets.write(assets.final, f"idle-{variant}.svg")
+            mascot = Mascot(40)
+            self.assertTrue(mascot._frames.isActive())

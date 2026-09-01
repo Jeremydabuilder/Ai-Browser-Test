@@ -238,16 +238,35 @@ class NewTabSchemeHandler(QWebEngineUrlSchemeHandler):
 # ---------------------------------------------------------------------------
 
 
-def render(data: NewTabData) -> str:
+def render(data: NewTabData, dark: bool | None = None) -> str:
     """The complete page. No external requests: no fonts, no CDN, no analytics.
 
     Everything is inline, which is what makes it appear instantly and work with
     no network at all - including the mascot, which is embedded rather than
     fetched so the page never waits on a file read to finish drawing.
     """
+    if dark is None:
+        dark = _browser_is_dark()
     return (_TEMPLATE
+            .replace("__THEME__", ' data-theme="dark"' if dark else ' data-theme="light"')
             .replace("__MASCOT__", _mascot_markup())
             .replace("__DATA__", data.to_json()))
+
+
+def _browser_is_dark() -> bool:
+    """Whether the browser's own chrome is dark right now.
+
+    Asked of the same palette the toolbar and tabs use, so the page inside the
+    window and the window itself can never disagree.
+    """
+    try:
+        from PySide6.QtWidgets import QApplication
+
+        from app.ui import theme
+
+        return theme.palette_for(QApplication.instance()) is theme.DARK
+    except Exception:  # noqa: BLE001 - a theme lookup must not cost a new tab
+        return False
 
 
 def _mascot_markup() -> str:
@@ -259,9 +278,11 @@ def _mascot_markup() -> str:
     no benefit on a page this small.
     """
     try:
-        from app.ui.mascot import MascotState, asset_for
+        from app.ui.mascot import MascotState, Variant, asset_for
 
-        path = asset_for(MascotState.IDLE)
+        # The full-body crop: this is where you meet Py, and there is room for
+        # a pose. The agent panel takes the bust crop of the same character.
+        path = asset_for(MascotState.IDLE, Variant.FULL)
         if path:
             import base64
             import mimetypes
@@ -278,7 +299,7 @@ def _mascot_markup() -> str:
 
 #: The stand-in mark, until the character exists. Matches app/ui/mascot.py.
 _PLACEHOLDER_MARK = (
-    '<svg class="mark" viewBox="0 0 36 36" fill="none" aria-hidden="true">'
+    '<svg class="mark" viewBox="0 0 36 40" fill="none" aria-hidden="true">'
     '<rect x="3" y="7" width="30" height="26" rx="9" fill="currentColor" fill-opacity=".12"/>'
     '<rect x="3" y="7" width="30" height="26" rx="9" stroke="currentColor"'
     ' stroke-opacity=".4" stroke-width="1.4"/>'
@@ -292,7 +313,7 @@ _PLACEHOLDER_MARK = (
 
 
 _TEMPLATE = """<!doctype html>
-<html lang="en">
+<html lang="en"__THEME__>
 <head>
 <meta charset="utf-8">
 <title>New Tab</title>
@@ -317,8 +338,13 @@ _TEMPLATE = """<!doctype html>
     --radius-md: 9px;
     --radius-lg: 14px;
   }
+  /* Two ways in. The browser tells the page its theme explicitly with
+     data-theme, because Chromium's prefers-color-scheme comes from the
+     platform and the chrome's comes from the Qt palette - and a page that
+     disagrees with the window around it looks broken. prefers-color-scheme is
+     kept as the fallback for when nothing was passed. */
   @media (prefers-color-scheme: dark) {
-    :root {
+    :root:not([data-theme="light"]) {
       --bg: #141419;
       --surface: #1e1e25;
       --surface-alt: #262630;
@@ -332,6 +358,20 @@ _TEMPLATE = """<!doctype html>
       --shadow: 0 1px 2px rgba(0, 0, 0, .35), 0 10px 30px rgba(0, 0, 0, .35);
       --shadow-lift: 0 2px 6px rgba(0, 0, 0, .4), 0 16px 40px rgba(0, 0, 0, .45);
     }
+  }
+  :root[data-theme="dark"] {
+    --bg: #141419;
+    --surface: #1e1e25;
+    --surface-alt: #262630;
+    --line: #30303b;
+    --text: #eeeef3;
+    --muted: #9797a6;
+    --disabled: #61616e;
+    --accent: #8b86ff;
+    --accent-soft: #282740;
+    --glow: rgba(139, 134, 255, .10);
+    --shadow: 0 1px 2px rgba(0, 0, 0, .35), 0 10px 30px rgba(0, 0, 0, .35);
+    --shadow-lift: 0 2px 6px rgba(0, 0, 0, .4), 0 16px 40px rgba(0, 0, 0, .45);
   }
   * { box-sizing: border-box; }
   html, body { height: 100%; }
@@ -373,10 +413,13 @@ _TEMPLATE = """<!doctype html>
 
   .brand {
     display: flex; flex-direction: column; align-items: center;
-    gap: 12px; margin-bottom: 26px; user-select: none;
+    gap: 10px; margin-bottom: 24px; user-select: none;
   }
   .mark {
-    width: 64px; height: 64px; color: var(--accent);
+    /* Full-body Py, so the box is taller than it is wide and the width
+       follows the artwork rather than the other way round. Whatever aspect
+       the final drawing has, it keeps it. */
+    width: auto; height: 210px; color: var(--accent);
     cursor: pointer;
     border-radius: 50%;
     transition: transform .16s ease;
@@ -386,9 +429,15 @@ _TEMPLATE = """<!doctype html>
   }
   /* Below about 420px the character competes with the search box for the
      little vertical space there is, so it steps down rather than dominating. */
+  /* Py steps down before crowding the search box, rather than pushing it off
+     the screen: on a short window the box is the thing you came for. */
+  @media (max-height: 760px) {
+    .mark { height: 150px; }
+  }
   @media (max-height: 620px), (max-width: 420px) {
-    .mark { width: 44px; height: 44px; }
-    main { padding-top: clamp(24px, 8vh, 72px); }
+    .mark { height: 108px; }
+    main { padding-top: clamp(20px, 6vh, 60px); }
+    .brand { gap: 8px; margin-bottom: 18px; }
   }
   /* Barely there on purpose: enough that the page is not a still image,
      little enough that it never asks to be watched. */
@@ -488,7 +537,10 @@ _TEMPLATE = """<!doctype html>
     /* Equal height whether the blurb wraps or not - a row of cards that
        disagree about their height is the fastest way to look unfinished. */
     min-height: 62px;
-    display: flex; flex-direction: column; justify-content: center;
+    /* Titles start at the top, not centred: a blurb that wraps onto a second
+       line would otherwise push its title up out of line with its neighbours,
+       and a row of headings at four different heights reads as broken. */
+    display: flex; flex-direction: column; justify-content: flex-start;
     cursor: pointer;
     color: var(--text);
     transition: border-color .14s ease, box-shadow .14s ease, transform .08s ease;
@@ -543,9 +595,10 @@ _TEMPLATE = """<!doctype html>
 <body>
 <main>
   <div class="brand">
-    <!-- __MASCOT__ is replaced with the character's artwork when there is
-         any; otherwise this placeholder mark is used. Both are square and the
-         same size, so the layout does not move when the artwork arrives. -->
+    <!-- The token below is swapped for Py's artwork at render time. Do not
+         mention it by name anywhere else in this file: the substitution is a
+         plain string replace, and a second mention gets substituted too -
+         which inlined the whole drawing a second time, inside a comment. -->
     __MASCOT__
     <div class="wordmark">Py<span>Browser</span></div>
     <p class="greeting" id="greeting">Hey, I\u2019m Py. What shall we explore?</p>

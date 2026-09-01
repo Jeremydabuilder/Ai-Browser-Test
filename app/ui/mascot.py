@@ -55,6 +55,24 @@ FORMATS = (".gif", ".webp", ".apng", ".png", ".svg")
 ANIMATED_FORMATS = (".gif", ".webp", ".apng")
 
 
+class Variant:
+    """How much of Py is shown.
+
+    The same character in two crops, because the two places Py appears want
+    different things. The new-tab page is where you meet Py and there is room
+    for a pose; the agent panel is a 40px slot beside a conversation, where a
+    full-body figure would be an unreadable smudge.
+    """
+
+    #: Head and shoulders. The agent panel.
+    PANEL = "panel"
+    #: The whole character. The new-tab page.
+    FULL = "full"
+
+
+VARIANTS = (Variant.PANEL, Variant.FULL)
+
+
 class MascotState:
     """What Py is doing, in the only terms the character needs to know.
 
@@ -124,24 +142,45 @@ def reduced_motion() -> bool:
 # ---------------------------------------------------------------------------
 
 
-def asset_for(state: str, *, high_dpi: bool = False) -> str | None:
-    """The best artwork file for a state, or None if there is none anywhere.
+def asset_for(state: str, variant: str = Variant.PANEL, *,
+              high_dpi: bool = False) -> str | None:
+    """The best artwork file for a state and crop, or None if there is none.
 
-    Real artwork beats the placeholder, and the requested state beats idle -
-    in that order, so a single final ``idle.png`` outranks a full set of
-    placeholders, which is what makes dropping in the real Py feel immediate.
+    The search runs widest-first through four names, then repeats the whole
+    thing in the placeholder folder:
+
+    1. ``<state>-<variant>``  - this state, this crop
+    2. ``<state>``            - this state, uncropped (the original naming,
+                                still supported so existing sets keep working)
+    3. ``idle-<variant>``     - the fallback state, this crop
+    4. ``idle``               - the fallback state, uncropped
+
+    Real artwork beats the placeholder at every one of those, which is what
+    makes dropping in the final Py feel immediate: one ``idle-full.png`` and
+    the new-tab page is the new character, placeholders and all.
     """
     for directory in (ASSET_DIR, PLACEHOLDER_DIR):
-        for name in (state, MascotState.IDLE):
+        for name in _candidates(state, variant):
             found = _in_directory(directory, name, high_dpi)
             if found:
                 return found
     return None
 
 
+def _candidates(state: str, variant: str) -> tuple[str, ...]:
+    """Every filename worth trying for a state and crop, best first."""
+    if variant not in VARIANTS:
+        variant = Variant.PANEL
+    names = [f"{state}-{variant}", state]
+    if state != MascotState.IDLE:
+        names += [f"{MascotState.IDLE}-{variant}", MascotState.IDLE]
+    return tuple(names)
+
+
 def _in_directory(directory: str, name: str, high_dpi: bool) -> str | None:
+    """The first existing file for one exact name, preferring @2x on retina."""
     for extension in FORMATS:
-        if high_dpi and extension not in (".svg",):
+        if high_dpi and extension != ".svg":
             retina = os.path.join(directory, f"{name}@2x{extension}")
             if os.path.isfile(retina):
                 return retina
@@ -156,8 +195,17 @@ def is_animated(path: str) -> bool:
 
 
 def has_final_artwork() -> bool:
-    """True once real artwork has been dropped in - placeholders do not count."""
-    return _in_directory(ASSET_DIR, MascotState.IDLE, False) is not None
+    """True once real artwork has been dropped in - placeholders do not count.
+
+    Used for more than a status line: the synthetic animation below is toned
+    down once there is a real illustration to animate, because a squash that
+    reads as a blink on a flat placeholder reads as a distortion on a drawing.
+    """
+    for name in (f"{MascotState.IDLE}-{Variant.PANEL}",
+                 f"{MascotState.IDLE}-{Variant.FULL}", MascotState.IDLE):
+        if _in_directory(ASSET_DIR, name, False) is not None:
+            return True
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -203,12 +251,15 @@ class Mascot(QLabel):
     #: its companion line in step without having to ask.
     state_changed = Signal(str)
 
-    def __init__(self, size: int = 40, parent: QWidget | None = None) -> None:
+    def __init__(self, size: int = 40, parent: QWidget | None = None,
+                 *, variant: str = Variant.PANEL, height: int | None = None) -> None:
         super().__init__(parent)
         from app.ui import theme
 
         self._colours = theme.palette_for(None)
         self._size = size
+        self._height = height or size
+        self._variant = variant if variant in VARIANTS else Variant.PANEL
         self._state = MascotState.IDLE
         self._elapsed = 0
         self._blink_at = self._next_blink()
@@ -216,7 +267,7 @@ class Mascot(QLabel):
         self._movie: QMovie | None = None
         self._still: QPixmap | None = None
 
-        self.setFixedSize(QSize(size, size))
+        self.setFixedSize(QSize(self._size, self._height))
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.setScaledContents(False)
         self.setAccessibleName("Py")
@@ -261,12 +312,21 @@ class Mascot(QLabel):
         self._sync_motion()
         self.state_changed.emit(state)
 
-    def set_size(self, size: int) -> None:
-        """Resize, keeping the state. Used when the window changes shape."""
-        if size == self._size or size <= 0:
+    def variant(self) -> str:
+        return self._variant
+
+    def set_size(self, size: int, height: int | None = None) -> None:
+        """Resize, keeping the state. Used when the window changes shape.
+
+        ``height`` is separate because a full-body Py is taller than it is
+        wide, and forcing that into a square either shrinks it to nothing or
+        crops its feet off.
+        """
+        height = height or size
+        if size <= 0 or height <= 0 or (size, height) == (self._size, self._height):
             return
-        self._size = size
-        self.setFixedSize(QSize(size, size))
+        self._size, self._height = size, height
+        self.setFixedSize(QSize(size, height))
         self._load()
         self._render()
 
@@ -288,14 +348,14 @@ class Mascot(QLabel):
         self._still = None
 
         high_dpi = (self.devicePixelRatioF() or 1.0) > 1.5
-        path = asset_for(self._state, high_dpi=high_dpi)
+        path = asset_for(self._state, self._variant, high_dpi=high_dpi)
         if path is None:
             self._still = self._drawn()
             return
         if is_animated(path) and not reduced_motion():
             movie = QMovie(path)
             if movie.isValid():
-                movie.setScaledSize(QSize(self._size, self._size))
+                movie.setScaledSize(QSize(self._size, self._height))
                 self._movie = movie
                 self.setMovie(movie)
                 movie.start()
@@ -308,7 +368,7 @@ class Mascot(QLabel):
         pixmap = QPixmap(path)
         if pixmap.isNull():
             return self._drawn()
-        return pixmap.scaled(self._size, self._size,
+        return pixmap.scaled(self._size, self._height,
                              Qt.AspectRatioMode.KeepAspectRatio,
                              Qt.TransformationMode.SmoothTransformation)
 
@@ -316,16 +376,27 @@ class Mascot(QLabel):
         """Rasterise at the device pixel ratio, so Py is never soft."""
         from PySide6.QtSvg import QSvgRenderer
 
-        scale = self.devicePixelRatioF() or 1.0
-        pixels = max(1, int(self._size * scale))
-        pixmap = QPixmap(pixels, pixels)
-        pixmap.fill(Qt.GlobalColor.transparent)
         renderer = QSvgRenderer(path)
         if not renderer.isValid():
             return self._drawn()
+        scale = self.devicePixelRatioF() or 1.0
+        # Fit the drawing's own aspect into the box rather than stretching it
+        # to fill: a full-body Py squeezed into a square is a different
+        # character from the one the artist drew.
+        art = renderer.defaultSize()
+        box_w, box_h = self._size, self._height
+        if art.width() > 0 and art.height() > 0:
+            ratio = min(box_w / art.width(), box_h / art.height())
+            draw_w, draw_h = art.width() * ratio, art.height() * ratio
+        else:
+            draw_w, draw_h = box_w, box_h
+        pixmap = QPixmap(max(1, int(box_w * scale)), max(1, int(box_h * scale)))
+        pixmap.fill(Qt.GlobalColor.transparent)
         painter = QPainter(pixmap)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        renderer.render(painter, QRectF(0, 0, pixels, pixels))
+        renderer.render(painter, QRectF(
+            (box_w - draw_w) / 2 * scale, (box_h - draw_h) / 2 * scale,
+            draw_w * scale, draw_h * scale))
         painter.end()
         pixmap.setDevicePixelRatio(scale)
         return pixmap
@@ -374,22 +445,34 @@ class Mascot(QLabel):
         self.setPixmap(self._animated_frame(base))
 
     def _animated_frame(self, base: QPixmap) -> QPixmap:
-        """Apply this frame's breath, lean, pulse and blink to a still Py.
+        """Apply this frame's motion to a still Py.
 
-        This is what lets still artwork feel alive without the artist having to
-        supply an animation - and it is applied to whatever artwork is present,
-        so the final Py gets it too until an animated file replaces it.
+        Two tiers, because not all motion is equally safe to apply to someone
+        else's drawing:
+
+        * **Translation** - the breath - moves the whole image and cannot
+          distort it. Applied to any still artwork, placeholder or final.
+        * **Squash, rotate and scale** - the blink, the lean, the pulse - warp
+          the image. They read as expression on a flat placeholder and as a
+          rendering fault on an illustration, so they are used only while the
+          placeholder is what is on screen. Once real artwork is installed the
+          expression is the artist's job, which is where it belongs.
+
+        An animated asset never reaches here at all: QMovie plays it as drawn.
         """
         motion = _MOTION.get(self._state, _Motion())
         if reduced_motion() or not (motion.period_ms or self._blinking):
             return base
+        warp_allowed = not has_final_artwork()
 
         import math
 
         phase = (self._elapsed % motion.period_ms) / motion.period_ms if motion.period_ms else 0
         wave = math.sin(phase * 2 * math.pi)
         offset = motion.bob * wave
-        scale = 1.0 + motion.pulse * (wave + 1) / 2
+        lean = motion.lean if warp_allowed else 0.0
+        pulse = motion.pulse if warp_allowed else 0.0
+        scale = 1.0 + pulse * (wave + 1) / 2
 
         canvas = QPixmap(base.size())
         canvas.setDevicePixelRatio(base.devicePixelRatio())
@@ -401,30 +484,25 @@ class Mascot(QLabel):
         width = base.width() / base.devicePixelRatio()
         height = base.height() / base.devicePixelRatio()
         painter.translate(width / 2, height / 2 + offset)
-        if motion.lean:
-            painter.rotate(motion.lean * wave)
-        if motion.pulse:
+        if lean:
+            painter.rotate(lean * wave)
+        if pulse:
             painter.scale(scale, scale)
         painter.translate(-width / 2, -height / 2)
         painter.drawPixmap(0, 0, base)
 
-        if self._blinking:
-            # A blink drawn as a lid rather than as a second image, so it works
-            # with any artwork - including the final Py - without needing a
-            # matching "eyes closed" file for every state.
-            painter.setOpacity(0.0)
         painter.end()
 
-        if self._blinking:
+        if self._blinking and warp_allowed:
             return self._blink_frame(canvas, offset)
         return canvas
 
     def _blink_frame(self, frame: QPixmap, offset: float) -> QPixmap:
-        """Squash Py vertically for two frames.
+        """Squash Py vertically for two frames: a blink, cheaply.
 
-        A cheap, artwork-agnostic blink: everything closes slightly, which
-        reads as a blink at 40px and does not require the artist to draw one.
-        Replaced automatically the moment an animated asset is supplied.
+        Only ever applied to the placeholder. It reads as a blink on flat
+        vector shapes and as a wobble on a real illustration, so real artwork
+        keeps its own expression - see _animated_frame.
         """
         ratio = frame.devicePixelRatio()
         width = frame.width() / ratio
@@ -455,8 +533,10 @@ class Mascot(QLabel):
             MascotState.STUCK: c.muted,
         }.get(self._state, c.accent)
         scale = self.devicePixelRatioF() or 1.0
-        pixels = max(1, int(self._size * scale))
-        pixmap = QPixmap(pixels, pixels)
+        side = min(self._size, self._height)
+        pixels = max(1, int(side * scale))
+        pixmap = QPixmap(max(1, int(self._size * scale)),
+                         max(1, int(self._height * scale)))
         pixmap.fill(Qt.GlobalColor.transparent)
         painter = QPainter(pixmap)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
@@ -470,8 +550,9 @@ class Mascot(QLabel):
             f'<path d="M15 25q3 2 6 0" stroke="{tone}" stroke-width="1.7" fill="none"'
             ' stroke-linecap="round"/></svg>'
         )
-        QSvgRenderer(QByteArray(svg.encode())).render(
-            painter, QRectF(0, 0, pixels, pixels))
+        QSvgRenderer(QByteArray(svg.encode())).render(painter, QRectF(
+            (self._size * scale - pixels) / 2, (self._height * scale - pixels) / 2,
+            pixels, pixels))
         painter.end()
         pixmap.setDevicePixelRatio(scale)
         return pixmap

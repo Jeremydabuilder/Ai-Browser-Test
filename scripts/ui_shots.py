@@ -179,7 +179,7 @@ def main() -> int:
     # -- Py's own states, side by side -------------------------------------
     # A task in flight, an approval, a finish and a failure look different, and
     # the only way to know they still look right is to look at them.
-    from app.ui.mascot import ALL_STATES, Mascot
+    from app.ui.mascot import ALL_STATES, Mascot, Variant
     from PySide6.QtGui import QColor, QPainter, QPixmap
     from PySide6.QtWidgets import QLabel, QVBoxLayout
 
@@ -193,7 +193,7 @@ def main() -> int:
         cell = QWidget(strip)
         column = QVBoxLayout(cell)
         column.setSpacing(6)
-        face = Mascot(56, cell)
+        face = Mascot(64, cell, variant=Variant.PANEL)
         face.set_state(state)
         held.append(face)
         column.addWidget(face, 0, Qt.AlignmentFlag.AlignHCenter)
@@ -207,6 +207,22 @@ def main() -> int:
     strip.show()
     settle(app, 400)
     shot(strip, "9-py-states")
+
+    # And the full-body crop, which is what the new-tab page uses.
+    tall = QWidget()
+    tall.setStyleSheet(f"background:{theme.palette_for(app).bg};")
+    tall_row = QHBoxLayout(tall)
+    tall_row.setContentsMargins(18, 14, 18, 14)
+    tall_row.setSpacing(20)
+    for state in ALL_STATES:
+        figure = Mascot(120, tall, variant=Variant.FULL, height=156)
+        figure.set_state(state)
+        held.append(figure)
+        tall_row.addWidget(figure)
+    tall.resize(tall.sizeHint())
+    tall.show()
+    settle(app, 400)
+    shot(tall, "10-py-full")
 
     session.shutdown()
     server.stop()
