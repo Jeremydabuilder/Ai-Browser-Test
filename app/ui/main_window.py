@@ -121,6 +121,8 @@ class MainWindow(QMainWindow):
         self._add_action(file_menu, "New &Window", "Ctrl+N", self._open_new_window)
         self._add_action(file_menu, "&Close Tab", "Ctrl+W", self.tabs.close_current_tab)
         file_menu.addSeparator()
+        self._add_action(file_menu, "&Downloads", "Ctrl+J", self._show_downloads)
+        file_menu.addSeparator()
         self._add_action(file_menu, "&Quit", "Ctrl+Q", self.close)
 
         view_menu: QMenu = menubar.addMenu("&View")
@@ -201,14 +203,9 @@ class MainWindow(QMainWindow):
         # Closing the last tab closes the window, like Chrome.
         self.tabs.all_tabs_closed.connect(self.close)
         # A download that gives no feedback looks like a dead link.
-        self._profile.download_started.connect(
-            lambda dl: self.notice.show_message(
-                f"Downloading {dl.downloadFileName()} to {dl.downloadDirectory()}"
-            )
-        )
-        self._profile.download_finished.connect(
-            lambda dl: self._show_status(f"Finished downloading {dl.downloadFileName()}")
-        )
+        self._profile.download_started.connect(self._on_download_started)
+        self._profile.download_finished.connect(self._on_download_finished)
+
 
     def _install_shortcuts(self) -> None:
         """Shortcuts that have no natural menu entry."""
@@ -499,6 +496,25 @@ class MainWindow(QMainWindow):
         now_bookmarked = self.bookmarks.toggle(url, tab.title())
         self.nav_bar.set_bookmarked(now_bookmarked)
         self._show_status("Bookmark added" if now_bookmarked else "Bookmark removed")
+
+    def _on_download_started(self, item) -> None:
+        self.notice.show_message(
+            f"Downloading {item.file_name} — see Downloads (Ctrl+J)")
+
+    def _on_download_finished(self, item) -> None:
+        if item.state == "completed":
+            self._show_status(f"Finished downloading {item.file_name}")
+        elif item.state == "interrupted":
+            # A failed download must say so; silence looks like a dead link.
+            self.notice.show_message(
+                f"Download failed: {item.file_name}"
+                + (f" — {item.reason}" if item.reason else ""),
+                level="warning")
+
+    def _show_downloads(self) -> None:
+        from app.ui.downloads_panel import DownloadsDialog
+
+        DownloadsDialog(self._profile.downloads, self).exec()
 
     def _show_history(self) -> None:
         dialog = HistoryDialog(self.history, self)

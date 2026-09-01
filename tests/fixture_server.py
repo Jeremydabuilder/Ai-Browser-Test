@@ -220,6 +220,31 @@ class _Handler(BaseHTTPRequestHandler):
             self.end_headers()
         elif path == "/redirected":
             self._send(REDIRECT_TARGET)
+        elif path == "/download":
+            # A real file download: the disposition header is what makes
+            # Chromium treat it as a download rather than a page.
+            body = b"PyBrowser download fixture\n" * 64
+            self.send_response(200)
+            self.send_header("Content-Type", "application/octet-stream")
+            self.send_header("Content-Disposition", 'attachment; filename="fixture.bin"')
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        elif path == "/download-unsized":
+            # No Content-Length: the engine cannot know the total, which is the
+            # case where a percentage would have to be invented.
+            body = b"x" * 4096
+            self.send_response(200)
+            self.send_header("Content-Type", "application/octet-stream")
+            self.send_header("Content-Disposition", 'attachment; filename="unsized.bin"')
+            # Under HTTP/1.1 with no Content-Length, the end of the body is the
+            # end of the connection - without this the client waits forever.
+            self.send_header("Connection", "close")
+            self.end_headers()
+            self.wfile.write(body)
+            self.close_connection = True
+        elif path == "/downloads-page":
+            self._send(DOWNLOADS_PAGE)
         elif path == "/injection":
             self._send(INJECTION)
         elif path == "/shadow":
@@ -238,6 +263,13 @@ class _Handler(BaseHTTPRequestHandler):
 
     def log_message(self, *args) -> None:  # silence request logging
         return
+
+
+DOWNLOADS_PAGE = """<!doctype html><html><head><title>Downloads</title></head>
+<body><h1>Downloads</h1>
+<a id="file" href="/download">Get the file</a>
+<a id="unsized" href="/download-unsized">Get the unsized file</a>
+</body></html>"""
 
 
 class FixtureServer:

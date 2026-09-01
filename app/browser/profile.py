@@ -23,6 +23,7 @@ from PySide6.QtWebEngineCore import (
     QWebEngineSettings,
 )
 
+from app.browser.downloads import DownloadManager
 from app.browser.newtab import NewTabData, claim_scheme
 from app.config import cache_path, downloads_path, profile_storage_path
 
@@ -34,8 +35,8 @@ _UA_OVERRIDE_ENV = "PYBROWSER_USER_AGENT"
 class BrowserProfile(QObject):
     """Owns the persistent QWebEngineProfile and its global configuration."""
 
-    download_started = Signal(QWebEngineDownloadRequest)
-    download_finished = Signal(QWebEngineDownloadRequest)
+    download_started = Signal(object)     # DownloadItem
+    download_finished = Signal(object)    # DownloadItem
 
     def __init__(self, parent: QObject | None = None, storage_name: str = "default") -> None:
         super().__init__(parent)
@@ -47,6 +48,9 @@ class BrowserProfile(QObject):
         self._configure_settings()
         self._install_automation_script()
         self._install_new_tab_handler()
+        self.downloads = DownloadManager(self)
+        self.downloads.started.connect(self.download_started)
+        self.downloads.finished.connect(self.download_finished)
         self._profile.downloadRequested.connect(self._on_download_requested)
 
     # -- internal pages --------------------------------------------------
@@ -193,20 +197,15 @@ class BrowserProfile(QObject):
 
     # -- downloads -------------------------------------------------------
     def _on_download_requested(self, download: QWebEngineDownloadRequest) -> None:
-        """Accept downloads into the user's Downloads folder.
+        """Hand the download to the manager, which accepts and tracks it.
 
-        Qt cancels a download unless we explicitly accept it, so a browser that
-        ignores this signal looks broken whenever a link points at a file. Qt
-        de-duplicates the filename itself, so an existing file is never
-        silently overwritten. The window shows a notice for each download; a
-        download is never started without the user having clicked something.
+        Qt cancels a download unless it is explicitly accepted, so a browser
+        that ignores this signal looks broken whenever a link points at a file.
+        Qt de-duplicates the file name itself, so an existing file is never
+        silently overwritten. A download is never started without the user
+        having clicked something.
         """
-        download.setDownloadDirectory(str(downloads_path()))
-        download.isFinishedChanged.connect(
-            lambda: self.download_finished.emit(download)
-        )
-        download.accept()
-        self.download_started.emit(download)
+        self.downloads.accept(download, str(downloads_path()))
 
     # -- privacy controls ------------------------------------------------
     def clear_http_cache(self) -> None:
