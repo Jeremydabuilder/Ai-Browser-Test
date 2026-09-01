@@ -22,6 +22,7 @@ from app.browser.newtab import register_scheme
 from app.browser.profile import BrowserProfile
 from app.config import database_path
 from app.storage import Database
+from app.ui import theme
 from app.ui.main_window import MainWindow
 
 
@@ -45,6 +46,8 @@ def main(argv: list[str] | None = None) -> int:
 
     app = QApplication(sys.argv[:1])
     app.setWindowIcon(QIcon.fromTheme("web-browser"))
+    # PyBrowser's own look, following the desktop's light/dark preference.
+    theme.apply(app)
     # Ctrl+C in the terminal should kill the app instead of being swallowed by
     # the Qt event loop.
     signal.signal(signal.SIGINT, signal.SIG_DFL)

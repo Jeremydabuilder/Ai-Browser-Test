@@ -621,6 +621,43 @@ class BrowserController(QObject):
         request = {"op": "scroll", "direction": direction, "amount": amount or 0}
         return self._page_action("scroll", request, None, tab_id, watch_effects=False)
 
+    def screenshot(self, path: str, tab_id: int | None = None) -> ActionResult:
+        """Save a PNG of what the tab is currently showing.
+
+        A picture of the rendered page, not of the DOM: it captures what a
+        person would see, which is the one thing the structured page
+        representation cannot express (layout, overlap, whether something is
+        actually visible).
+
+        Read-only and synchronous - `QWidget.grab()` copies the widget's
+        current backing store, so there is nothing to wait for and no future
+        to resolve. It captures the page only, never the browser's own chrome.
+        """
+        started = time.monotonic()
+        tab = self._tab_for(tab_id)
+        if tab is None:
+            return self._no_tab("screenshot", started)
+        try:
+            image = tab.view.grab()
+            if image.isNull():
+                return self._failure(
+                    "screenshot", tab, started, ErrorCode.SCRIPT_FAILED,
+                    "The page could not be captured.",
+                    detail="The tab has no rendered surface yet.")
+            if not image.save(path, "PNG"):
+                return self._failure(
+                    "screenshot", tab, started, ErrorCode.SCRIPT_FAILED,
+                    f"Could not write the image to {path}.",
+                    detail="Check that the directory exists and is writable.")
+        except Exception as exc:  # noqa: BLE001
+            return self._failure("screenshot", tab, started, ErrorCode.SCRIPT_FAILED,
+                                 "Capturing the page failed.", detail=str(exc))
+        result = self._success("screenshot", tab, started)
+        result.data["path"] = path
+        result.data["width"] = image.width()
+        result.data["height"] = image.height()
+        return result
+
     # -- public: waiting --------------------------------------------------
     def wait_for_load(self, tab_id: int | None = None, *, timeout_ms: int = DEFAULT_TIMEOUT_MS) -> BrowserFuture:
         """Resolve when the tab is not loading (immediately if it already isn't)."""

@@ -308,7 +308,10 @@ _TEMPLATE = """<!doctype html>
   }
   .wordmark span { color: var(--accent); }
 
-  form { position: relative; }
+  form { position: static; }
+  /* The icon is centred on the INPUT, not on the form - the hint line lives
+     inside the form too, so centring on the form put the icon below the box. */
+  .field { position: relative; }
   #q {
     width: 100%;
     padding: 15px 18px 15px 46px;
@@ -398,6 +401,7 @@ _TEMPLATE = """<!doctype html>
   </div>
 
   <form id="f" autocomplete="off">
+    <div class="field">
     <svg class="search-icon" viewBox="0 0 20 20" fill="none" aria-hidden="true">
       <circle cx="9" cy="9" r="6" stroke="currentColor" stroke-width="1.8"/>
       <path d="m13.5 13.5 3.5 3.5" stroke="currentColor" stroke-width="1.8"
@@ -406,6 +410,7 @@ _TEMPLATE = """<!doctype html>
     <input id="q" name="q" type="text" autofocus
            placeholder="Search the web or enter an address"
            aria-label="Search the web or enter an address">
+    </div>
     <p class="hint" id="hint"></p>
   </form>
 

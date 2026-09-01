@@ -45,21 +45,34 @@ class FindBar(QFrame):
         self.status.setStyleSheet("color:#666;")
         layout.addWidget(self.status)
 
-        for label, tip, backward in (("▲", "Previous match (Shift+Enter)", True),
-                                     ("▼", "Next match (Enter)", False)):
-            button = QPushButton(label, self)
-            button.setFlat(True)
-            button.setFixedWidth(28)
-            button.setToolTip(tip)
-            button.clicked.connect(lambda _checked=False, back=backward: self._step(back))
-            layout.addWidget(button)
+        # Drawn icons, not text glyphs: "▲▼✕" render as blank boxes on any
+        # system whose UI font lacks them, which is how these buttons looked
+        # here - three empty pills.
+        from PySide6.QtCore import QSize
+        from PySide6.QtWidgets import QApplication
 
-        close = QPushButton("✕", self)
-        close.setFlat(True)
-        close.setFixedWidth(28)
-        close.setToolTip("Close (Esc)")
-        close.clicked.connect(self.close_bar)
-        layout.addWidget(close)
+        from app.ui import icons, theme
+
+        colours = theme.palette_for(QApplication.instance())
+
+        def step_button(name: str, tip: str, backward: bool | None) -> QPushButton:
+            button = QPushButton(self)
+            button.setIcon(icons.icon(name, colours.text, size=32, weight=2.2))
+            button.setIconSize(QSize(15, 15))
+            button.setFlat(True)
+            button.setFixedWidth(30)
+            button.setToolTip(tip)
+            if backward is None:
+                button.clicked.connect(self.close_bar)
+            else:
+                button.clicked.connect(
+                    lambda _checked=False, back=backward: self._step(back))
+            layout.addWidget(button)
+            return button
+
+        step_button("up", "Previous match (Shift+Enter)", True)
+        step_button("down", "Next match (Enter)", False)
+        step_button("close", "Close (Esc)", None)
 
         self.hide()
 

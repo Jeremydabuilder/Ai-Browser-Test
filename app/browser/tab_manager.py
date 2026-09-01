@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import QUrl, Qt, Signal
-from PySide6.QtWidgets import QTabWidget, QWidget
+from PySide6.QtCore import QSize, QUrl, Qt, Signal
+from PySide6.QtWidgets import QTabBar, QTabWidget, QWidget
 
 from app.browser.profile import BrowserProfile
 from app.browser.tab import BrowserTab
@@ -79,6 +79,7 @@ class TabManager(QTabWidget):
             tab = BrowserTab(self._profile)
         self._connect_tab(tab)
         index = self.addTab(tab, "New Tab")
+        self._install_close_button(index, tab)
         if not background:
             self.setCurrentIndex(index)
         if url is not None:
@@ -86,6 +87,41 @@ class TabManager(QTabWidget):
         elif tab.url().isEmpty():
             tab.navigate(self._home_url)
         return tab
+
+    def _install_close_button(self, index: int, tab: BrowserTab) -> None:
+        """Put our own close glyph on the tab.
+
+        Qt asks the desktop for the close icon, and on a machine with no icon
+        theme the fallback is a red X that reads as an error rather than a
+        control. A plain tool button with our own glyph looks the same
+        everywhere.
+        """
+        try:
+            from PySide6.QtWidgets import QApplication, QToolButton
+
+            from app.ui import icons, theme
+
+            colours = theme.palette_for(QApplication.instance())
+            button = QToolButton(self)
+            button.setIcon(icons.icon("close", colours.muted, size=32, weight=2.4))
+            button.setIconSize(QSize(13, 13))
+            button.setAutoRaise(True)
+            button.setCursor(Qt.CursorShape.ArrowCursor)
+            button.setToolTip("Close tab")
+            button.setStyleSheet(
+                "QToolButton { border: none; border-radius: 5px; padding: 2px; }"
+                f"QToolButton:hover {{ background: {colours.line}; }}")
+            # Look the tab up when clicked: indexes shift as tabs come and go,
+            # so capturing the index here would close the wrong tab later.
+            button.clicked.connect(lambda _=False, t=tab: self._close_widget(t))
+            self.tabBar().setTabButton(index, QTabBar.ButtonPosition.RightSide, button)
+        except Exception:  # noqa: BLE001 - styling must never break tabs
+            pass
+
+    def _close_widget(self, tab: BrowserTab) -> None:
+        index = self.indexOf(tab)
+        if index != -1:
+            self.close_tab(index)
 
     def _connect_tab(self, tab: BrowserTab) -> None:
         tab.title_changed.connect(lambda title, t=tab: self._on_tab_title(t, title))

@@ -3,15 +3,16 @@
 from __future__ import annotations
 
 from PySide6.QtCore import QSize, Qt, Signal
-from PySide6.QtGui import QAction, QIcon, QKeySequence
+from PySide6.QtGui import QAction, QKeySequence
 from PySide6.QtWidgets import (
     QCompleter,
     QLineEdit,
     QSizePolicy,
-    QStyle,
     QToolBar,
     QWidget,
 )
+
+from app.ui import icons, theme
 
 
 class AddressBar(QLineEdit):
@@ -61,35 +62,35 @@ class NavigationBar(QToolBar):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__("Navigation", parent)
         self.setMovable(False)
-        self.setIconSize(QSize(18, 18))
+        self.setIconSize(QSize(19, 19))
 
-        style = self.style()
+        # Our own icons rather than whatever the desktop happens to provide.
+        # Asking the system for "bookmark-new" gave a floppy disk on a machine
+        # with no icon theme, and a different browser on every machine that
+        # had one.
+        from PySide6.QtWidgets import QApplication
 
-        def icon(standard: QStyle.StandardPixmap, fallback: str) -> QIcon:
-            themed = QIcon.fromTheme(fallback)
-            return themed if not themed.isNull() else style.standardIcon(standard)
+        colours = theme.palette_for(QApplication.instance())
 
-        self.back_action = QAction(
-            icon(QStyle.StandardPixmap.SP_ArrowBack, "go-previous"), "Back", self
-        )
+        def icon(name: str, filled: bool = False):
+            return icons.icon(name, colours.text, disabled_color=colours.muted,
+                              filled=filled)
+
+        self.back_action = QAction(icon("back"), "Back", self)
         self.back_action.setShortcut(QKeySequence.StandardKey.Back)
         self.back_action.triggered.connect(self.back_requested)
 
-        self.forward_action = QAction(
-            icon(QStyle.StandardPixmap.SP_ArrowForward, "go-next"), "Forward", self
-        )
+        self.forward_action = QAction(icon("forward"), "Forward", self)
         self.forward_action.setShortcut(QKeySequence.StandardKey.Forward)
         self.forward_action.triggered.connect(self.forward_requested)
 
         # One button that flips between Reload and Stop, like every real browser.
-        self._reload_icon = icon(QStyle.StandardPixmap.SP_BrowserReload, "view-refresh")
-        self._stop_icon = icon(QStyle.StandardPixmap.SP_BrowserStop, "process-stop")
+        self._reload_icon = icon("reload")
+        self._stop_icon = icon("stop")
         self.reload_action = QAction(self._reload_icon, "Reload", self)
         self.reload_action.triggered.connect(self._on_reload_clicked)
 
-        self.home_action = QAction(
-            icon(QStyle.StandardPixmap.SP_DirHomeIcon, "go-home"), "Home", self
-        )
+        self.home_action = QAction(icon("home"), "Home", self)
         self.home_action.triggered.connect(self.home_requested)
 
         self.address_bar = AddressBar(self)
@@ -98,11 +99,12 @@ class NavigationBar(QToolBar):
         )
         self.address_bar.returnPressed.connect(self._on_return_pressed)
 
-        self.bookmark_action = QAction(
-            icon(QStyle.StandardPixmap.SP_DialogSaveButton, "bookmark-new"),
-            "Bookmark this page",
-            self,
-        )
+        # Outline when not bookmarked, filled and accent-coloured when it is -
+        # the state has to be readable at a glance, not inferred from a
+        # pressed-button shade.
+        self._star_icon = icon("star")
+        self._star_filled = icons.icon("star", colours.accent, filled=True)
+        self.bookmark_action = QAction(self._star_icon, "Bookmark this page", self)
         self.bookmark_action.setCheckable(True)
         self.bookmark_action.triggered.connect(lambda _checked: self.bookmark_toggled.emit())
 
@@ -141,6 +143,7 @@ class NavigationBar(QToolBar):
 
     def set_bookmarked(self, bookmarked: bool) -> None:
         self.bookmark_action.setChecked(bookmarked)
+        self.bookmark_action.setIcon(self._star_filled if bookmarked else self._star_icon)
         self.bookmark_action.setText(
             "Remove bookmark" if bookmarked else "Bookmark this page"
         )
