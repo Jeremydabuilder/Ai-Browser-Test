@@ -185,7 +185,7 @@ class ApiKeyDialog(QDialog):
         self._settings.set(effort_key, self.effort_box.currentData())
         QMessageBox.information(
             self, "Configure AI Agent",
-            "Saved. Py AI picks this up as soon as you close this dialog, "
+            "Saved. Py picks this up as soon as you close this dialog, "
             "which begins a fresh conversation.\n\n"
             "The model is not changed mid-conversation on purpose - the prompt "
             "cache is per-model, so switching part-way through a task would "
@@ -214,7 +214,7 @@ class ApiKeyDialog(QDialog):
         self.saved.emit()
         QMessageBox.information(
             self, "Configure AI Agent",
-            "Key saved. Py AI is ready to use.")
+            "Key saved. Py is ready to use.")
         self.accept()
 
     def _clear(self) -> None:

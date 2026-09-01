@@ -122,7 +122,7 @@ class ConfirmationRequest:
     def prompt(self) -> str:
         where = f" on {self.site}" if self.site else ""
         why = f" This {', '.join(self.reasons)}." if self.reasons else ""
-        return f"Py AI wants to {self.description}{where}.{why}"
+        return f"Py wants to {self.description}{where}.{why}"
 
 
 # ---------------------------------------------------------------------------

@@ -334,6 +334,14 @@ class MainWindow(QMainWindow):
                 cursor.movePosition(cursor.MoveOperation.End)
                 box.setTextCursor(cursor)
             box.setFocus()
+        # Py acknowledges being summoned. Deliberately only a look, not a send:
+        # the request is written out for the user to read and change, because
+        # sending it for them would be the browser deciding what they meant.
+        mascot = getattr(panel, "mascot", None)
+        if mascot is not None and text:
+            from app.ui.mascot import MascotState
+
+            mascot.set_state(MascotState.THINKING)
 
     def _navigate_from_address_bar(self, text: str) -> None:
         url = url_utils.normalize(text, self.settings.search_url)
@@ -620,7 +628,7 @@ class MainWindow(QMainWindow):
             # nothing to do.
             if credential is not None and credential.available and self._agent_unavailable:
                 self._agent_unavailable = False
-                self._rebuild_agent("Py AI is ready.")
+                self._rebuild_agent("Py is ready.")
             return
 
         unchanged = (
@@ -632,7 +640,7 @@ class MainWindow(QMainWindow):
         if session.busy:
             self._show_status("The new AI settings apply once this task finishes.")
             return
-        self._rebuild_agent(f"Py AI now using {wanted.model_choice.label}.")
+        self._rebuild_agent(f"Py now using {wanted.model_choice.label}.")
 
     def _current_credential(self):
         """The credential as it stands right now, or None if it cannot be read.
@@ -690,6 +698,11 @@ class MainWindow(QMainWindow):
                                          int(self.width() * m.panel_max_share)))
             self.splitter.addWidget(panel)
             self._side_panel = panel
+            # Py shrinks a little in a narrow panel, where a 40px character
+            # next to a 300px column starts to crowd the header.
+            mascot = getattr(panel, "mascot", None)
+            if mascot is not None:
+                mascot.set_size(m.mascot_panel if width >= 340 else m.mascot_panel_small)
             self.splitter.setSizes([self.width() - width, width])
             self._animate_panel(closing=False, width=width)
 

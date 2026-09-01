@@ -28,9 +28,13 @@ os.environ.setdefault("PYBROWSER_DISABLE_KEYRING", "1")
 
 import app.browser  # noqa: E402,F401
 
-from PySide6.QtCore import QTimer  # noqa: E402
+from PySide6.QtCore import Qt, QTimer  # noqa: E402
 from PySide6.QtGui import QPalette  # noqa: E402
-from PySide6.QtWidgets import QApplication  # noqa: E402
+from PySide6.QtWidgets import (  # noqa: E402
+    QApplication,
+    QHBoxLayout,
+    QWidget,
+)
 
 
 def settle(app, ms: int) -> None:
@@ -171,6 +175,38 @@ def main() -> int:
     window.resize(760, 560)
     settle(app, 600)
     shot(window, "8-narrow")
+
+    # -- Py's own states, side by side -------------------------------------
+    # A task in flight, an approval, a finish and a failure look different, and
+    # the only way to know they still look right is to look at them.
+    from app.ui.mascot import ALL_STATES, Mascot
+    from PySide6.QtGui import QColor, QPainter, QPixmap
+    from PySide6.QtWidgets import QLabel, QVBoxLayout
+
+    strip = QWidget()
+    strip.setStyleSheet(f"background:{theme.palette_for(app).bg};")
+    row = QHBoxLayout(strip)
+    row.setContentsMargins(18, 14, 18, 14)
+    row.setSpacing(22)
+    held = []
+    for state in ALL_STATES:
+        cell = QWidget(strip)
+        column = QVBoxLayout(cell)
+        column.setSpacing(6)
+        face = Mascot(56, cell)
+        face.set_state(state)
+        held.append(face)
+        column.addWidget(face, 0, Qt.AlignmentFlag.AlignHCenter)
+        caption = QLabel(f"{state}\n{face.companion_text()}", cell)
+        caption.setAlignment(Qt.AlignmentFlag.AlignHCenter)
+        caption.setStyleSheet(
+            f"color:{theme.palette_for(app).muted}; font-size:11px;")
+        column.addWidget(caption)
+        row.addWidget(cell)
+    strip.resize(strip.sizeHint())
+    strip.show()
+    settle(app, 400)
+    shot(strip, "9-py-states")
 
     session.shutdown()
     server.stop()

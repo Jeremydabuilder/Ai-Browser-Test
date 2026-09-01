@@ -415,7 +415,7 @@ class ConfirmationTests(AgentTestCase):
         self.assertEqual(self.session.state, AgentState.AWAITING_CONFIRMATION)
         self.assertIn("buy now", request.description.lower())
         self.assertIn("spend money", " ".join(request.reasons))
-        self.assertIn("Py AI wants to click", request.prompt)
+        self.assertIn("Py wants to click", request.prompt)
         self.session.resolve_confirmation(False)
         self.assertTrue(pump(lambda: bool(done), 15000))
 

@@ -1,118 +1,207 @@
-"""Py AI's visual presence: one small character with a handful of states.
+"""Py: PyBrowser's companion, and the browser's honest status indicator.
 
-What this is for
-----------------
-An agent that is working should look like it is working. A step list says what
-happened; a face says *how it is going* at a glance, from across the room,
-without reading. That is the whole job - it is a status indicator with a
-personality, not a character system.
+Py is not decoration. What Py is doing IS what the agent is doing - reading,
+thinking, working, waiting for you - so a glance at the character answers "how
+is this going" without reading a word. That is the whole design: a status
+indicator that happens to have a face.
 
-Replacing the artwork
----------------------
-Drop SVG (or PNG) files into `app/ui/assets/mascot/` named after the states in
-`MascotState`:
+Where the artwork comes from
+----------------------------
+Three places, in order, per state:
 
-    idle.svg  reading.svg  thinking.svg  working.svg  complete.svg  approval.svg
+1. ``app/ui/assets/mascot/<state>.<ext>``  - the real Py artwork
+2. ``app/ui/assets/mascot/placeholder/<state>.<ext>`` - the stand-in shipped
+   with the source, so the browser looks right before the artwork lands
+3. a shape drawn in code - the last resort if both folders are empty
 
-Any state without a file falls back to `idle`, and if there is no artwork at
-all the built-in placeholder below is drawn instead - so the UI works before
-the character exists and needs no code change when it arrives. A file named
-`<state>@2x.png` is preferred on a high-DPI screen if present.
+Extensions are tried in the order of ``FORMATS``. A missing state falls back to
+``idle`` at the same level before dropping to the next level, so one good idle
+drawing is enough to replace the placeholder everywhere. ``<state>@2x.png`` is
+preferred on a high-DPI screen.
 
-Deliberately not built yet: animation frames, expressions, speech, sound. The
-state enum is the contract; everything else can come later without the panel
-or the new-tab page knowing about it.
+**Dropping the final artwork into ``assets/mascot/`` is the whole integration.**
+No code changes, no registration, no rebuild.
+
+Animation
+---------
+Two kinds, and the widget does not care which it has:
+
+* **Animated artwork** - a GIF or APNG plays through ``QMovie``. Whatever the
+  artist put in the file is what you see.
+* **Still artwork** - the widget adds its own restrained motion: a slow breath,
+  an occasional blink, a small lean for thinking. Enough that Py looks alive,
+  little enough that it is never the thing you are looking at.
+
+Either way, reduced-motion settings stop all of it and the still frame shows.
 """
 
 from __future__ import annotations
 
 import os
+import random
 from dataclasses import dataclass
 
 from PySide6.QtCore import QByteArray, QRectF, QSize, Qt, QTimer, Signal
-from PySide6.QtGui import QPainter, QPixmap
+from PySide6.QtGui import QMovie, QPainter, QPixmap, QTransform
 from PySide6.QtWidgets import QLabel, QWidget
 
-ASSET_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "mascot")
+_HERE = os.path.dirname(os.path.abspath(__file__))
+ASSET_DIR = os.path.join(_HERE, "assets", "mascot")
+PLACEHOLDER_DIR = os.path.join(ASSET_DIR, "placeholder")
+
+#: Tried in order. Animated formats come first so an animated Py wins over a
+#: still one of the same name.
+FORMATS = (".gif", ".webp", ".apng", ".png", ".svg")
+ANIMATED_FORMATS = (".gif", ".webp", ".apng")
 
 
 class MascotState:
-    """What Py AI is doing, in the only terms the mascot needs to know.
+    """What Py is doing, in the only terms the character needs to know.
 
-    These map onto AgentState, but they are not the same list: the mascot has
-    no opinion about the difference between "cancelling" and "idle", and it
-    does have an opinion about the difference between "acting" and "reading".
+    These map onto AgentState but are not the same list: Py has no opinion
+    about the difference between "cancelling" and "idle", and does have one
+    about the difference between reading a page and clicking through it.
     """
 
     IDLE = "idle"
     READING = "reading"
     THINKING = "thinking"
     WORKING = "working"
-    COMPLETE = "complete"
     APPROVAL = "approval"
+    COMPLETE = "complete"
+    #: A task that ended without an answer. Deliberately its own state: showing
+    #: the celebrating face after a failure would be a small lie told often.
+    STUCK = "stuck"
 
 
 ALL_STATES = (MascotState.IDLE, MascotState.READING, MascotState.THINKING,
-              MascotState.WORKING, MascotState.COMPLETE, MascotState.APPROVAL)
+              MascotState.WORKING, MascotState.APPROVAL, MascotState.COMPLETE,
+              MascotState.STUCK)
 
-#: How long `COMPLETE` shows before falling back to `IDLE`. Long enough to
-#: notice, short enough not to look stuck.
-COMPLETE_MS = 2600
+#: How long a reaction shows before Py settles back to idle. Long enough to
+#: notice, short enough that it never looks stuck on.
+REACTION_MS = 2600
 
+#: What Py says. Presentation strings, chosen from the state alone - never the
+#: model's words, never anything derived from a page, and never reasoning.
+COMPANION_TEXT: dict[str, str] = {
+    MascotState.IDLE: "Ready when you are.",
+    MascotState.READING: "I'm looking through the page\u2026",
+    MascotState.THINKING: "Let me figure this out\u2026",
+    MascotState.WORKING: "On it.",
+    MascotState.APPROVAL: "I need your okay for this.",
+    MascotState.COMPLETE: "Done!",
+    MascotState.STUCK: "Looks like I got stuck.",
+}
 
-@dataclass(frozen=True)
-class _Look:
-    """The built-in placeholder's appearance for one state.
-
-    Drawn rather than shipped as files so the repository carries no invented
-    artwork for a character that does not exist yet: this is a stand-in, and it
-    is meant to look like one.
-    """
-
-    #: Which palette colour the character takes.
-    tone: str
-    #: Eye shape: open, half (reading), or closed (thinking).
-    eyes: str = "open"
-    #: A small mark beside the face, or "".
-    badge: str = ""
-
-
-_LOOKS: dict[str, _Look] = {
-    MascotState.IDLE: _Look("accent"),
-    MascotState.READING: _Look("accent", eyes="half"),
-    MascotState.THINKING: _Look("accent", eyes="closed"),
-    MascotState.WORKING: _Look("accent", eyes="open", badge="spin"),
-    MascotState.COMPLETE: _Look("success", eyes="happy", badge="tick"),
-    MascotState.APPROVAL: _Look("warning", eyes="open", badge="ask"),
+#: The same thing, for a screen reader and a tooltip.
+TOOLTIPS: dict[str, str] = {
+    MascotState.IDLE: "Py is ready",
+    MascotState.READING: "Py is reading the page",
+    MascotState.THINKING: "Py is thinking",
+    MascotState.WORKING: "Py is working in the browser",
+    MascotState.APPROVAL: "Py needs your approval",
+    MascotState.COMPLETE: "Py has finished",
+    MascotState.STUCK: "Py could not finish this one",
 }
 
 
-def asset_for(state: str) -> str | None:
-    """The artwork file for a state, or None if there is none.
+def reduced_motion() -> bool:
+    """Has the user asked for less animation?
 
-    Falls back to `idle` so a partial set of artwork still works: shipping one
-    good idle drawing should be enough to replace the placeholder everywhere.
+    Qt has no cross-platform query for this, so we read the variables the
+    freedesktop and Qt tooling use, plus our own. Someone who asked once
+    should not have to ask again.
     """
-    for candidate in (state, MascotState.IDLE):
-        for extension in (".svg", ".png"):
-            path = os.path.join(ASSET_DIR, candidate + extension)
-            if os.path.isfile(path):
-                return path
+    for name in ("PYBROWSER_REDUCED_MOTION", "QT_REDUCED_MOTION", "NO_ANIMATIONS"):
+        if (os.environ.get(name) or "").strip().lower() in ("1", "true", "yes", "on"):
+            return True
+    return False
+
+
+# ---------------------------------------------------------------------------
+# Finding the artwork
+# ---------------------------------------------------------------------------
+
+
+def asset_for(state: str, *, high_dpi: bool = False) -> str | None:
+    """The best artwork file for a state, or None if there is none anywhere.
+
+    Real artwork beats the placeholder, and the requested state beats idle -
+    in that order, so a single final ``idle.png`` outranks a full set of
+    placeholders, which is what makes dropping in the real Py feel immediate.
+    """
+    for directory in (ASSET_DIR, PLACEHOLDER_DIR):
+        for name in (state, MascotState.IDLE):
+            found = _in_directory(directory, name, high_dpi)
+            if found:
+                return found
     return None
 
 
-def has_artwork() -> bool:
-    return asset_for(MascotState.IDLE) is not None
+def _in_directory(directory: str, name: str, high_dpi: bool) -> str | None:
+    for extension in FORMATS:
+        if high_dpi and extension not in (".svg",):
+            retina = os.path.join(directory, f"{name}@2x{extension}")
+            if os.path.isfile(retina):
+                return retina
+        path = os.path.join(directory, name + extension)
+        if os.path.isfile(path):
+            return path
+    return None
+
+
+def is_animated(path: str) -> bool:
+    return path.lower().endswith(ANIMATED_FORMATS)
+
+
+def has_final_artwork() -> bool:
+    """True once real artwork has been dropped in - placeholders do not count."""
+    return _in_directory(ASSET_DIR, MascotState.IDLE, False) is not None
+
+
+# ---------------------------------------------------------------------------
+# The widget
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class _Motion:
+    """How a still Py moves in one state. Amplitudes are in pixels."""
+
+    bob: float = 0.0        # vertical drift, the "breath"
+    period_ms: int = 0      # how long one breath takes
+    lean: float = 0.0       # degrees of rotation, for thinking
+    blinks: bool = False
+    pulse: float = 0.0      # scale change, for approval
+
+
+#: Chosen to be barely perceptible. If you can see Py moving without looking
+#: for it, the numbers are too big.
+_MOTION: dict[str, _Motion] = {
+    MascotState.IDLE: _Motion(bob=0.8, period_ms=4200, blinks=True),
+    MascotState.READING: _Motion(bob=0.5, period_ms=3400, blinks=True),
+    MascotState.THINKING: _Motion(bob=0.6, period_ms=2600, lean=1.6),
+    MascotState.WORKING: _Motion(bob=1.0, period_ms=1500),
+    MascotState.APPROVAL: _Motion(bob=0.5, period_ms=2000, pulse=0.02),
+    MascotState.COMPLETE: _Motion(bob=1.2, period_ms=1800, blinks=True),
+    MascotState.STUCK: _Motion(bob=0.4, period_ms=4600, blinks=True),
+}
+
+_FRAME_MS = 50          # 20fps: smooth enough for motion this small
 
 
 class Mascot(QLabel):
-    """The character itself: a fixed-size image that changes with the state.
+    """Py, at one size, in one state.
 
-    A QLabel rather than a custom widget, so it can be dropped into any layout
-    and costs nothing when the panel is closed.
+    A QLabel so it drops into any layout and costs nothing when hidden. It owns
+    its own timers and stops them the moment there is nothing to animate.
     """
 
     clicked = Signal()
+    #: The state changed; carries the state name. The panel uses this to keep
+    #: its companion line in step without having to ask.
+    state_changed = Signal(str)
 
     def __init__(self, size: int = 40, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -121,164 +210,297 @@ class Mascot(QLabel):
         self._colours = theme.palette_for(None)
         self._size = size
         self._state = MascotState.IDLE
-        self._phase = 0
+        self._elapsed = 0
+        self._blink_at = self._next_blink()
+        self._blinking = 0
+        self._movie: QMovie | None = None
+        self._still: QPixmap | None = None
+
         self.setFixedSize(QSize(size, size))
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.setAccessibleName("Py AI")
-        self.setToolTip(_TOOLTIPS[MascotState.IDLE])
+        self.setScaledContents(False)
+        self.setAccessibleName("Py")
+        self.setToolTip(TOOLTIPS[MascotState.IDLE])
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
 
-        # One timer, only running when the state actually animates. An idle
-        # mascot ticking in the background is a battery cost for a still image.
-        self._timer = QTimer(self)
-        self._timer.setInterval(140)
-        self._timer.timeout.connect(self._tick)
-        self._revert = QTimer(self)
-        self._revert.setSingleShot(True)
-        self._revert.timeout.connect(lambda: self.set_state(MascotState.IDLE))
+        self._frames = QTimer(self)
+        self._frames.setInterval(_FRAME_MS)
+        self._frames.timeout.connect(self._advance)
+        self._settle = QTimer(self)
+        self._settle.setSingleShot(True)
+        self._settle.timeout.connect(lambda: self.set_state(MascotState.IDLE))
+
+        self._load()
         self._render()
+        self._sync_motion()
 
-    # -- state ------------------------------------------------------------
+    # -- state -------------------------------------------------------------
     def state(self) -> str:
         return self._state
 
+    def companion_text(self) -> str:
+        return COMPANION_TEXT.get(self._state, "")
+
     def set_state(self, state: str) -> None:
+        """Show a different state. Unknown states are ignored, not drawn."""
         if state not in ALL_STATES or state == self._state:
             return
         self._state = state
-        self._phase = 0
-        if state in (MascotState.WORKING, MascotState.THINKING):
-            if not self._timer.isActive():
-                self._timer.start()
-        else:
-            self._timer.stop()
-        # "Complete" is a moment, not a resting state.
-        self._revert.stop()
-        if state == MascotState.COMPLETE:
-            self._revert.start(COMPLETE_MS)
-        self.setToolTip(_TOOLTIPS.get(state, "Py AI"))
-        self.setAccessibleDescription(_TOOLTIPS.get(state, ""))
+        self._elapsed = 0
+        self._blink_at = self._next_blink()
+        self.setToolTip(TOOLTIPS.get(state, "Py"))
+        self.setAccessibleDescription(COMPANION_TEXT.get(state, ""))
+
+        # A reaction is a moment, not a resting state.
+        self._settle.stop()
+        if state in (MascotState.COMPLETE, MascotState.STUCK):
+            self._settle.start(REACTION_MS)
+
+        self._load()
+        self._render()
+        self._sync_motion()
+        self.state_changed.emit(state)
+
+    def set_size(self, size: int) -> None:
+        """Resize, keeping the state. Used when the window changes shape."""
+        if size == self._size or size <= 0:
+            return
+        self._size = size
+        self.setFixedSize(QSize(size, size))
+        self._load()
         self._render()
 
     def mousePressEvent(self, event) -> None:  # noqa: N802
         self.clicked.emit()
         super().mousePressEvent(event)
 
-    def _tick(self) -> None:
-        self._phase = (self._phase + 1) % 8
-        self._render()
+    # -- artwork -----------------------------------------------------------
+    def _load(self) -> None:
+        """Pick up the artwork for the current state.
 
-    # -- drawing ----------------------------------------------------------
-    def _render(self) -> None:
-        artwork = asset_for(self._state)
-        self.setPixmap(self._from_file(artwork) if artwork else self._placeholder())
+        Called on every state change rather than cached, so dropping a file
+        into the assets folder while the browser is running takes effect the
+        next time Py changes state - handy while an artist is iterating.
+        """
+        if self._movie is not None:
+            self._movie.stop()
+            self._movie = None
+        self._still = None
+
+        high_dpi = (self.devicePixelRatioF() or 1.0) > 1.5
+        path = asset_for(self._state, high_dpi=high_dpi)
+        if path is None:
+            self._still = self._drawn()
+            return
+        if is_animated(path) and not reduced_motion():
+            movie = QMovie(path)
+            if movie.isValid():
+                movie.setScaledSize(QSize(self._size, self._size))
+                self._movie = movie
+                self.setMovie(movie)
+                movie.start()
+                return
+        self._still = self._from_file(path)
 
     def _from_file(self, path: str) -> QPixmap:
-        scale = self.devicePixelRatioF() or 1.0
-        retina = path.rsplit(".", 1)[0] + "@2x." + path.rsplit(".", 1)[1]
-        if scale > 1.5 and os.path.isfile(retina):
-            path = retina
+        if path.lower().endswith(".svg"):
+            return self._from_svg(path)
         pixmap = QPixmap(path)
         if pixmap.isNull():
-            return self._placeholder()
-        return pixmap.scaled(
-            self._size, self._size,
-            Qt.AspectRatioMode.KeepAspectRatio,
-            Qt.TransformationMode.SmoothTransformation)
+            return self._drawn()
+        return pixmap.scaled(self._size, self._size,
+                             Qt.AspectRatioMode.KeepAspectRatio,
+                             Qt.TransformationMode.SmoothTransformation)
 
-    def _placeholder(self) -> QPixmap:
-        """The stand-in character: a rounded square with a face.
+    def _from_svg(self, path: str) -> QPixmap:
+        """Rasterise at the device pixel ratio, so Py is never soft."""
+        from PySide6.QtSvg import QSvgRenderer
 
-        Simple on purpose. It should read as "something goes here", not
-        compete with the artwork that will replace it.
+        scale = self.devicePixelRatioF() or 1.0
+        pixels = max(1, int(self._size * scale))
+        pixmap = QPixmap(pixels, pixels)
+        pixmap.fill(Qt.GlobalColor.transparent)
+        renderer = QSvgRenderer(path)
+        if not renderer.isValid():
+            return self._drawn()
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        renderer.render(painter, QRectF(0, 0, pixels, pixels))
+        painter.end()
+        pixmap.setDevicePixelRatio(scale)
+        return pixmap
+
+    # -- motion ------------------------------------------------------------
+    def _sync_motion(self) -> None:
+        """Run the frame timer only when there is something to animate."""
+        if self._movie is not None or reduced_motion():
+            self._frames.stop()
+            return
+        motion = _MOTION.get(self._state, _Motion())
+        if motion.period_ms or motion.blinks:
+            if not self._frames.isActive():
+                self._frames.start()
+        else:
+            self._frames.stop()
+
+    def _advance(self) -> None:
+        self._elapsed += _FRAME_MS
+        motion = _MOTION.get(self._state, _Motion())
+        if motion.blinks:
+            if self._blinking:
+                self._blinking -= 1
+                if self._blinking == 0:
+                    self._blink_at = self._elapsed + self._next_blink()
+            elif self._elapsed >= self._blink_at:
+                self._blinking = 2      # two frames: 100ms, the length of a blink
+        self._render()
+
+    @staticmethod
+    def _next_blink() -> int:
+        """When to blink next.
+
+        Randomised because a blink on a fixed beat reads as a machine, and the
+        one thing this character should not look like is a progress bar.
         """
-        look = _LOOKS.get(self._state, _LOOKS[MascotState.IDLE])
-        c = self._colours
-        tone = getattr(c, look.tone, c.accent)
-        size = self._size
-        # A gentle bob while working, so the character is alive without moving
-        # enough to pull the eye off the page.
-        bob = (0, -1, -1, 0, 1, 1, 0, 0)[self._phase] if self._timer.isActive() else 0
+        return random.randint(2600, 6200)
 
-        pixmap = QPixmap(size, size)
+    # -- drawing -----------------------------------------------------------
+    def _render(self) -> None:
+        if self._movie is not None:
+            return                       # QMovie paints itself
+        base = self._still
+        if base is None:
+            return
+        self.setPixmap(self._animated_frame(base))
+
+    def _animated_frame(self, base: QPixmap) -> QPixmap:
+        """Apply this frame's breath, lean, pulse and blink to a still Py.
+
+        This is what lets still artwork feel alive without the artist having to
+        supply an animation - and it is applied to whatever artwork is present,
+        so the final Py gets it too until an animated file replaces it.
+        """
+        motion = _MOTION.get(self._state, _Motion())
+        if reduced_motion() or not (motion.period_ms or self._blinking):
+            return base
+
+        import math
+
+        phase = (self._elapsed % motion.period_ms) / motion.period_ms if motion.period_ms else 0
+        wave = math.sin(phase * 2 * math.pi)
+        offset = motion.bob * wave
+        scale = 1.0 + motion.pulse * (wave + 1) / 2
+
+        canvas = QPixmap(base.size())
+        canvas.setDevicePixelRatio(base.devicePixelRatio())
+        canvas.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(canvas)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+
+        width = base.width() / base.devicePixelRatio()
+        height = base.height() / base.devicePixelRatio()
+        painter.translate(width / 2, height / 2 + offset)
+        if motion.lean:
+            painter.rotate(motion.lean * wave)
+        if motion.pulse:
+            painter.scale(scale, scale)
+        painter.translate(-width / 2, -height / 2)
+        painter.drawPixmap(0, 0, base)
+
+        if self._blinking:
+            # A blink drawn as a lid rather than as a second image, so it works
+            # with any artwork - including the final Py - without needing a
+            # matching "eyes closed" file for every state.
+            painter.setOpacity(0.0)
+        painter.end()
+
+        if self._blinking:
+            return self._blink_frame(canvas, offset)
+        return canvas
+
+    def _blink_frame(self, frame: QPixmap, offset: float) -> QPixmap:
+        """Squash Py vertically for two frames.
+
+        A cheap, artwork-agnostic blink: everything closes slightly, which
+        reads as a blink at 40px and does not require the artist to draw one.
+        Replaced automatically the moment an animated asset is supplied.
+        """
+        ratio = frame.devicePixelRatio()
+        width = frame.width() / ratio
+        height = frame.height() / ratio
+        canvas = QPixmap(frame.size())
+        canvas.setDevicePixelRatio(ratio)
+        canvas.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(canvas)
+        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+        squash = 0.94
+        painter.translate(0, height * (1 - squash) * 0.55)
+        painter.scale(1.0, squash)
+        painter.drawPixmap(0, 0, frame)
+        painter.end()
+        return canvas
+
+    def _drawn(self) -> QPixmap:
+        """Last resort: a simple mark, if there is no artwork at all.
+
+        Deliberately plain. It exists so the UI never shows an empty hole, not
+        to be a character - the placeholder folder is where the character
+        lives until the real one arrives.
+        """
+        c = self._colours
+        tone = {
+            MascotState.COMPLETE: c.success,
+            MascotState.APPROVAL: c.warning,
+            MascotState.STUCK: c.muted,
+        }.get(self._state, c.accent)
+        scale = self.devicePixelRatioF() or 1.0
+        pixels = max(1, int(self._size * scale))
+        pixmap = QPixmap(pixels, pixels)
         pixmap.fill(Qt.GlobalColor.transparent)
         painter = QPainter(pixmap)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        svg = _placeholder_svg(look, tone, c.surface, self._phase,
-                               spinning=self._timer.isActive())
         from PySide6.QtSvg import QSvgRenderer
 
+        svg = (
+            '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 36 36" fill="none">'
+            f'<rect x="5" y="9" width="26" height="22" rx="8" fill="{tone}" fill-opacity=".16"/>'
+            f'<rect x="5" y="9" width="26" height="22" rx="8" stroke="{tone}" stroke-width="1.5"/>'
+            f'<circle cx="14" cy="19" r="2" fill="{tone}"/><circle cx="22" cy="19" r="2" fill="{tone}"/>'
+            f'<path d="M15 25q3 2 6 0" stroke="{tone}" stroke-width="1.7" fill="none"'
+            ' stroke-linecap="round"/></svg>'
+        )
         QSvgRenderer(QByteArray(svg.encode())).render(
-            painter, QRectF(0, bob, size, size))
+            painter, QRectF(0, 0, pixels, pixels))
         painter.end()
+        pixmap.setDevicePixelRatio(scale)
         return pixmap
 
 
-_TOOLTIPS = {
-    MascotState.IDLE: "Py AI is ready",
-    MascotState.READING: "Py AI is reading the page",
-    MascotState.THINKING: "Py AI is thinking",
-    MascotState.WORKING: "Py AI is working in the browser",
-    MascotState.COMPLETE: "Py AI has finished",
-    MascotState.APPROVAL: "Py AI needs your approval",
-}
+# ---------------------------------------------------------------------------
 
 
-def _placeholder_svg(look: _Look, tone: str, face: str, phase: int,
-                     *, spinning: bool) -> str:
-    eyes = {
-        "open": (f'<circle cx="12" cy="19" r="2.1" fill="{tone}"/>'
-                 f'<circle cx="24" cy="19" r="2.1" fill="{tone}"/>'),
-        "half": (f'<path d="M10 19h4M22 19h4" stroke="{tone}" stroke-width="2.4"'
-                 ' stroke-linecap="round"/>'),
-        "closed": (f'<path d="M10 19.5q2-2.4 4 0M22 19.5q2-2.4 4 0" stroke="{tone}"'
-                   ' stroke-width="2.2" stroke-linecap="round" fill="none"/>'),
-        "happy": (f'<path d="M10 18.5q2 2.4 4 0M22 18.5q2 2.4 4 0" stroke="{tone}"'
-                  ' stroke-width="2.2" stroke-linecap="round" fill="none"/>'),
-    }[look.eyes]
+def state_for_agent(agent_state: str, *, answered: bool = False,
+                    failed: bool = False) -> str:
+    """Translate an AgentState into what Py should show.
 
-    badge = ""
-    if look.badge == "tick":
-        badge = (f'<circle cx="28.5" cy="8.5" r="6" fill="{tone}"/>'
-                 f'<path d="m25.8 8.6 1.9 1.9 3.4-3.6" stroke="{face}"'
-                 ' stroke-width="1.9" fill="none" stroke-linecap="round"'
-                 ' stroke-linejoin="round"/>')
-    elif look.badge == "ask":
-        badge = (f'<circle cx="28.5" cy="8.5" r="6" fill="{tone}"/>'
-                 f'<path d="M26.9 6.9a1.7 1.7 0 1 1 1.7 2.2v.9" stroke="{face}"'
-                 ' stroke-width="1.7" fill="none" stroke-linecap="round"/>'
-                 f'<circle cx="28.6" cy="11.6" r=".95" fill="{face}"/>')
-    elif look.badge == "spin" and spinning:
-        angle = phase * 45
-        badge = (f'<g transform="rotate({angle} 28.5 8.5)">'
-                 f'<path d="M28.5 3.5a5 5 0 1 0 5 5" stroke="{tone}"'
-                 ' stroke-width="2" fill="none" stroke-linecap="round"/></g>')
+    Lives here rather than in the panel so every surface tells the same story
+    about the same agent.
 
-    return (
-        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 36 36" fill="none">'
-        f'<rect x="3" y="7" width="30" height="26" rx="9" fill="{tone}" fill-opacity=".14"/>'
-        f'<rect x="3" y="7" width="30" height="26" rx="9" stroke="{tone}"'
-        ' stroke-opacity=".45" stroke-width="1.4"/>'
-        f'<path d="M18 3v4" stroke="{tone}" stroke-width="1.8" stroke-linecap="round"/>'
-        f'<circle cx="18" cy="2.6" r="1.7" fill="{tone}"/>'
-        f"{eyes}"
-        f'<path d="M14.5 26q3.5 2.4 7 0" stroke="{tone}" stroke-width="1.8"'
-        ' stroke-linecap="round" fill="none" opacity=".75"/>'
-        f"{badge}</svg>"
-    )
-
-
-def state_for_agent(agent_state: str, *, finished_well: bool = False) -> str:
-    """Translate an AgentState into what the mascot should show.
-
-    Kept here rather than in the panel so both the panel and the new-tab page
-    tell the same story about the same agent.
+    The end of a task is the part that has to be honest: `complete` is only for
+    a task that actually produced an answer. One that was stopped, or that
+    failed, gets `stuck` - a browser whose assistant celebrates its own
+    failures is one you stop believing.
     """
     from app.agent.session import AgentState
 
+    if agent_state == AgentState.IDLE:
+        if failed:
+            return MascotState.STUCK
+        return MascotState.COMPLETE if answered else MascotState.IDLE
     return {
         AgentState.THINKING: MascotState.THINKING,
         AgentState.ACTING: MascotState.WORKING,
         AgentState.AWAITING_CONFIRMATION: MascotState.APPROVAL,
         AgentState.CANCELLING: MascotState.IDLE,
-        AgentState.IDLE: MascotState.COMPLETE if finished_well else MascotState.IDLE,
     }.get(agent_state, MascotState.IDLE)

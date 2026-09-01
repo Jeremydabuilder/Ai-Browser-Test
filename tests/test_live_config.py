@@ -247,3 +247,61 @@ class CredentialResolutionTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class QuickActionTests(LiveReconfigurationTests):
+    """New Tab -> Py -> agent panel, as one connected interaction."""
+
+    def test_a_quick_action_opens_the_panel_with_the_request_written_out(self) -> None:
+        os.environ["ANTHROPIC_API_KEY"] = FAKE_KEY
+        self.window._on_internal_action(
+            "ai", {"q": "Summarise the page I am looking at."})
+        _app.processEvents()
+        panel = self.window._side_panel
+        self.assertIsNotNone(panel, "the panel did not open")
+        self.assertEqual(panel.input.toPlainText(),
+                         "Summarise the page I am looking at.")
+
+    def test_the_request_is_not_sent_for_the_user(self) -> None:
+        # Writing it out is help; sending it is the browser deciding what the
+        # user meant.
+        os.environ["ANTHROPIC_API_KEY"] = FAKE_KEY
+        self.window._on_internal_action("ai", {"q": "Research tidal power"})
+        _app.processEvents()
+        self.assertFalse(self.window._agent_session.busy)
+        self.assertEqual(self.window._agent_session.messages, [])
+
+    def test_py_reacts_to_being_summoned(self) -> None:
+        from app.ui.mascot import MascotState
+
+        os.environ["ANTHROPIC_API_KEY"] = FAKE_KEY
+        self.window._on_internal_action("ai", {"q": "Compare my tabs"})
+        _app.processEvents()
+        self.assertEqual(self.window._side_panel.mascot.state(), MascotState.THINKING)
+
+    def test_opening_py_with_nothing_typed_just_opens_it(self) -> None:
+        os.environ["ANTHROPIC_API_KEY"] = FAKE_KEY
+        self.window._on_internal_action("ai", {"q": ""})
+        _app.processEvents()
+        self.assertIsNotNone(self.window._side_panel)
+        self.assertEqual(self.window._side_panel.input.toPlainText(), "")
+
+    def test_py_is_sized_for_the_panel(self) -> None:
+        from app.ui import theme
+
+        os.environ["ANTHROPIC_API_KEY"] = FAKE_KEY
+        self.window.resize(1400, 900)
+        self.window._toggle_agent_panel()
+        _app.processEvents()
+        self.assertEqual(self.window._side_panel.mascot.width(),
+                         theme.METRICS.mascot_panel)
+
+    def test_py_shrinks_in_a_narrow_panel(self) -> None:
+        from app.ui import theme
+
+        os.environ["ANTHROPIC_API_KEY"] = FAKE_KEY
+        self.window.resize(720, 700)
+        self.window._toggle_agent_panel()
+        _app.processEvents()
+        self.assertEqual(self.window._side_panel.mascot.width(),
+                         theme.METRICS.mascot_panel_small)

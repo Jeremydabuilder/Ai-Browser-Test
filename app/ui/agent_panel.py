@@ -70,8 +70,8 @@ class _MessageBox(QPlainTextEdit):
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self.setPlaceholderText("Ask Py AI about this page\u2026")
-        self.setAccessibleName("Message to Py AI")
+        self.setPlaceholderText("Ask Py about this page\u2026")
+        self.setAccessibleName("Message to Py")
         self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self._min_height = 38
@@ -172,7 +172,7 @@ class ConfirmationBar(QFrame):
         site = f' on <b>{escape(request.site)}</b>' if request.site else ""
         self._title.setText(
             f'<span style="font-size:11px;letter-spacing:.04em;opacity:.75">'
-            f"PY AI WANTS TO</span><br>"
+            f"PY WANTS TO</span><br>"
             f'<span style="font-size:14px;font-weight:600">{action}</span>{site}')
 
         lines = []
@@ -208,10 +208,12 @@ class AgentPanel(QWidget):
         #: True while the transcript is showing the invitation rather than a
         #: conversation, so the first message replaces it instead of following it.
         self._empty = True
-        #: Whether the task in progress has produced an answer, and whether it
-        #: hit an error - together they decide what the mascot shows at the end.
+        #: How the task in progress is going. Together these decide what Py
+        #: shows when it ends: only a task that actually answered, and was
+        #: neither stopped nor broken, gets the finished face.
         self._answered = False
         self._failed = False
+        self._stopped = False
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(8, 8, 8, 8)
@@ -223,14 +225,22 @@ class AgentPanel(QWidget):
         # -- header: who is answering, and how to start over ---------------
         top = QHBoxLayout()
         top.setSpacing(m.space_2)
-        # The mascot is the header's anchor: one place that says how the task
-        # is going, readable without reading.
-        self.mascot = Mascot(30, self)
+        # Py anchors the header: one place that says how the task is going,
+        # readable without reading. The line underneath says the same thing in
+        # words, for when a glance is not enough.
+        self.mascot = Mascot(m.mascot_panel, self)
         self.mascot.clicked.connect(lambda: self.input.setFocus())
         top.addWidget(self.mascot)
-        header = QLabel("Py AI", self)
+
+        name_block = QVBoxLayout()
+        name_block.setSpacing(0)
+        header = QLabel("Py", self)
         header.setStyleSheet(f"font-size:{m.text_lg}px; font-weight:600;")
-        top.addWidget(header)
+        name_block.addWidget(header)
+        self.companion = QLabel(self.mascot.companion_text(), self)
+        self.companion.setStyleSheet(f"color:{c.muted}; font-size:{m.text_xs}px;")
+        name_block.addWidget(self.companion)
+        top.addLayout(name_block)
         if model:
             badge = QLabel(model.replace(" (default)", ""), self)
             badge.setToolTip(f"Answers come from {model}. Change it in "
@@ -269,7 +279,7 @@ class AgentPanel(QWidget):
         # in it. A bordered box around a mostly-empty transcript is the single
         # thing that made this panel look like a form.
         self.transcript.setProperty("kind", "flat")
-        self.transcript.setAccessibleName("Conversation with Py AI")
+        self.transcript.setAccessibleName("Conversation with Py")
         layout.addWidget(self.transcript, 1)
 
         # What the agent is doing, as a checklist that updates in place rather
@@ -290,7 +300,7 @@ class AgentPanel(QWidget):
         self.steps.setOpenLinks(False)
         self.steps.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.steps.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        self.steps.setAccessibleName("What Py AI is doing")
+        self.steps.setAccessibleName("What Py is doing")
         self.steps.hide()
         layout.addWidget(self.steps)
 
@@ -355,6 +365,7 @@ class AgentPanel(QWidget):
         session.assistant_delta.connect(self._on_delta)
         session.cleared.connect(self._on_cleared)
         session.step_changed.connect(self._on_step)
+        self.mascot.state_changed.connect(self._on_mascot_state)
 
     def _show_empty_state(self) -> None:
         """What the panel says before it has been asked anything.
@@ -371,7 +382,7 @@ class AgentPanel(QWidget):
             f'<p style="color:{c.text};font-size:{m.text}px;font-weight:600;'
             f'margin:{m.space_5}px 0 {m.space_2}px">Ask about the page you are on.</p>'
             f'<p style="color:{c.muted};font-size:{m.text_sm}px;margin:0 0 {m.space_4}px">'
-            "Py AI can read this page, look across your tabs, and follow links "
+            "Py can read this page, look across your tabs, and follow links "
             "to find things out.</p>"
             f'<p style="color:{c.disabled};font-size:{m.text_sm}px;margin:0">'
             "Try &ldquo;summarise this&rdquo; or &ldquo;compare my two tabs&rdquo;.</p>")
@@ -394,7 +405,7 @@ class AgentPanel(QWidget):
                 widget.setEnabled(False)
         self.transcript.setHtml(
             f'<p style="color:{c.text};font-size:{m.text}px;font-weight:600;'
-            f'margin:{m.space_5}px 0 {m.space_2}px">Py AI is not set up yet.</p>'
+            f'margin:{m.space_5}px 0 {m.space_2}px">Py is not set up yet.</p>'
             f'<p style="color:{c.muted};font-size:{m.text_sm}px;margin:0 0 {m.space_3}px">'
             "Open <b>Tools \u2192 Configure AI Agent</b> to connect it. You can sign "
             "in with the Anthropic CLI, use cloud credentials you already have, "
@@ -410,13 +421,14 @@ class AgentPanel(QWidget):
         if not text or self._session.busy:
             return
         self.input.clear()
-        self._answered = self._failed = False
+        self._answered = self._failed = self._stopped = False
         self._begin_conversation()
         self._append("user", text)
         self._session.send(text)
 
     def _stop(self) -> None:
         if self._session is not None:
+            self._stopped = True
             self._session.cancel()
 
     def _clear(self) -> None:
@@ -431,7 +443,7 @@ class AgentPanel(QWidget):
         """Send a prepared message, exactly as if the user had typed it."""
         if self._session is None or self._session.busy:
             return
-        self._answered = self._failed = False
+        self._answered = self._failed = self._stopped = False
         self._begin_conversation()
         self._append("user", text)
         self._session.send(text)
@@ -497,14 +509,31 @@ class AgentPanel(QWidget):
         # conversation, which is what makes a long task readable afterwards.
         pass
 
+    def _on_mascot_state(self, _state: str) -> None:
+        """Say in words what Py is showing.
+
+        Driven off the mascot rather than off the session, so the face and the
+        line can never disagree - there is one source for both.
+        """
+        self.companion.setText(self.mascot.companion_text())
+
     def _on_step(self, step: Step) -> None:
         self._steps_by_index[step.index] = step
-        if step.state == StepState.RUNNING and step.tool:
-            # Reading a page and clicking through one look different from the
-            # outside, so they look different here too.
-            self.mascot.set_state(
-                MascotState.READING if step.tool in READ_ONLY_TOOLS
-                else MascotState.WORKING)
+        if step.state == StepState.WAITING:
+            # Waiting for the user outranks everything: Py must not look busy
+            # while it is actually blocked on a decision.
+            self.mascot.set_state(MascotState.APPROVAL)
+        elif step.state == StepState.RUNNING and step.tool:
+            # The session announces a gated step as RUNNING before marking it
+            # WAITING, so without this guard the step would overwrite the
+            # approval face with "On it." - Py claiming to be working while
+            # actually asking permission.
+            if self.mascot.state() != MascotState.APPROVAL:
+                # Reading a page and clicking through one look different from
+                # the outside, so they look different here too.
+                self.mascot.set_state(
+                    MascotState.READING if step.tool in READ_ONLY_TOOLS
+                    else MascotState.WORKING)
         self._render_steps()
 
     def _render_steps(self) -> None:
@@ -554,7 +583,7 @@ class AgentPanel(QWidget):
         # produced something - ending because it was stopped or because it
         # failed is not a success, and the character should not claim it was.
         self.mascot.set_state(state_for_agent(
-            state, finished_well=self._answered and not self._failed))
+            state, answered=self._answered, failed=self._failed or self._stopped))
         busy = state != AgentState.IDLE
         # Stop replaces Send rather than sitting next to it: only one of them
         # is ever the thing you want, and two live buttons is a decision the
@@ -568,14 +597,9 @@ class AgentPanel(QWidget):
             widget = self.quick.itemAt(index).widget()
             if widget is not None:
                 widget.setEnabled(not busy)
-        self.status.setText({
-            AgentState.THINKING: "Thinking\u2026",
-            AgentState.ACTING: "Working in the browser\u2026",
-            # The card below says what is being asked, so this does not repeat it.
-            AgentState.AWAITING_CONFIRMATION: "",
-            AgentState.CANCELLING: "Stopping\u2026",
-            AgentState.IDLE: "",
-        }.get(state, ""))
+        # Py's line says what is happening, so the status bar only carries
+        # what Py cannot: the one transitional state with no face for it.
+        self.status.setText("Stopping\u2026" if state == AgentState.CANCELLING else "")
 
     def _on_usage(self, usage) -> None:
         """Show what this task has cost so far.

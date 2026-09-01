@@ -184,9 +184,35 @@ class DataTests(unittest.TestCase):
         self.assertEqual(json.loads(data.to_json())["recent"][0]["title"], "Ünïcøde ✓")
 
     def test_the_page_loads_nothing_from_the_network(self) -> None:
+        """Nothing is fetched, so the page appears instantly and works offline.
+
+        Images are allowed - Py is one - but only inlined. This used to forbid
+        `<img` outright, which was a proxy for the real rule; now it checks the
+        rule itself, which is stricter: every image source must be a data URI.
+        """
+        import re
+
         html = render(NewTabData())
-        for pattern in ("http://", "https://", "//cdn", "<img", "@import"):
+        for pattern in ("http://", "https://", "//cdn", "@import", "url("):
             self.assertNotIn(pattern, html, f"new tab page must not reference {pattern}")
+        for source in re.findall(r"""<img[^>]*\ssrc=["']([^"']+)""", html):
+            self.assertTrue(source.startswith("data:"),
+                            f"image is fetched rather than inlined: {source[:40]}")
+
+    def test_py_is_on_the_page(self) -> None:
+        html = render(NewTabData())
+        self.assertIn("data:image", html, "Py is missing from the new tab page")
+        self.assertIn("Hey, I\u2019m Py", html)
+
+    def test_the_offers_say_what_they_are_for(self) -> None:
+        # "Compare" on its own is a word, not an offer.
+        html = render(NewTabData())
+        for label, blurb in (("Research", "Go deep on a topic"),
+                             ("Summarise", "Get the key points"),
+                             ("Compare", "Look across my tabs"),
+                             ("Explain", "Make it simple and clear")):
+            self.assertIn(label, html)
+            self.assertIn(blurb, html)
 
 
 class SettingsTests(unittest.TestCase):

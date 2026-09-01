@@ -376,8 +376,19 @@ _TEMPLATE = """<!doctype html>
     gap: 12px; margin-bottom: 26px; user-select: none;
   }
   .mark {
-    width: 56px; height: 56px; color: var(--accent);
+    width: 64px; height: 64px; color: var(--accent);
+    cursor: pointer;
+    border-radius: 50%;
+    transition: transform .16s ease;
+    /* Py breathes here the same way Py breathes in the agent panel. Slow, tiny,
+       and off entirely for anyone who asked for less motion. */
     animation: breathe 5.5s ease-in-out infinite;
+  }
+  /* Below about 420px the character competes with the search box for the
+     little vertical space there is, so it steps down rather than dominating. */
+  @media (max-height: 620px), (max-width: 420px) {
+    .mark { width: 44px; height: 44px; }
+    main { padding-top: clamp(24px, 8vh, 72px); }
   }
   /* Barely there on purpose: enough that the page is not a still image,
      little enough that it never asks to be watched. */
@@ -385,10 +396,15 @@ _TEMPLATE = """<!doctype html>
     0%, 100% { transform: translateY(0) }
     50%      { transform: translateY(-3px) }
   }
+  .mark:hover { transform: scale(1.06); animation-play-state: paused; }
+  .mark:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
   .wordmark {
     font-size: 23px; font-weight: 600; letter-spacing: -.022em;
   }
   .wordmark span { color: var(--accent); }
+  .greeting {
+    margin: 2px 0 0; font-size: 13.5px; color: var(--muted); text-align: center;
+  }
 
   form { position: static; }
   .field { position: relative; }
@@ -429,7 +445,7 @@ _TEMPLATE = """<!doctype html>
   }
 
   .ai {
-    margin-top: 14px;
+    margin-top: 10px;
     display: flex; align-items: center; gap: 11px; width: 100%;
     padding: 12px 15px;
     text-align: left;
@@ -453,26 +469,42 @@ _TEMPLATE = """<!doctype html>
   .ai b { font-weight: 600; font-size: 13.5px; }
   .ai small { display: block; color: var(--muted); font-size: 12px; }
 
+  /* Things Py can do, offered as cards rather than as a toolbar: each says
+     what it is for, because "Compare" on its own is a word, not an offer. */
+  .offer-label {
+    margin: 18px 0 8px; text-align: center;
+    font-size: 12px; color: var(--muted);
+  }
   .actions {
-    margin-top: 14px;
-    display: flex; flex-wrap: wrap; gap: 7px; justify-content: center;
+    display: grid; gap: 8px;
+    grid-template-columns: repeat(auto-fit, minmax(132px, 1fr));
   }
   .action {
-    font: inherit; font-size: 12.5px;
-    color: var(--muted);
+    font: inherit; text-align: left;
     background: var(--surface);
     border: 1px solid var(--line);
-    border-radius: 999px;
-    padding: 6px 14px;
+    border-radius: var(--radius-lg);
+    padding: 11px 13px;
+    /* Equal height whether the blurb wraps or not - a row of cards that
+       disagree about their height is the fastest way to look unfinished. */
+    min-height: 62px;
+    display: flex; flex-direction: column; justify-content: center;
     cursor: pointer;
-    transition: color .14s ease, border-color .14s ease, transform .08s ease;
+    color: var(--text);
+    transition: border-color .14s ease, box-shadow .14s ease, transform .08s ease;
   }
-  .action:hover { color: var(--accent); border-color: var(--accent); }
+  .action:hover {
+    border-color: var(--accent); box-shadow: var(--shadow);
+  }
   .action:active { transform: translateY(1px); }
   .action:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .action b {
+    display: block; font-size: 13px; font-weight: 600; margin-bottom: 2px;
+  }
+  .action small { color: var(--muted); font-size: 11.5px; line-height: 1.35; }
 
   .columns {
-    margin-top: 40px;
+    margin-top: 32px;
     display: grid; gap: 14px 32px;
     grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
   }
@@ -500,7 +532,7 @@ _TEMPLATE = """<!doctype html>
     color: var(--disabled); font-size: 13px; padding: 7px 0;
   }
   footer {
-    margin-top: 44px; text-align: center;
+    margin-top: 32px; text-align: center;
     font-size: 12px; color: var(--disabled);
   }
   footer a { color: var(--muted); text-decoration: none; }
@@ -516,6 +548,7 @@ _TEMPLATE = """<!doctype html>
          same size, so the layout does not move when the artwork arrives. -->
     __MASCOT__
     <div class="wordmark">Py<span>Browser</span></div>
+    <p class="greeting" id="greeting">Hey, I\u2019m Py. What shall we explore?</p>
   </div>
 
   <form id="f" autocomplete="off">
@@ -533,6 +566,7 @@ _TEMPLATE = """<!doctype html>
     <p class="hint" id="hint"></p>
   </form>
 
+  <p class="offer-label" id="offer-label">Or let me help with\u2026</p>
   <div class="actions" id="actions"></div>
 
   <button class="ai" id="ai" type="button">
@@ -545,8 +579,8 @@ _TEMPLATE = """<!doctype html>
       </svg>
     </span>
     <span>
-      <b>Ask Py AI</b>
-      <small id="ai-sub">Summarise this page, compare tabs, or research a topic</small>
+      <b>Ask Py something else</b>
+      <small id="ai-sub">Anything about this page, your tabs, or the web</small>
     </span>
   </button>
 
@@ -633,7 +667,7 @@ _TEMPLATE = """<!doctype html>
 
   if (!data.agentAvailable) {
     document.getElementById("ai-sub").textContent =
-      "Set up the AI assistant in Tools \\u2192 Configure AI Agent";
+      "Set Py up first in Tools \\u2192 Configure AI Agent";
   }
 
   var box = document.getElementById("q");
@@ -663,26 +697,56 @@ _TEMPLATE = """<!doctype html>
     act("ai", { q: box.value.trim() });
   });
 
+  // Py is the companion, so Py is also a button: clicking the character opens
+  // the panel. The card above is what makes that discoverable.
+  var mark = document.querySelector(".mark");
+  if (mark) {
+    mark.setAttribute("role", "button");
+    mark.setAttribute("tabindex", "0");
+    mark.setAttribute("title", "Ask Py");
+    mark.setAttribute("aria-label", "Ask Py");
+    mark.addEventListener("click", function () { act("ai", { q: box.value.trim() }); });
+    mark.addEventListener("keydown", function (event) {
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        act("ai", { q: box.value.trim() });
+      }
+    });
+  }
+
   // Quick actions open the AI panel with the request already written, so the
   // user lands one keystroke from an answer rather than at an empty box. They
   // go through the same action as everything else - there is one AI here.
   var ACTIONS = [
-    ["Research", "Research this for me and give me a few good sources: "],
-    ["Summarise", "Summarise the page I am looking at."],
-    ["Compare", "Compare my open tabs and tell me how they differ."],
-    ["Explain", "Explain what this page is and who it is for, in plain language."]
+    ["Research", "Go deep on a topic",
+     "Research this for me and give me a few good sources: "],
+    ["Summarise", "Get the key points",
+     "Summarise the page I am looking at."],
+    ["Compare", "Look across my tabs",
+     "Compare my open tabs and tell me how they differ."],
+    ["Explain", "Make it simple and clear",
+     "Explain what this page is and who it is for, in plain language."]
   ];
   var actions = document.getElementById("actions");
-  ACTIONS.forEach(function (pair) {
+  ACTIONS.forEach(function (spec) {
     var button = document.createElement("button");
     button.type = "button";
     button.className = "action";
-    button.textContent = pair[0];
+    var title = document.createElement("b");
+    title.textContent = spec[0];
+    var blurb = document.createElement("small");
+    blurb.textContent = spec[1];
+    button.appendChild(title);
+    button.appendChild(blurb);
     button.addEventListener("click", function () {
       var typed = box.value.trim();
-      // "Research" is the one that wants whatever is in the box appended.
-      var prompt = pair[1].slice(-2) === ": " ? pair[1] + (typed || "this topic")
-                                              : pair[1];
+      // "Research" is the one that takes whatever is in the box.
+      var prompt = spec[2].slice(-2) === ": " ? spec[2] + (typed || "this topic")
+                                              : spec[2];
+      // Py acknowledges the click here, before the panel has even opened, so
+      // the two halves of the interaction feel like one thing.
+      var greeting = document.getElementById("greeting");
+      greeting.textContent = "On it \u2014 opening Py\u2026";
       act("ai", { q: prompt });
     });
     actions.appendChild(button);

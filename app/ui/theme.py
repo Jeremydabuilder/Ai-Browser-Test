@@ -81,6 +81,11 @@ class Metrics:
     tab_min_width: int = 120
     tab_max_width: int = 220
 
+    # Py. Big enough to read an expression, small enough to stay furniture.
+    mascot_panel: int = 40
+    mascot_panel_small: int = 30   # when the panel is narrow
+    mascot_newtab: int = 56
+
 
 METRICS = Metrics()
 
