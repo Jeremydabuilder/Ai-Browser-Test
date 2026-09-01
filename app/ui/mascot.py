@@ -542,13 +542,20 @@ class Mascot(QLabel):
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         from PySide6.QtSvg import QSvgRenderer
 
+        # A fox head, not a generic round face: this is what is drawn when
+        # there is no artwork at all, and it should still be recognisably Py.
         svg = (
             '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 36 36" fill="none">'
-            f'<rect x="5" y="9" width="26" height="22" rx="8" fill="{tone}" fill-opacity=".16"/>'
-            f'<rect x="5" y="9" width="26" height="22" rx="8" stroke="{tone}" stroke-width="1.5"/>'
-            f'<circle cx="14" cy="19" r="2" fill="{tone}"/><circle cx="22" cy="19" r="2" fill="{tone}"/>'
-            f'<path d="M15 25q3 2 6 0" stroke="{tone}" stroke-width="1.7" fill="none"'
-            ' stroke-linecap="round"/></svg>'
+            f'<g fill="{tone}" fill-opacity=".16" stroke="{tone}" stroke-width="1.5"'
+            ' stroke-linejoin="round">'
+            '<path d="M11.5 11 7 3.5 14.5 7.5Z"/><path d="M24.5 11 29 3.5 21.5 7.5Z"/>'
+            '<path d="M18 8.5c6.2 0 10.5 4.3 10.5 10.2 0 5.6-4.3 9.8-10.5 9.8'
+            'S7.5 24.3 7.5 18.7C7.5 12.8 11.8 8.5 18 8.5Z"/></g>'
+            f'<circle cx="13.6" cy="18" r="1.9" fill="{tone}"/>'
+            f'<circle cx="22.4" cy="18" r="1.9" fill="{tone}"/>'
+            f'<ellipse cx="18" cy="23" rx="2.1" ry="1.6" fill="{tone}"/>'
+            f'<path d="M18 24.6v1.6M15 27.4q3 2 6 0" stroke="{tone}" stroke-width="1.5"'
+            ' fill="none" stroke-linecap="round"/></svg>'
         )
         QSvgRenderer(QByteArray(svg.encode())).render(painter, QRectF(
             (self._size * scale - pixels) / 2, (self._height * scale - pixels) / 2,

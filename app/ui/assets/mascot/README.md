@@ -1,5 +1,9 @@
 # Py artwork
 
+Py is an anthropomorphic fox: warm orange fur, cream muzzle, chest and tail
+tip, large ears, fluffy tail, royal-blue hoodie with a white "P." badge, dark
+joggers and blue sneakers.
+
 Drop the final Py files straight into **this folder**. That is the whole
 integration — no code changes, no registration, no rebuild.
 
@@ -49,15 +53,18 @@ stuck-full.png      stuck-panel.png
   inlined into the new-tab page without a font or filter surprise. Export at
   **2× or 3×** the display size and drop it in as `<name>@2x.png` alongside the
   1× file — around 220×440 for a full body, 128×128 for a bust.
+* **Transparent background, no baked-in light ground.** The new-tab page is
+  near-white in one theme and near-black in the other, and the same file is
+  used for both.
 * **`.svg`** is better if the artwork is vector — it stays sharp at any size and
   keeps the file small, which matters because the new-tab drawing is inlined as
   a data URI on every new tab. Give the SVG an explicit `viewBox` **trimmed to
   what is actually drawn**: empty margin in the viewBox makes Py render small
   inside a large invisible box.
 * **`.gif` / `.webp` / `.apng`** if a state is animated — see Motion below.
-* Transparent background. Py sits on both a near-white and a near-black page,
-  so avoid a baked-in light backdrop and avoid pure-black outlines that vanish
-  in dark mode.
+* No pure-black outlines — they disappear against the dark theme. The orange
+  fur and the blue hoodie both carry enough contrast on either ground; the
+  cream muzzle is what needs watching against a light page.
 
 Extensions are tried in this order: `.gif`, `.webp`, `.apng`, `.png`, `.svg` —
 so an animated file wins over a still one of the same name.
@@ -94,3 +101,22 @@ not a character. An animated asset replaces the built-in motion entirely.
 
 All motion stops when `PYBROWSER_REDUCED_MOTION=1`, `QT_REDUCED_MOTION=1` or
 `NO_ANIMATIONS=1` is set — including animated assets.
+
+## Palette
+
+From the character sheet, and shared with the browser chrome
+(`app/ui/theme.py`, `app/browser/newtab.py`):
+
+| Colour | Role |
+|---|---|
+| `#3D5AFE` | hoodie, and the browser's light accent |
+| `#556BFF` | hood lining, highlights |
+| `#B8C6FF` | sneaker trim |
+| `#1E2430` | joggers, linework |
+| `#2D3342` | jogger highlight |
+| `#FFB347` | the approval sign |
+| `#FF6B6B` | deny |
+| `#28C76F` | done |
+
+The dark theme uses `#8C9CFF` rather than `#556BFF`: the sheet's lighter blue
+is only about 4:1 against a near-black window, which is thin for body text.

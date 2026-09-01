@@ -297,18 +297,20 @@ def _mascot_markup() -> str:
     return _PLACEHOLDER_MARK
 
 
-#: The stand-in mark, until the character exists. Matches app/ui/mascot.py.
+#: The stand-in mark, until the character exists. Matches app/ui/mascot.py -
+#: a fox head, so that even with no artwork at all the page is still Py's.
 _PLACEHOLDER_MARK = (
-    '<svg class="mark" viewBox="0 0 36 40" fill="none" aria-hidden="true">'
-    '<rect x="3" y="7" width="30" height="26" rx="9" fill="currentColor" fill-opacity=".12"/>'
-    '<rect x="3" y="7" width="30" height="26" rx="9" stroke="currentColor"'
-    ' stroke-opacity=".4" stroke-width="1.4"/>'
-    '<path d="M18 3v4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>'
-    '<circle cx="18" cy="2.6" r="1.7" fill="currentColor"/>'
-    '<circle cx="12" cy="19" r="2.1" fill="currentColor"/>'
-    '<circle cx="24" cy="19" r="2.1" fill="currentColor"/>'
-    '<path d="M14.5 26q3.5 2.4 7 0" stroke="currentColor" stroke-width="1.8"'
-    ' stroke-linecap="round" fill="none" opacity=".7"/></svg>'
+    '<svg class="mark" viewBox="0 0 36 36" fill="none" aria-hidden="true">'
+    '<g fill="currentColor" fill-opacity=".12" stroke="currentColor"'
+    ' stroke-opacity=".55" stroke-width="1.4" stroke-linejoin="round">'
+    '<path d="M11.5 11 7 3.5 14.5 7.5Z"/><path d="M24.5 11 29 3.5 21.5 7.5Z"/>'
+    '<path d="M18 8.5c6.2 0 10.5 4.3 10.5 10.2 0 5.6-4.3 9.8-10.5 9.8'
+    'S7.5 24.3 7.5 18.7C7.5 12.8 11.8 8.5 18 8.5Z"/></g>'
+    '<circle cx="13.6" cy="18" r="1.9" fill="currentColor"/>'
+    '<circle cx="22.4" cy="18" r="1.9" fill="currentColor"/>'
+    '<ellipse cx="18" cy="23" rx="2.1" ry="1.6" fill="currentColor"/>'
+    '<path d="M18 24.6v1.6M15 27.4q3 2 6 0" stroke="currentColor" stroke-width="1.5"'
+    ' fill="none" stroke-linecap="round" opacity=".8"/></svg>'
 )
 
 
@@ -329,7 +331,7 @@ _TEMPLATE = """<!doctype html>
     --text: #17171d;
     --muted: #65656f;
     --disabled: #a8a8b4;
-    --accent: #6c4cff;
+    --accent: #3d5afe;
     --accent-soft: #eeedfc;
     --glow: rgba(75, 70, 212, .07);
     --shadow: 0 1px 2px rgba(20, 20, 40, .04), 0 10px 30px rgba(20, 20, 40, .06);
@@ -352,7 +354,7 @@ _TEMPLATE = """<!doctype html>
       --text: #eeeef3;
       --muted: #9797a6;
       --disabled: #61616e;
-      --accent: #8a6bff;
+      --accent: #8c9cff;
       --accent-soft: #282740;
       --glow: rgba(139, 134, 255, .10);
       --shadow: 0 1px 2px rgba(0, 0, 0, .35), 0 10px 30px rgba(0, 0, 0, .35);
@@ -367,7 +369,7 @@ _TEMPLATE = """<!doctype html>
     --text: #eeeef3;
     --muted: #9797a6;
     --disabled: #61616e;
-    --accent: #8a6bff;
+    --accent: #8c9cff;
     --accent-soft: #282740;
     --glow: rgba(139, 134, 255, .10);
     --shadow: 0 1px 2px rgba(0, 0, 0, .35), 0 10px 30px rgba(0, 0, 0, .35);
@@ -431,10 +433,10 @@ _TEMPLATE = """<!doctype html>
      little vertical space there is, so it steps down rather than dominating. */
   /* Py steps down before crowding the search box, rather than pushing it off
      the screen: on a short window the box is the thing you came for. */
-  @media (max-height: 760px) {
+  @media (max-height: 640px) {
     .mark { height: 150px; }
   }
-  @media (max-height: 620px), (max-width: 420px) {
+  @media (max-height: 520px), (max-width: 420px) {
     .mark { height: 108px; }
     main { padding-top: clamp(20px, 6vh, 60px); }
     .brand { gap: 8px; margin-bottom: 18px; }

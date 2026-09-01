@@ -1,45 +1,41 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="14 1 72 94" width="72" height="94">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="15 0 70 84" width="70" height="84">
   <defs>
     <linearGradient id="hoodie" x1="0" y1="0" x2=".35" y2="1">
-      <stop offset="0" stop-color="#8A6BFF"/>
-      <stop offset=".55" stop-color="#6C4CFF"/>
-      <stop offset="1" stop-color="#5238D6"/>
+      <stop offset="0" stop-color="#556BFF"/>
+      <stop offset=".55" stop-color="#3D5AFE"/>
+      <stop offset="1" stop-color="#2A41D6"/>
     </linearGradient>
-    <linearGradient id="skin" x1=".25" y1="0" x2=".8" y2="1">
-      <stop offset="0" stop-color="#F6CFA8"/>
-      <stop offset="1" stop-color="#E7B68E"/>
+    <linearGradient id="fur" x1=".2" y1="0" x2=".85" y2="1">
+      <stop offset="0" stop-color="#F79A4E"/>
+      <stop offset=".5" stop-color="#E8722C"/>
+      <stop offset="1" stop-color="#C4551B"/>
     </linearGradient>
-    <linearGradient id="hair" x1=".2" y1="0" x2=".9" y2="1">
-      <stop offset="0" stop-color="#7A5138"/>
-      <stop offset=".45" stop-color="#54341F"/>
-      <stop offset="1" stop-color="#3B2418"/>
+    <linearGradient id="cream" x1=".3" y1="0" x2=".8" y2="1">
+      <stop offset="0" stop-color="#FFFFFF"/>
+      <stop offset="1" stop-color="#E4D2B8"/>
     </linearGradient>
     <linearGradient id="legs" x1="0" y1="0" x2="1" y2=".2">
-      <stop offset="0" stop-color="#2D2D3F"/>
-      <stop offset="1" stop-color="#1F1F2E"/>
+      <stop offset="0" stop-color="#2D3342"/>
+      <stop offset="1" stop-color="#1E2430"/>
     </linearGradient>
   </defs>
-  <path d="M66.4 10.6c-4.6-3.4-9-2.4-9.8 1.6-.7 3.4 3.4 5 5.8 3.2 2.6-2 1.4-6.2-2.4-6.6-4-.4-6.6 3.2-5.4 6.8" stroke="#8A6BFF" stroke-width="2.4" fill="none" stroke-linecap="round"/>
-  <g><path d="M45.2 44h9.6v13h-9.6Z" fill="#E7B68E"/><path d="M26 101v-7c0-11.6 8-20.8 18-22.8h12c10 2 18 11.2 18 22.8v7Z" fill="url(#hoodie)"/><path d="M32.6 101v-7c0-7 3-13.4 8-17.4L43 101Z" fill="#8A6BFF" opacity=".42"/><path d="M37 67.4c3.8 5.4 8.2 8 13 8s9.2-2.6 13-8c3.2 1.1 5.8 2.8 7.6 4.8-5 5.8-12.1 9.3-20.6 9.3s-15.6-3.5-20.6-9.3c1.8-2 4.4-3.7 7.6-4.8Z" fill="#8A6BFF"/><rect x="44.5" y="81.5" width="11" height="11" rx="3.08" fill="#FFFFFF"/><text x="50" y="90.3" text-anchor="middle" font-family="system-ui,-apple-system,Segoe UI,Roboto,sans-serif" font-size="6.82" font-weight="700" fill="#6C4CFF">P.</text></g>
+  <path d="M82 9c-4.4-3.2-8.6-2.3-9.4 1.5-.7 3.3 3.3 4.8 5.6 3.1 2.5-1.9 1.3-6-2.3-6.3-3.8-.4-6.3 3-5.2 6.5" stroke="#556BFF" stroke-width="2.3" fill="none" stroke-linecap="round"/>
+  <g><path d="M44.6 61.8c1.6 3.2 3.4 5.6 5.4 7.2 2-1.6 3.8-4 5.4-7.2 2.5 1.1 4.4 2.7 5.7 4.7-2.1 6.2-5.8 9.6-11.1 9.6s-9-3.4-11.1-9.6c1.3-2 3.2-3.6 5.7-4.7Z" fill="url(#cream)"/><path d="M28 80v-4c0-8.4 6-15.2 14-16.8h16c8 1.6 14 8.4 14 16.8v4Z" fill="url(#hoodie)"/><path d="M33 80v-4c0-5 2.2-9.6 5.8-12.6L40.6 80Z" fill="#556BFF" opacity=".42"/><path d="M41 61.4c2.6 3.4 5.6 5.1 9 5.1s6.4-1.7 9-5.1c2.2.8 4 1.9 5.4 3.3-3.1 3.6-8 5.8-14.4 5.8s-11.3-2.2-14.4-5.8c1.4-1.4 3.2-2.5 5.4-3.3Z" fill="#556BFF"/><rect x="45.25" y="69.25" width="9.5" height="9.5" rx="2.66" fill="#FFFFFF"/><text x="50" y="76.85" text-anchor="middle" font-family="system-ui,-apple-system,Segoe UI,Roboto,sans-serif" font-size="5.89" font-weight="700" fill="#3D5AFE">P.</text></g>
   <g id="head" transform="rotate(-5 50 36)">
-    <path d="M45.2 44h9.6v11h-9.6Z" fill="#E7B68E"/>
-    <path d="M45.2 44h9.6v4.6c-3.4 1.4-6.6 1.4-9.6 0Z" fill="#D2966B" opacity=".55"/>
-    <ellipse cx="34.2" cy="35" rx="3.1" ry="4.2" fill="#E7B68E"/>
-    <ellipse cx="65.8" cy="35" rx="3.1" ry="4.2" fill="#E7B68E"/>
-    <path d="M35 30.4c0-10.8 6.7-18 15-18s15 7.2 15 18v6c0 10.2-6.5 16.8-15 16.8S35 46.6 35 36.4Z" fill="url(#skin)"/>
-    <path d="M50 53.2c-8.5 0-15-6.6-15-16.8v-2.6c2.2 7 7.8 11.6 15 11.6s12.8-4.6 15-11.6v2.6c0 10.2-6.5 16.8-15 16.8Z" fill="#E7B68E" opacity=".38"/>
-    <ellipse cx="39.6" cy="40.2" rx="3.4" ry="2.1" fill="#FF6B6B" opacity=".22"/>
-    <ellipse cx="60.4" cy="40.2" rx="3.4" ry="2.1" fill="#FF6B6B" opacity=".22"/>
-    <g fill="url(#hair)">
-      <path d="M34.7 31.8C33.7 19.8 40.5 11.8 50 11.8s16.3 8 15.3 20c-1.2-4-3-6.6-4.9-8.2-1.5 1.9-3.7 2.8-6 2.3-2.8-.6-4-2.3-4.5-4-1.9 3.3-5.5 5.9-10.7 6.6-2.4.3-4.1 1.4-5.7 3.3Z"/>
-      <path d="M52.6 13c2.7-3.6 5.6-4.8 8.7-3.7-2.5 1.3-4.2 3.2-5 5.7Z"/>
-      <path d="M45.2 12.4c1-3.1 2.9-4.8 5.6-5-1.5 1.9-2.1 4-1.9 6.2Z"/>
-      <path d="M58.8 15.2c2.9-2.5 5.6-3.1 8.1-1.9-2.3.6-4 2-5.4 4Z"/>
-    </g>
-    <path d="M38.6 17.6c2.6-3.2 6-5 10.2-5.4-3.4 1.6-6 3.8-8 6.6Z" fill="#7A5138" opacity=".7"/>
-    <path d="M37.4 29.2q4-2.8 8 0M55 27.4q3.8-.8 7.6 1.4" stroke="#3B2418" stroke-width="2.2" fill="none" stroke-linecap="round"/>
-    <ellipse cx="41.8" cy="35" rx="4.3" ry="4.9" fill="#FFFFFF"/><ellipse cx="40.4" cy="35.8" rx="3.3" ry="3.8" fill="#3B2418"/><ellipse cx="40.4" cy="36.3" rx="1.9" ry="2.2" fill="#1F1F2E"/><circle cx="39.199999999999996" cy="34.199999999999996" r="1.4" fill="#FFFFFF"/><circle cx="41.8" cy="37.3" r=".8" fill="#FFFFFF" opacity=".65"/><ellipse cx="58.2" cy="35" rx="4.3" ry="4.9" fill="#FFFFFF"/><ellipse cx="56.800000000000004" cy="35.8" rx="3.3" ry="3.8" fill="#3B2418"/><ellipse cx="56.800000000000004" cy="36.3" rx="1.9" ry="2.2" fill="#1F1F2E"/><circle cx="55.6" cy="34.199999999999996" r="1.4" fill="#FFFFFF"/><circle cx="58.2" cy="37.3" r=".8" fill="#FFFFFF" opacity=".65"/>
-    <path d="M45.6 45.4q1.8-1.8 3.6 0t3.6 0" stroke="#1F1F2E" stroke-width="2.1" fill="none" stroke-linecap="round"/>
+    <path d="M38.5 26C34.8 18.6 29.6 10.2 25.8 6c-2-2.2-3.8-1.2-3.7 1.6.3 7.2 1.7 16.4 3.9 23.6Z" fill="url(#fur)"/><path d="M37 24.6c-3-6-7.2-12.8-10.2-16.2-1.2-1.4-2.2-.8-2.2 1 .2 5.6 1.2 12.6 2.9 18.4Z" fill="#FBEEDC" opacity=".9"/><path d="M27.4 8.4c-.8-1-1.6-.6-1.6.9.1 2.6.4 5.6.9 8.6 1-3.6 1.4-6.8.7-9.5Z" fill="#C4551B"/><path d="M61.5 26C65.2 18.6 70.4 10.2 74.2 6c2-2.2 3.8-1.2 3.7 1.6-.3 7.2-1.7 16.4-3.9 23.6Z" fill="url(#fur)"/><path d="M63 24.6c3-6 7.2-12.8 10.2-16.2 1.2-1.4 2.2-.8 2.2 1-.2 5.6-1.2 12.6-2.9 18.4Z" fill="#FBEEDC" opacity=".9"/><path d="M72.6 8.4c.8-1 1.6-.6 1.6.9-.1 2.6-.4 5.6-.9 8.6-1-3.6-1.4-6.8-.7-9.5Z" fill="#C4551B"/>
+    <path d="M31.6 33.4c-3.8 1.2-7 3.4-9.6 6.6 3.4 1 6.6 1 9.6 0Z" fill="url(#fur)"/>
+    <path d="M33 42.4c-3.2 1.6-5.8 4-7.6 7.2 3.4.4 6.4-.2 8.8-2Z" fill="url(#fur)"/>
+    <path d="M68.4 33.4c3.8 1.2 7 3.4 9.6 6.6-3.4 1-6.6 1-9.6 0Z" fill="url(#fur)"/>
+    <path d="M67 42.4c3.2 1.6 5.8 4 7.6 7.2-3.4.4-6.4-.2-8.8-2Z" fill="url(#fur)"/>
+    <path d="M31 33.6c0-10.6 8.5-19.2 19-19.2s19 8.6 19 19.2c0 4.6-.8 8.8-2.4 12.2-1.7 3.8-4.2 6.7-7.2 8.6-2.9 1.9-6.2 2.9-9.4 2.9s-6.5-1-9.4-2.9c-3-1.9-5.5-4.8-7.2-8.6C31.8 42.4 31 38.2 31 33.6Z" fill="url(#fur)"/>
+    <path d="M50 24.6c5.8 0 10.6 2.6 13.4 6.8-2.4-8-7.4-12.6-13.4-12.6s-11 4.6-13.4 12.6c2.8-4.2 7.6-6.8 13.4-6.8Z" fill="#F79A4E" opacity=".55"/>
+    <path d="M50 60.2c-4.6 0-8.8-1.8-11.6-4.8-1.8-2-2.4-4.6-1.4-6.8 1.8-4 6.8-6.4 13-6.4s11.2 2.4 13 6.4c1 2.2.4 4.8-1.4 6.8-2.8 3-7 4.8-11.6 4.8Z" fill="url(#cream)"/>
+    <path d="M50 44.8c1.4 3.2 1.4 6.2 0 9-1.5-2.8-1.5-5.8 0-9Z" fill="#E4D2B8" opacity=".5"/>
+    <path d="M50 46.4c2.8 0 4.6 1.2 4.6 2.9 0 2.1-2.3 3.9-4.6 3.9s-4.6-1.8-4.6-3.9c0-1.7 1.8-2.9 4.6-2.9Z" fill="#2E2018"/>
+    <path d="M47.6 47.4c1-.5 2.1-.6 3-.3-1 .5-2 .6-3 .3Z" fill="#FFFFFF" opacity=".45"/>
+    <path d="M36.8 28.4q4.2-3 8.4 0M55.2 26.6q4-.8 8 1.5" stroke="#C4551B" stroke-width="2.2" fill="none" stroke-linecap="round"/>
+    <ellipse cx="41.4" cy="34.6" rx="4.6" ry="5.2" fill="#FFFFFF"/><ellipse cx="39.9" cy="35.5" rx="3.5" ry="4.1" fill="#8B4A1E"/><ellipse cx="39.9" cy="36.0" rx="2" ry="2.4" fill="#2E2018"/><circle cx="38.6" cy="33.8" r="1.5" fill="#FFFFFF"/><circle cx="41.4" cy="37.1" r=".85" fill="#FFFFFF" opacity=".65"/><ellipse cx="58.6" cy="34.6" rx="4.6" ry="5.2" fill="#FFFFFF"/><ellipse cx="57.1" cy="35.5" rx="3.5" ry="4.1" fill="#8B4A1E"/><ellipse cx="57.1" cy="36.0" rx="2" ry="2.4" fill="#2E2018"/><circle cx="55.800000000000004" cy="33.8" r="1.5" fill="#FFFFFF"/><circle cx="58.6" cy="37.1" r=".85" fill="#FFFFFF" opacity=".65"/>
+    <path d="M50 52.8v2.2" stroke="#2E2018" stroke-width="1.7" stroke-linecap="round"/><path d="M45.8 55.4q1.8-1.8 3.6 0t3.6 0" stroke="#2E2018" stroke-width="1.9" fill="none" stroke-linecap="round"/>
   </g>
   
 </svg>

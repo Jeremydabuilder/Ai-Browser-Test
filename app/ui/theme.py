@@ -91,10 +91,12 @@ METRICS = Metrics()
 
 #: The accent. Shared with the new-tab page (app/browser/newtab.py), because
 #: the page inside the browser and the chrome around it should look related.
-#: Both taken from the Py character sheet's palette, so the character and the
-#: chrome around him are the same brand rather than two nearby purples.
-ACCENT_LIGHT = "#6c4cff"
-ACCENT_DARK = "#8a6bff"
+#: Both taken from the Py character sheet's palette, so the fox and the chrome
+#: around him are the same brand rather than two unrelated colour schemes. The
+#: dark accent is a lighter tint of the same blue: the sheet's #556BFF is only
+#: about 4:1 against a near-black window, which is thin for body text.
+ACCENT_LIGHT = "#3d5afe"
+ACCENT_DARK = "#8c9cff"
 
 
 @dataclass(frozen=True)
@@ -135,7 +137,7 @@ LIGHT = Palette(
     bg="#f4f4f7", surface="#ffffff", surface_alt="#eaeaf0", surface_hover="#f0f0f5",
     line="#e0e0e8", line_strong="#c9c9d4",
     text="#17171d", muted="#65656f", disabled="#a8a8b4",
-    accent=ACCENT_LIGHT, accent_hover="#5638e6", accent_soft="#ede9ff",
+    accent=ACCENT_LIGHT, accent_hover="#2f47e0", accent_soft="#e6eaff",
     accent_text="#ffffff",
     danger="#b3261e", danger_soft="#fdeceb",
     warning="#a97400", warning_soft="#fff8e6", warning_text="#5c3d00",
@@ -147,7 +149,7 @@ DARK = Palette(
     bg="#141419", surface="#1e1e25", surface_alt="#262630", surface_hover="#2c2c38",
     line="#30303b", line_strong="#43434f",
     text="#eeeef3", muted="#9797a6", disabled="#61616e",
-    accent=ACCENT_DARK, accent_hover="#a48cff", accent_soft="#282740",
+    accent=ACCENT_DARK, accent_hover="#a3b0ff", accent_soft="#242a40",
     accent_text="#16162a",
     danger="#f2b8b5", danger_soft="#3a2422",
     warning="#e0b661", warning_soft="#332a17", warning_text="#f0dcb4",
