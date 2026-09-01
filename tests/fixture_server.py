@@ -243,6 +243,15 @@ class _Handler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(body)
             self.close_connection = True
+        elif path.startswith("/research"):
+            # Three short "sources" plus an index, so a research task has
+            # something to actually read, compare and disagree about.
+            key = path[len("/research"):].strip("/") or "index"
+            page = RESEARCH.get(key)
+            if page is None:
+                self.send_error(404)
+                return
+            self._send(page)
         elif path == "/frames":
             # A cross-origin child too: localhost and 127.0.0.1 are different
             # origins to the browser even on the same port, which is exactly
@@ -272,6 +281,36 @@ class _Handler(BaseHTTPRequestHandler):
     def log_message(self, *args) -> None:  # silence request logging
         return
 
+
+RESEARCH = {
+    "index": """<!doctype html><html><head><title>Sources on tidal power</title></head>
+<body><h1>Sources on tidal power</h1>
+<ul>
+  <li><a href="/research/one">How tidal barrages work</a></li>
+  <li><a href="/research/two">Tidal stream turbines</a></li>
+  <li><a href="/research/three">Environmental effects</a></li>
+</ul></body></html>""",
+    "one": """<!doctype html><html><head><title>How tidal barrages work</title></head>
+<body><h1>How tidal barrages work</h1>
+<p>A barrage is a dam across an estuary. Sluice gates let the incoming tide
+fill the basin; at low tide the water is released through turbines. Output is
+predictable decades ahead because it follows the moon, not the weather.
+The La Rance barrage in France has run since 1966 at 240 megawatts.</p>
+</body></html>""",
+    "two": """<!doctype html><html><head><title>Tidal stream turbines</title></head>
+<body><h1>Tidal stream turbines</h1>
+<p>Stream turbines sit in the flow and look like underwater wind turbines.
+They need no dam, so they alter an estuary far less than a barrage does, but
+each machine produces less: the MeyGen array in Scotland totals 6 megawatts.
+Maintenance is the hard part, because everything is underwater.</p>
+</body></html>""",
+    "three": """<!doctype html><html><head><title>Environmental effects</title></head>
+<body><h1>Environmental effects</h1>
+<p>Barrages change the tidal range behind them, which reshapes the mudflats
+wading birds feed on. Stream turbines avoid that, but pose a collision risk to
+marine mammals. Both are quieter in operation than their critics expect.</p>
+</body></html>""",
+}
 
 FRAMES = """<!doctype html><html><head><title>Frames Host</title></head>
 <body><h1>Frames Host</h1>

@@ -268,6 +268,10 @@ class ToolRegistry:
         return self._int(args, "tab_id", None)
 
     # -- the sensitivity question ----------------------------------------
+    def knows(self, name: str) -> bool:
+        """Is this a tool that exists? Asked before anything is announced."""
+        return name in TOOL_NAMES
+
     def assess(self, name: str, args: dict[str, Any]) -> dict[str, Any]:
         """What would this tool call do, and does it need the user's blessing?
 
@@ -321,6 +325,41 @@ class ToolRegistry:
             "target": (preview.get("target") or {}).get("name", ""),
             "target_role": (preview.get("target") or {}).get("role", ""),
         }
+
+    #: Gerund -> infinitive, so one description can read as a step heading
+    #: ("Clicking Buy now") and as a request ("wants to click Buy now").
+    #: Written out rather than derived, because English word endings are not
+    #: a rule you can compute.
+    _INFINITIVES = {
+        "Clicking": "click",
+        "Submitting": "submit",
+        "Setting": "set",
+        "Choosing an option in": "choose an option in",
+        "Scrolling to": "scroll to",
+        "Typing into": "type into",
+        "Opening": "open",
+        "Reading the page": "read the page",
+        "Reading the page text": "read the page text",
+        "Looking for": "look for",
+        "Searching the page": "search the page",
+        "Scrolling": "scroll",
+        "Waiting for": "wait for",
+    }
+
+    def describe_call_as_request(self, name: str, args: dict[str, Any]) -> str:
+        """The same description, phrased to follow "wants to".
+
+        Lowercasing the gerund produced "wants to clicking ...", which is the
+        sort of thing that makes an approval prompt look machine-generated at
+        exactly the moment the user is deciding whether to trust it.
+        """
+        description = self.describe_call(name, args)
+        for gerund, infinitive in self._INFINITIVES.items():
+            if description == gerund:
+                return infinitive
+            if description.startswith(gerund + " "):
+                return infinitive + description[len(gerund):]
+        return description[:1].lower() + description[1:]
 
     def describe_call(self, name: str, args: dict[str, Any]) -> str:
         """A short line for the activity log. Never includes sensitive text."""

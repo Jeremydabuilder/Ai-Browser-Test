@@ -321,6 +321,13 @@ class UsageTests(unittest.TestCase):
     def test_summary_is_empty_before_anything_is_sent(self) -> None:
         self.assertEqual(Usage().summary("claude-opus-5"), "")
 
+    def test_summary_is_empty_when_no_usage_was_reported(self) -> None:
+        # A transport that returns no usage figures must not be reported as a
+        # task that cost nothing.
+        usage = Usage()
+        usage.add(self._response())
+        self.assertEqual(usage.summary("claude-opus-5"), "")
+
     def test_reset_clears_everything(self) -> None:
         usage = Usage()
         usage.add(self._response(input_tokens=5, output_tokens=5))

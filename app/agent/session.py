@@ -41,6 +41,7 @@ from PySide6.QtCore import QObject, QThread, Signal, Slot
 from app.agent.claude_client import AgentResponse, ClaudeError, ClaudeTransport, ToolCall
 from app.agent.config import AgentConfig
 from app.agent.prompt import SYSTEM_PROMPT
+from app.agent import trace as tracing
 from app.agent.tools import TOOL_SCHEMAS, ToolError, ToolRegistry
 from app.agent.usage import Usage
 from app.browser.controller import BrowserController
@@ -54,21 +55,71 @@ class AgentState:
     CANCELLING = "cancelling"
 
 
+class StepState:
+    """Where one step of the task has got to."""
+
+    RUNNING = "running"
+    DONE = "done"
+    FAILED = "failed"
+    WAITING = "waiting"          # paused for the user to approve
+    SKIPPED = "skipped"          # the user declined, or the task was stopped
+
+
+@dataclass(frozen=True)
+class Step:
+    """One thing the agent did, as the user sees it.
+
+    Carries no page content and no typed text - just what was attempted and
+    how it went. The panel renders these; nothing here knows about Qt.
+
+    Frozen, and a state change emits a *new* Step rather than mutating this
+    one. A mutable step would look fine in the panel, which re-renders anyway,
+    and quietly betray anyone who kept a reference: every step they had stored
+    would show the latest state.
+    """
+
+    index: int
+    description: str
+    state: str = StepState.RUNNING
+    detail: str = ""
+
+
 @dataclass
 class ConfirmationRequest:
-    """A sensitive action, paused until the user decides."""
+    """A sensitive action, paused until the user decides.
+
+    Carries everything the user needs to answer without going and looking:
+    what would happen, which site it would happen on, and - for a form - what
+    would be sent. Field *names* only, never their values: a confirmation
+    prompt is not a place to display a password back to someone.
+    """
 
     tool_call_id: str
     tool_name: str
     description: str            # "click 'Buy now'"
     reasons: list[str] = field(default_factory=list)
     url: str = ""
+    #: Names of the fields a form submission would send, when known.
+    submits: list[str] = field(default_factory=list)
+    #: True when one of those fields is a password or payment field.
+    sensitive_fields: bool = False
+
+    @property
+    def site(self) -> str:
+        """The host, which is the part of a URL that decides whether to trust it."""
+        from urllib.parse import urlsplit
+
+        try:
+            host = urlsplit(self.url).netloc
+        except ValueError:
+            return ""
+        return host[4:] if host.startswith("www.") else host
 
     @property
     def prompt(self) -> str:
-        where = f" on {self.url}" if self.url else ""
+        where = f" on {self.site}" if self.site else ""
         why = f" This {', '.join(self.reasons)}." if self.reasons else ""
-        return f"Claude wants to {self.description}{where}.{why}"
+        return f"Py AI wants to {self.description}{where}.{why}"
 
 
 # ---------------------------------------------------------------------------
@@ -141,6 +192,8 @@ class AgentSession(QObject):
     state_changed = Signal(str)                  # AgentState
     assistant_message = Signal(str)              # Claude's visible text
     activity = Signal(str)                       # one-line tool activity
+    #: A step appeared or changed state - the panel's checklist.
+    step_changed = Signal(object)                # Step
     error = Signal(str)                          # something went wrong
     finished = Signal()                          # task over (done or stopped)
     confirmation_required = Signal(object)       # ConfirmationRequest
@@ -188,6 +241,11 @@ class AgentSession(QObject):
         #: Results already collapsed, so a prune never runs twice on one block.
         self._pruned: set[str] = set()
 
+        #: A structured record of the current task. See app/agent/trace.py for
+        #: what is deliberately not in it.
+        self.trace = tracing.Trace()
+        self._steps: list[Step] = []
+
         # -- worker thread ------------------------------------------------
         self._thread = QThread()
         self._thread.setObjectName("claude-worker")
@@ -228,6 +286,9 @@ class AgentSession(QObject):
         self._tool_calls_made = 0
         self.task_usage.reset()
         self.usage_updated.emit(self.task_usage)
+        self._steps = []
+        self.trace.start()
+        self.trace.record(tracing.TASK_STARTED, chars=len(message))
         self._messages.append({"role": "user", "content": message})
         self._trim_history()
         self._request()
@@ -273,6 +334,8 @@ class AgentSession(QObject):
         if not self.busy:
             return
         self._cancelled = True
+        self.trace.record(tracing.TASK_CANCELLED, steps=len(self._steps))
+        self._update_step(StepState.SKIPPED, "stopped")
         self._set_state(AgentState.CANCELLING)
         self._pending.clear()
         self._results.clear()
@@ -289,10 +352,13 @@ class AgentSession(QObject):
         self._confirming_call = None
         self._confirmation = None
         if allowed:
+            self.trace.record(tracing.APPROVAL_GRANTED, tool=call.name)
             self.activity.emit(f"Approved: {request.description}")
             self._set_state(AgentState.ACTING)
-            self._execute(call)
+            self._execute(call, step=False)
             return
+        self.trace.record(tracing.APPROVAL_DENIED, tool=call.name)
+        self._update_step(StepState.SKIPPED, "you declined")
         self.activity.emit(f"Declined: {request.description}")
         self._record_result(call.id, (
             '{"ok": false, "error": {"code": "USER_DECLINED", '
@@ -318,6 +384,8 @@ class AgentSession(QObject):
             self._finish()
             return
         self._turns += 1
+        self.trace.record(tracing.MODEL_REQUESTED, turn=self._turns,
+                          messages=len(self._messages))
         self._set_state(AgentState.THINKING)
         self._dispatch.emit(SYSTEM_PROMPT, self._messages, TOOL_SCHEMAS)
 
@@ -328,6 +396,10 @@ class AgentSession(QObject):
         self.task_usage.add(response)
         self.session_usage.add(response)
         self.usage_updated.emit(self.task_usage)
+        self.trace.record(tracing.MODEL_RESPONDED,
+                          tools=len(response.tool_calls),
+                          stop_reason=response.stop_reason or None,
+                          output_tokens=response.output_tokens or None)
         if response.text:
             self.assistant_message.emit(response.text)
         if not response.wants_tools:
@@ -353,6 +425,10 @@ class AgentSession(QObject):
     def _on_failure(self, error: ClaudeError) -> None:
         if self._cancelled:
             return
+        # The message, never the detail: an SDK exception can quote a request
+        # header, and a header can carry a credential.
+        self.trace.record(tracing.TASK_ERROR, kind="model",
+                          retryable=error.retryable)
         self.error.emit(error.message)
         self._finish()
 
@@ -370,51 +446,86 @@ class AgentSession(QObject):
 
         call = self._pending.pop(0)
         self._tool_calls_made += 1
+        self.trace.record(tracing.TOOL_REQUESTED, tool=call.name,
+                          **tracing.summarise_arguments(call.name, call.arguments))
 
-        # 1. Classify before anything else, so a malformed call becomes a normal
+        # 1. Does this tool exist? Rejected here rather than at execution time,
+        #    so a hallucinated tool name never announces a step claiming the
+        #    browser is doing something it is not.
+        if not self._tools.knows(call.name):
+            self.trace.record(tracing.TOOL_REJECTED, tool=call.name, reason="unknown_tool")
+            self._record_result(call.id, self._tool_error(
+                "UNKNOWN_TOOL", f"There is no tool called '{call.name}'."), is_error=True)
+            self._advance()
+            return
+
+        # 2. Classify before anything else, so a malformed call becomes a normal
         #    tool error the model can correct rather than an exception.
         try:
             assessment = self._tools.assess(call.name, call.arguments)
         except ToolError as exc:
+            self.trace.record(tracing.TOOL_REJECTED, tool=call.name, reason="invalid_arguments")
             self._record_result(call.id, self._tool_error("INVALID_ARGUMENTS", str(exc)),
                                 is_error=True)
             self._advance()
             return
         except Exception as exc:  # noqa: BLE001
+            self.trace.record(tracing.TOOL_REJECTED, tool=call.name, reason="unknown_tool")
             self._record_result(call.id, self._tool_error("TOOL_FAILED", str(exc)), is_error=True)
             self._advance()
             return
 
-        # 2. The browser's safety layer decides - not the model.
+        # 3. The browser's safety layer decides - not the model.
         if assessment.get("requires_confirmation"):
             self._confirming_call = call
+            submits, sensitive = self._describe_submission(call)
             self._confirmation = ConfirmationRequest(
                 tool_call_id=call.id,
                 tool_name=call.name,
-                description=self._tools.describe_call(call.name, call.arguments).lower(),
+                description=self._tools.describe_call_as_request(call.name, call.arguments),
                 reasons=list(assessment.get("reasons", [])),
                 url=self._browser.get_current_page().page.url,
+                submits=submits,
+                sensitive_fields=sensitive,
             )
             self._set_state(AgentState.AWAITING_CONFIRMATION)
+            self.trace.record(tracing.APPROVAL_REQUESTED, tool=call.name,
+                              reasons=len(self._confirmation.reasons))
+            self._begin_step(self._tools.describe_call(call.name, call.arguments))
+            self._update_step(StepState.WAITING, "waiting for your approval")
             self.confirmation_required.emit(self._confirmation)
             return
 
         self._execute(call)
 
-    def _execute(self, call: ToolCall) -> None:
-        """Run one tool on the GUI thread and wait for its future."""
+    def _execute(self, call: ToolCall, *, step: bool = True) -> None:
+        """Run one tool on the GUI thread and wait for its future.
+
+        ``step`` is False when the step already exists - an approved action
+        was announced before the user was asked, and must not appear twice.
+        """
         if self._cancelled:
             return
         self._set_state(AgentState.ACTING)
-        self.activity.emit(self._tools.describe_call(call.name, call.arguments))
+        description = self._tools.describe_call(call.name, call.arguments)
+        if step:
+            self._begin_step(description)
+        else:
+            self._update_step(StepState.RUNNING)
+        self.activity.emit(description)
+        self.trace.record(tracing.TOOL_STARTED, tool=call.name)
         try:
             outcome = self._tools.run(call.name, call.arguments)
         except ToolError as exc:
+            self.trace.record(tracing.TOOL_FAILED, tool=call.name, reason="invalid_arguments")
+            self._update_step(StepState.FAILED, "invalid arguments")
             self._record_result(call.id, self._tool_error("INVALID_ARGUMENTS", str(exc)),
                                 is_error=True)
             self._advance()
             return
         except Exception as exc:  # noqa: BLE001 - a tool must never crash the session
+            self.trace.record(tracing.TOOL_FAILED, tool=call.name, reason="tool_failed")
+            self._update_step(StepState.FAILED, "the tool failed")
             self._record_result(call.id, self._tool_error("TOOL_FAILED", str(exc)), is_error=True)
             self._advance()
             return
@@ -422,6 +533,8 @@ class AgentSession(QObject):
         if outcome.immediate is not None:
             import json
 
+            self.trace.record(tracing.TOOL_SUCCEEDED, tool=call.name)
+            self._update_step(StepState.DONE)
             self._record_result(call.id, json.dumps(outcome.immediate, ensure_ascii=False),
                                 tool_name=call.name)
             self._advance()
@@ -431,10 +544,20 @@ class AgentSession(QObject):
             if self._cancelled:
                 return
             if result is None:
+                self.trace.record(tracing.TOOL_FAILED, tool=call.name, reason="timeout")
+                self._update_step(StepState.FAILED, "timed out")
                 self._record_result(call.id, self._tool_error(
                     "TIMEOUT", "The browser action did not complete in time."), is_error=True)
             else:
                 payload = self._tools.encode(result)
+                if result.ok:
+                    self.trace.record(tracing.TOOL_SUCCEEDED, tool=call.name,
+                                      result_chars=len(payload) if isinstance(payload, str) else None)
+                    self._update_step(StepState.DONE)
+                else:
+                    code = result.error.code if result.error else "failed"
+                    self.trace.record(tracing.TOOL_FAILED, tool=call.name, reason=code)
+                    self._update_step(StepState.FAILED, code)
                 self._record_result(call.id, self._tools.render(result, payload),
                                     is_error=not result.ok, tool_name=call.name)
             self._advance()
@@ -446,6 +569,54 @@ class AgentSession(QObject):
         if self._cancelled:
             return
         self._next_tool()
+
+    def _describe_submission(self, call: ToolCall) -> tuple[list[str], bool]:
+        """Which fields a form submission would send. Names only, never values.
+
+        Best-effort: if the page has moved on and the form cannot be found, the
+        prompt simply says less rather than guessing.
+        """
+        if call.name != "browser_submit":
+            return [], False
+        ref = call.arguments.get("ref")
+        if not isinstance(ref, str):
+            return [], False
+        try:
+            description = self._browser.describe_action("submit", ref=ref)
+            fields = description.get("fields") or []
+            names, sensitive = [], False
+            for item in fields:
+                if not isinstance(item, dict):
+                    continue
+                label = (item.get("name") or item.get("field_name")
+                         or item.get("placeholder") or item.get("input_type") or "")
+                if label:
+                    names.append(str(label)[:40])
+                if item.get("secret") or item.get("input_type") == "password":
+                    sensitive = True
+            return names[:12], sensitive
+        except Exception:  # noqa: BLE001 - a prompt must appear even if this fails
+            return [], False
+
+    # -- steps -------------------------------------------------------------
+    def _begin_step(self, description: str) -> Step:
+        step = Step(index=len(self._steps), description=description)
+        self._steps.append(step)
+        self.step_changed.emit(step)
+        return step
+
+    def _update_step(self, state: str, detail: str = "") -> None:
+        if not self._steps:
+            return
+        from dataclasses import replace
+
+        step = replace(self._steps[-1], state=state, detail=detail)
+        self._steps[-1] = step
+        self.step_changed.emit(step)
+
+    @property
+    def steps(self) -> list[Step]:
+        return list(self._steps)
 
     # -- helpers ----------------------------------------------------------
     def _record_result(self, tool_use_id: str, content: str, *,
@@ -570,6 +741,9 @@ class AgentSession(QObject):
             self.state_changed.emit(state)
 
     def _finish(self) -> None:
+        if not self._cancelled:
+            self.trace.record(tracing.TASK_FINISHED, steps=len(self._steps),
+                              turns=self._turns, tools=self._tool_calls_made)
         self._pending.clear()
         self._results.clear()
         self._assistant_content = None

@@ -70,16 +70,27 @@ an action, and cancellation must be checkable between every step.
 ### 1. Chat / copilot — **built**
 
 `AgentPanel` beside the page in a splitter, Ctrl+Shift+A. Streaming answers,
-quick actions, Clear, per-task token cost. It owns no agent logic: every
-decision belongs to `AgentSession`, which the panel only watches.
+quick actions, Clear, per-task token cost, and a **step checklist** that
+updates in place — `✓ Read the page`, `● Clicking "Buy now" — waiting for your
+approval` — rather than a log that scrolls. Steps are actions, never reasoning:
+the panel shows what the agent did to the browser, and the model's private
+thinking is not displayed anywhere. It owns no agent logic: every decision
+belongs to `AgentSession`, which the panel only watches.
 
-### 2. Page understanding — **built**
+### 2. Page understanding — **built**, frames included
 
 `get_page_structure()` returns roles, accessible names, headings, forms and
 readable text — not HTML. `page_script.js` runs in Chromium's **isolated
 world**: it shares the DOM but not the page's globals, so a page cannot see or
 tamper with it. It pierces open shadow roots (closed ones stay private, which
 is what "closed" means) and never stamps attributes onto the page.
+
+A snapshot spans documents: `<iframe>` content is captured through
+`QWebEngineFrame` and filed under the same snapshot id, so one reference space
+covers the whole page and an element inside a frame can be clicked or typed
+into like any other. Each frame's origin is reported, and frame text is
+labelled with it, so third-party embedded content is distinguishable from the
+site's own. Bounded to 3 levels and 12 frames.
 
 Capped at 120 elements and 6,000 characters per snapshot, and when something is
 trimmed the agent is *told* it was trimmed and how to get the rest. Silent
@@ -100,6 +111,23 @@ and the loop is bounded: 25 model turns, 40 browser actions. There is no
 separate planner producing a plan object. That is the next thing to add, and it
 belongs *beside* `AgentSession`, consuming the same tool registry — not inside
 the controller.
+
+The loop itself validates in a fixed order, and each stage is recorded:
+
+```
+tool requested → does the tool exist?      → TOOL_REJECTED, model told, loop continues
+              → what would it do?          → the browser's safety classification
+              → does it need approval?     → suspend, ask, APPROVAL_GRANTED / DENIED
+              → run it                     → TOOL_STARTED → SUCCEEDED / FAILED
+              → results back to the model  → next turn, or the final answer
+```
+
+**Observability** (`app/agent/trace.py`). Every task carries a capped, in-memory
+`Trace` of those events. It records shapes and sizes, never content: no page
+text, no typed text (only its length), and URLs reduced to their origin, since
+a query string can carry a token. Nothing is written to disk — a browsing trace
+is sensitive, and a file the user did not ask for is one they have to know to
+delete.
 
 ### 5. Multi-step tasks — **built**
 
@@ -196,8 +224,6 @@ it is in the wrong place.
 
 ## Known limitations
 
-* **Iframe content is invisible** to the page representation. The largest
-  compatibility gap.
 * **Only one profile per process can serve `pybrowser://`** — a Qt WebEngine
   constraint, measured; see `app/browser/newtab.py`. Invisible in the real
   browser, which has one profile.

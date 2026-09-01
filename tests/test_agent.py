@@ -346,10 +346,17 @@ class ErrorRecoveryTests(AgentTestCase):
         self.assertFalse(self.errors)   # not a task-ending error
 
     def test_unknown_tool_name_is_reported(self):
+        """A tool that does not exist is its own kind of mistake.
+
+        It used to report INVALID_ARGUMENTS, which told the model to fix its
+        arguments when the actual problem was that it had invented a tool.
+        """
         self.start([calls("browser_hack_the_page", {}), says("Not available.")])
         self.assertTrue(self.run_task("Do something odd."))
         result = json.loads(self.fake.tool_results()[0])
-        self.assertEqual(result["error"]["code"], "INVALID_ARGUMENTS")
+        self.assertEqual(result["error"]["code"], "UNKNOWN_TOOL")
+        self.assertIn("browser_hack_the_page", result["error"]["message"])
+        self.assertFalse(self.errors)   # the model can recover from this
 
     def test_invalid_url_is_reported_to_the_agent(self):
         self.start([calls("browser_navigate", {"url": "http://"}), says("Bad URL.")])
@@ -408,7 +415,7 @@ class ConfirmationTests(AgentTestCase):
         self.assertEqual(self.session.state, AgentState.AWAITING_CONFIRMATION)
         self.assertIn("buy now", request.description.lower())
         self.assertIn("spend money", " ".join(request.reasons))
-        self.assertIn("Claude wants to", request.prompt)
+        self.assertIn("Py AI wants to click", request.prompt)
         self.session.resolve_confirmation(False)
         self.assertTrue(pump(lambda: bool(done), 15000))
 

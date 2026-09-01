@@ -805,12 +805,15 @@ class BrowserController(QObject):
     ) -> dict[str, Any]:
         """Judge how consequential an action would be, WITHOUT performing it.
 
-        This is the hook a future agent uses to decide whether to ask the user
-        first. It is purely advisory - nothing in this codebase blocks an
-        action on the strength of it, and adding that policy is Phase 2 work.
+        This is what the agent consults before acting: `ToolRegistry.assess()`
+        routes every action tool through here, and a `requires_confirmation`
+        answer suspends the loop until the user decides. The judgement is the
+        browser's, not the model's - a model cannot route around it, and
+        `assess()` fails closed for any tool it does not recognise.
         """
         element = self._known_element(ref, tab_id) if ref else None
         payload = element.to_dict() if element else None
+        fields: list[dict[str, Any]] = []
         if action == "click":
             assessment = safety.classify_click(payload)
         elif action in ("type_text", "type"):
@@ -829,6 +832,10 @@ class BrowserController(QObject):
             "action": action,
             "ref": ref,
             "target": payload,
+            # The form's fields, so a caller can tell the user what would be
+            # sent. Descriptors only - `value` is part of an element's
+            # descriptor, so a caller showing these must pick the name.
+            **({"fields": fields} if fields else {}),
             **assessment.to_dict(),
         }
 

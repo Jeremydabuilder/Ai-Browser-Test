@@ -20,7 +20,23 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from app.agent.session import AgentSession, AgentState, ConfirmationRequest
+from app.agent.session import (
+    AgentSession,
+    AgentState,
+    ConfirmationRequest,
+    Step,
+    StepState,
+)
+
+#: How each step state reads. A step is a thing the agent did to the browser,
+#: never a thing it thought - the panel shows actions, not reasoning.
+_STEP_MARKS = {
+    StepState.RUNNING: ("&#9679;", "#4b46d4"),   # filled dot: happening now
+    StepState.DONE: ("&#10003;", "#2e7d32"),     # tick
+    StepState.FAILED: ("&#10007;", "#a11"),      # cross
+    StepState.WAITING: ("&#9679;", "#b8860b"),
+    StepState.SKIPPED: ("&#9675;", "#888"),      # hollow dot: never happened
+}
 
 #: The prompts behind the quick-action buttons. Written as things a person
 #: would actually say, because they go through the same path as anything the
@@ -80,7 +96,30 @@ class ConfirmationBar(QFrame):
         self.hide()
 
     def ask(self, request: ConfirmationRequest) -> None:
-        self._label.setText(request.prompt)
+        """Show what would happen, where, and what would be sent.
+
+        Three things decide whether this is safe to allow, and all three are
+        stated rather than left to be inferred: the action, the site it lands
+        on, and - for a form - which fields go with it. Field names only; a
+        confirmation prompt is not a place to display someone's password back
+        to them.
+        """
+        def escape(text: str) -> str:
+            return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+        lines = [f"<b>Py AI wants to {escape(request.description)}</b>"]
+        if request.site:
+            lines.append(f"on <b>{escape(request.site)}</b>")
+        if request.reasons:
+            lines.append(f"This {escape(', '.join(request.reasons))}.")
+        if request.submits:
+            shown = ", ".join(escape(name) for name in request.submits[:6])
+            more = f" and {len(request.submits) - 6} more" if len(request.submits) > 6 else ""
+            lines.append(f"Sends: {shown}{more}.")
+        if request.sensitive_fields:
+            lines.append("<b>One of those fields is a password or payment field.</b>")
+        self._label.setText("<br>".join(lines))
+        self._label.setTextFormat(Qt.TextFormat.RichText)
         self.show()
         self.deny_button.setFocus()
 
@@ -95,6 +134,8 @@ class AgentPanel(QWidget):
         #: True while an answer is being written into the transcript piece by
         #: piece, so the finished message is not appended a second time.
         self._streaming = False
+        #: The step checklist for the task in progress.
+        self._steps_by_index: dict[int, Step] = {}
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(8, 8, 8, 8)
@@ -133,6 +174,15 @@ class AgentPanel(QWidget):
         self.transcript.setOpenExternalLinks(False)
         self.transcript.setOpenLinks(False)
         layout.addWidget(self.transcript, 1)
+
+        # What the agent is doing, as a checklist that updates in place rather
+        # than a log that scrolls. Hidden between tasks so an idle panel is
+        # just a conversation.
+        self.steps = QTextBrowser(self)
+        self.steps.setMaximumHeight(132)
+        self.steps.setOpenLinks(False)
+        self.steps.hide()
+        layout.addWidget(self.steps)
 
         self.status = QLabel("", self)
         self.status.setWordWrap(True)
@@ -184,6 +234,7 @@ class AgentPanel(QWidget):
         session.usage_updated.connect(self._on_usage)
         session.assistant_delta.connect(self._on_delta)
         session.cleared.connect(self._on_cleared)
+        session.step_changed.connect(self._on_step)
 
     def _show_unconfigured(self) -> None:
         self.input.setEnabled(False)
@@ -207,6 +258,7 @@ class AgentPanel(QWidget):
         if not text or self._session.busy:
             return
         self.input.clear()
+        self._steps_by_index.clear()
         self._append("user", text)
         self._session.send(text)
 
@@ -226,6 +278,7 @@ class AgentPanel(QWidget):
         """Send a prepared message, exactly as if the user had typed it."""
         if self._session is None or self._session.busy:
             return
+        self._steps_by_index.clear()
         self._append("user", text)
         self._session.send(text)
 
@@ -265,13 +318,45 @@ class AgentPanel(QWidget):
         self._streaming = False
 
     def _on_cleared(self) -> None:
+        self._steps_by_index.clear()
+        self.steps.hide()
         self.transcript.clear()
         self.usage.hide()
         self._streaming = False
         self._append("system", "Conversation cleared.")
 
     def _on_activity(self, text: str) -> None:
-        self._append("activity", text)
+        # Activity now lives in the step list; the transcript keeps only the
+        # conversation, which is what makes a long task readable afterwards.
+        pass
+
+    def _on_step(self, step: Step) -> None:
+        self._steps_by_index[step.index] = step
+        self._render_steps()
+
+    def _render_steps(self) -> None:
+        if not self._steps_by_index:
+            self.steps.hide()
+            return
+        rows = []
+        for index in sorted(self._steps_by_index):
+            step = self._steps_by_index[index]
+            mark, colour = _STEP_MARKS.get(step.state, ("&#9675;", "#888"))
+            faded = "color:#888;" if step.state == StepState.SKIPPED else ""
+            detail = (f' <span style="color:#888">&mdash; {self._escape(step.detail)}</span>'
+                      if step.detail else "")
+            rows.append(
+                f'<div style="margin:2px 0;{faded}">'
+                f'<span style="color:{colour}">{mark}</span> '
+                f"{self._escape(step.description)}{detail}</div>")
+        self.steps.setHtml("".join(rows))
+        self.steps.show()
+        self.steps.verticalScrollBar().setValue(
+            self.steps.verticalScrollBar().maximum())
+
+    @staticmethod
+    def _escape(text: str) -> str:
+        return (text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;"))
 
     def _on_error(self, text: str) -> None:
         self._append("error", text)

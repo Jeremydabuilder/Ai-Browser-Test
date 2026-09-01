@@ -112,8 +112,14 @@ class Usage:
                 + self.output_tokens * out_price) / 1_000_000
 
     def summary(self, model: str = "") -> str:
-        """One line for the panel. Empty when nothing has been sent yet."""
-        if not self.requests:
+        """One line for the panel. Empty when there is nothing to report.
+
+        "Nothing" includes a request that came back without usage figures - a
+        scripted transport in the tests, or a provider that omits them. Showing
+        "0 in / 0 out - about $0.000" would claim the task was free rather than
+        admitting it was not measured.
+        """
+        if not self.requests or not self.prompt_tokens:
             return ""
         parts = [f"{self.prompt_tokens:,} in / {self.output_tokens:,} out"]
         if self.cache_read_tokens:
