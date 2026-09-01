@@ -125,6 +125,68 @@ def knock_out_background(image: QImage, tolerance: int = 26) -> tuple[QImage, bo
     return image, cleared > 0
 
 
+def drop_ground_shadow(image: QImage, *, sat_max: int = 46, lum_min: int = 60,
+                       edge: int = 30) -> tuple[QImage, int]:
+    """Clear a soft contact shadow left behind after the backdrop is removed.
+
+    A shadow painted onto a light backdrop is not the backdrop colour, so the
+    flat knock-out leaves it: mid-grey, fully opaque, sitting under the feet.
+    On a light page it reads as a smudge; on the dark theme it is a bright blob.
+
+    Removed by a second flood from the already-cleared region that may only
+    enter a pixel which is desaturated (a shadow has no hue), lighter than
+    `lum_min` (so black jeans and dark fur are never touched), and not across a
+    hard edge - the last one is what stops the fill climbing off the shadow ramp
+    and into a white shoe sole, which is also pale and desaturated but arrives
+    as a sudden step rather than a gradient.
+    """
+    image = QImage(image)
+    data, stride, width, height = _pixels(image)
+    if not width or not height:
+        return image, 0
+
+    def rgb(x: int, y: int) -> tuple[int, int, int, int]:
+        i = y * stride + x * 4
+        return data[i + 2], data[i + 1], data[i], data[i + 3]
+
+    seen = bytearray(width * height)
+    queue: deque[tuple[int, int, tuple[int, int, int]]] = deque()
+    for x in range(width):
+        for y in (0, height - 1):
+            if rgb(x, y)[3] == 0:
+                queue.append((x, y, (-1, -1, -1)))
+    for y in range(height):
+        for x in (0, width - 1):
+            if rgb(x, y)[3] == 0:
+                queue.append((x, y, (-1, -1, -1)))
+
+    cleared = 0
+    while queue:
+        x, y, came_from = queue.popleft()
+        if x < 0 or y < 0 or x >= width or y >= height:
+            continue
+        index = y * width + x
+        if seen[index]:
+            continue
+        red, green, blue, alpha = rgb(x, y)
+        if alpha:
+            if max(red, green, blue) - min(red, green, blue) > sat_max:
+                continue                       # it has a hue: it is Py
+            if (red * 299 + green * 587 + blue * 114) // 1000 < lum_min:
+                continue                       # too dark to be a shadow here
+            if came_from != (-1, -1, -1) and max(abs(red - came_from[0]),
+                                                 abs(green - came_from[1]),
+                                                 abs(blue - came_from[2])) > edge:
+                continue                       # a hard edge, not a soft ramp
+            data[y * stride + x * 4 + 3] = 0
+            cleared += 1
+        seen[index] = 1
+        here = (red, green, blue) if alpha else (-1, -1, -1)
+        queue.extend(((x + 1, y, here), (x - 1, y, here),
+                      (x, y + 1, here), (x, y - 1, here)))
+    return image, cleared
+
+
 def content_box(image: QImage, box: QRect | None = None) -> QRect:
     """The tightest rectangle holding every pixel above the alpha floor."""
     data, stride, width, height = _pixels(image)
@@ -340,6 +402,10 @@ def main() -> int:
                              "derives no panel and rescales nothing")
     parser.add_argument("--keep-background", action="store_true",
                         help="do not knock a flat background out to transparency")
+    parser.add_argument("--keep-shadow", action="store_true",
+                        help="keep a ground shadow that was painted on the backdrop")
+    parser.add_argument("--shadow-lightness", type=int, default=60,
+                        help="pixels darker than this are Py, not his shadow")
     parser.add_argument("--tolerance", type=int, default=26,
                         help="how close to the corner colour counts as background")
     parser.add_argument("--full-size", type=int, default=880,
@@ -397,6 +463,11 @@ def main() -> int:
             image = _load(path)
             if not args.keep_background:
                 image, removed = knock_out_background(image, args.tolerance)
+                if removed and not args.keep_shadow:
+                    image, gone = drop_ground_shadow(
+                        image, lum_min=args.shadow_lightness)
+                    if gone:
+                        print(f"{os.path.basename(path)}: cleared {gone} shadow px")
             box = content_box(image)
             if box.isNull():
                 print(f"{os.path.basename(path)}: nothing above the alpha floor")
@@ -416,6 +487,11 @@ def main() -> int:
         if not args.keep_background:
             image, removed = knock_out_background(image, args.tolerance)
             print(f"  background: {'knocked out' if removed else 'left as supplied'}")
+            if removed and not args.keep_shadow:
+                image, gone = drop_ground_shadow(
+                    image, lum_min=args.shadow_lightness)
+                print(f"  ground shadow: {gone} px cleared" if gone
+                      else "  ground shadow: none found")
         stem = os.path.splitext(os.path.basename(path))[0].lower()
         figures = [content_box(image)] if args.no_split else split_figures(image)
         figures = [box for box in figures if not box.isNull()]

@@ -232,3 +232,73 @@ class EndToEndTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class GroundShadowTests(unittest.TestCase):
+    """A shadow painted onto the backdrop is not the backdrop colour.
+
+    So the flat knock-out leaves it behind: mid-grey and fully opaque, a smudge
+    under the feet on a light page and a bright blob on the dark theme.
+    """
+
+    def _scene(self, sole: str | None = None) -> QImage:
+        """A figure over a soft contact shadow on a cream ground."""
+        from PySide6.QtCore import QPointF, QRectF
+        from PySide6.QtGui import QRadialGradient
+
+        image = blank(400, 600, "#F4F1EE")
+        painter = QPainter(image)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        gradient = QRadialGradient(QPointF(200, 500), 120)
+        gradient.setColorAt(0, QColor(0, 0, 0, 70))
+        gradient.setColorAt(1, QColor(0, 0, 0, 0))
+        painter.setBrush(gradient)
+        painter.setPen(QColor(0, 0, 0, 0))
+        painter.drawEllipse(QRectF(80, 460, 240, 80))
+        painter.fillRect(QRect(160, 80, 80, 120), QColor("#6B4A2F"))    # head
+        painter.fillRect(QRect(130, 200, 140, 200), QColor("#2A3F7A"))  # hoodie
+        painter.fillRect(QRect(155, 400, 90, 80), QColor("#1E1E22"))    # legs
+        if sole:
+            painter.fillRect(QRect(150, 480, 100, 22), QColor(sole))    # shoe sole
+        painter.end()
+        return image
+
+    def test_the_shadow_is_cleared(self) -> None:
+        cleaned, _ = importer.knock_out_background(self._scene())
+        before = importer.content_box(cleaned)
+        out, gone = importer.drop_ground_shadow(cleaned)
+        self.assertGreater(gone, 0, "no shadow pixels were cleared")
+        after = importer.content_box(out)
+        self.assertLess(after.bottom(), before.bottom(),
+                        "the figure box still reaches down into the shadow")
+        self.assertLessEqual(after.bottom(), 482,
+                             "the shadow is still hanging below the legs")
+
+    def test_a_white_shoe_sole_is_not_eaten(self) -> None:
+        """The failure mode worth guarding: a sole is pale and desaturated too.
+
+        What separates it from the shadow is that it arrives as a hard step
+        rather than along a soft ramp, which is what the edge test is for.
+        """
+        cleaned, _ = importer.knock_out_background(self._scene(sole="#F0EDE8"))
+        out, _ = importer.drop_ground_shadow(cleaned)
+        surviving = sum(
+            1 for x in range(155, 245)
+            if out.pixelColor(x, 490).alpha() > importer.ALPHA_FLOOR)
+        self.assertGreater(surviving, 70,
+                           f"the shoe sole was eaten as shadow ({surviving}/90 left)")
+
+    def test_dark_clothing_is_never_taken_for_shadow(self) -> None:
+        cleaned, _ = importer.knock_out_background(self._scene())
+        out, _ = importer.drop_ground_shadow(cleaned)
+        self.assertEqual(out.pixelColor(200, 440).alpha(), 255,
+                         "the black legs were cleared as shadow")
+        self.assertEqual(out.pixelColor(200, 300).alpha(), 255,
+                         "the hoodie was cleared as shadow")
+
+    def test_artwork_with_no_shadow_is_untouched(self) -> None:
+        image = stamp(blank(200, 300), QRect(60, 40, 80, 200))
+        before = importer.content_box(image)
+        out, gone = importer.drop_ground_shadow(image)
+        self.assertEqual(gone, 0)
+        self.assertEqual(importer.content_box(out), before)

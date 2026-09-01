@@ -120,7 +120,10 @@ python scripts/import_py_artwork.py py.png --all-states  # one drawing, every st
 ```
 
 It knocks a flat background out to transparency (flood-filled from the border,
-so an enclosed white highlight in an eye survives), trims the margin tight to
+so an enclosed white highlight in an eye survives), clears a ground shadow
+painted onto that background (a shadow is not the backdrop colour, so the flat
+knock-out leaves it as an opaque grey smudge - subtle on a light page, a bright
+blob on the dark theme), trims the margin tight to
 the character, finds the neck by looking for where the drawing suddenly gets
 wider and cuts a square head-and-shoulders bust above it, and writes `@2x`
 alongside each file. `--dry-run` reports without writing; the crop boxes it
