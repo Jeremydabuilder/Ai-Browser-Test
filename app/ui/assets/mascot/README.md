@@ -99,6 +99,13 @@ never lost. The difference between the two is a **crop and nothing else**:
 To re-derive them: `python scripts/import_py_artwork.py as-supplied/*-full.png
 --trim-only --out . --force`
 
+## Commissioning new artwork
+
+`ART-DIRECTION.md`, next to this file, is the brief: the character bible to
+repeat verbatim in every prompt, how to keep the same fox across fourteen
+images, the seven states with their poses and props, the delivery spec, and why
+the panel crop has to be composed for 44px rather than merely scaled to it.
+
 ## Importing supplied artwork
 
 If the artwork arrives as full-body drawings - or as one sheet with several
