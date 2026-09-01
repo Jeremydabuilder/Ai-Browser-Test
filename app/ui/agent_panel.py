@@ -23,7 +23,9 @@ from PySide6.QtWidgets import (
 )
 
 from app.ui import icons, theme
+from app.ui.mascot import Mascot, MascotState, state_for_agent
 
+from app.agent.tools import READ_ONLY_TOOLS
 from app.agent.session import (
     AgentSession,
     AgentState,
@@ -206,6 +208,10 @@ class AgentPanel(QWidget):
         #: True while the transcript is showing the invitation rather than a
         #: conversation, so the first message replaces it instead of following it.
         self._empty = True
+        #: Whether the task in progress has produced an answer, and whether it
+        #: hit an error - together they decide what the mascot shows at the end.
+        self._answered = False
+        self._failed = False
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(8, 8, 8, 8)
@@ -217,9 +223,11 @@ class AgentPanel(QWidget):
         # -- header: who is answering, and how to start over ---------------
         top = QHBoxLayout()
         top.setSpacing(m.space_2)
-        mark = QLabel(self)
-        mark.setPixmap(icons.icon("sparkle", c.accent, size=32).pixmap(m.icon, m.icon))
-        top.addWidget(mark)
+        # The mascot is the header's anchor: one place that says how the task
+        # is going, readable without reading.
+        self.mascot = Mascot(30, self)
+        self.mascot.clicked.connect(lambda: self.input.setFocus())
+        top.addWidget(self.mascot)
         header = QLabel("Py AI", self)
         header.setStyleSheet(f"font-size:{m.text_lg}px; font-weight:600;")
         top.addWidget(header)
@@ -402,6 +410,7 @@ class AgentPanel(QWidget):
         if not text or self._session.busy:
             return
         self.input.clear()
+        self._answered = self._failed = False
         self._begin_conversation()
         self._append("user", text)
         self._session.send(text)
@@ -422,6 +431,7 @@ class AgentPanel(QWidget):
         """Send a prepared message, exactly as if the user had typed it."""
         if self._session is None or self._session.busy:
             return
+        self._answered = self._failed = False
         self._begin_conversation()
         self._append("user", text)
         self._session.send(text)
@@ -440,13 +450,18 @@ class AgentPanel(QWidget):
 
     # -- session events --------------------------------------------------
     def _on_assistant(self, text: str) -> None:
+        self._answered = True
         if self._streaming:
             # Already on screen, written as it arrived.
             self._end_stream()
             return
         self._append("assistant", text)
 
-    def _on_delta(self, fragment: str) -> None:
+    def _on_delta(self, fragment: str) -> None:  # noqa: D401
+        self._answered = True
+        return self._write_delta(fragment)
+
+    def _write_delta(self, fragment: str) -> None:
         """Write a fragment of the answer as it arrives.
 
         Inserted as plain text so a page that streams back something looking
@@ -484,6 +499,12 @@ class AgentPanel(QWidget):
 
     def _on_step(self, step: Step) -> None:
         self._steps_by_index[step.index] = step
+        if step.state == StepState.RUNNING and step.tool:
+            # Reading a page and clicking through one look different from the
+            # outside, so they look different here too.
+            self.mascot.set_state(
+                MascotState.READING if step.tool in READ_ONLY_TOOLS
+                else MascotState.WORKING)
         self._render_steps()
 
     def _render_steps(self) -> None:
@@ -525,9 +546,15 @@ class AgentPanel(QWidget):
         return (text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;"))
 
     def _on_error(self, text: str) -> None:
+        self._failed = True
         self._append("error", text)
 
     def _on_state(self, state: str) -> None:
+        # A finished task shows the "complete" face only if it actually
+        # produced something - ending because it was stopped or because it
+        # failed is not a success, and the character should not claim it was.
+        self.mascot.set_state(state_for_agent(
+            state, finished_well=self._answered and not self._failed))
         busy = state != AgentState.IDLE
         # Stop replaces Send rather than sitting next to it: only one of them
         # is ever the thing you want, and two live buttons is a decision the

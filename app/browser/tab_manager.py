@@ -58,6 +58,10 @@ class TabManager(QTabWidget):
         # take half the window and look nothing like tabs.
         self.tabBar().setExpanding(False)
         self.tabBar().setDrawBase(False)
+        self._new_tab_button = None
+        #: True while the "+" is parked in the corner slot because the tab
+        #: strip has run out of room. See _position_new_tab_button.
+        self._button_in_corner = False
         self._install_new_tab_button()
 
         # One timer drives the loading indicator on every tab, and only while
@@ -113,10 +117,14 @@ class TabManager(QTabWidget):
         return tab
 
     def _install_new_tab_button(self) -> None:
-        """A "+" at the end of the strip, like every browser has.
+        """A "+" that sits immediately after the last tab.
 
-        A corner widget rather than a permanent extra tab: it stays put when
-        the strip scrolls, and it can never be selected or closed by accident.
+        A corner widget was the easy way to do this and looked wrong: pinned to
+        the far right of the strip, it read as an unrelated toolbar button
+        floating in whitespace rather than part of the tabs. Placing it as a
+        child of the tab bar and moving it after the last tab keeps it attached
+        to them, and it steps aside to the corner when the strip fills up -
+        which is exactly where it can still be reached once the tabs scroll.
         """
         try:
             from PySide6.QtWidgets import QApplication
@@ -124,24 +132,95 @@ class TabManager(QTabWidget):
             from app.ui import icons, theme
 
             colours = theme.palette_for(QApplication.instance())
-            button = QToolButton(self)
-            button.setIcon(icons.icon("plus", colours.muted, size=32, weight=2.2))
-            button.setIconSize(QSize(15, 15))
+            m = theme.METRICS
+            bar = self.tabBar()
+            button = QToolButton(bar)
+            button.setIcon(icons.icon("plus", colours.muted, size=32, weight=2.1))
+            button.setIconSize(QSize(m.icon_sm, m.icon_sm))
+            button.setFixedSize(m.tab - 8, m.tab - 8)
             button.setAutoRaise(True)
             button.setToolTip("New tab (Ctrl+T)")
             button.setAccessibleName("New tab")
             button.setCursor(Qt.CursorShape.ArrowCursor)
+            button.setFocusPolicy(Qt.FocusPolicy.TabFocus)
             button.setStyleSheet(
-                "QToolButton { border: none; border-radius: 6px; padding: 5px;"
-                " margin: 4px 6px 0 2px; }"
-                f"QToolButton:hover {{ background: {colours.surface_hover}; }}")
+                f"QToolButton {{ border: 1px solid transparent;"
+                f" border-radius: {m.radius_sm}px; background: transparent; }}"
+                f"QToolButton:hover {{ background: {colours.surface_hover};"
+                f" border-color: {colours.line}; }}"
+                f"QToolButton:pressed {{ background: {colours.surface_alt}; }}"
+                f"QToolButton:focus {{ border-color: {colours.accent}; }}")
             button.clicked.connect(lambda: self.new_tab())
-            self.setCornerWidget(button, Qt.Corner.TopRightCorner)
+            button.show()
+            self._new_tab_button = button
+            self._position_new_tab_button()
         except Exception as exc:  # noqa: BLE001
             import os
 
+            self._new_tab_button = None
             if os.environ.get("PYBROWSER_DEBUG_UI"):
                 print(f"[ui] new-tab button: {type(exc).__name__}: {exc}", flush=True)
+
+    def _position_new_tab_button(self) -> None:
+        """Put the "+" just past the last tab, or in the corner when crowded.
+
+        Two placements, because neither one is right on its own:
+
+        * Normally the button is a child of the tab bar, sitting a few pixels
+          past the last tab, so it reads as part of the strip.
+        * Once the tabs fill the strip there is nowhere after the last tab to
+          be - and the space at the right belongs to Qt's scroll arrows, which
+          the button was drawing on top of. So it moves into the tab widget's
+          corner slot, which Qt reserves and lays out around.
+
+        Done by hand because a QTabBar has no layout to put a widget in: the
+        tabs are painted, not laid out as widgets.
+        """
+        button = getattr(self, "_new_tab_button", None)
+        if button is None:
+            return
+        bar = self.tabBar()
+        gap = 4
+        count = bar.count()
+        last = bar.tabRect(count - 1) if count else None
+        x = (last.right() + 1 + gap) if last else gap
+        fits = last is None or (x + button.width() <= bar.width() - gap)
+
+        if fits:
+            if self._button_in_corner:
+                # Take it back out of the corner slot and re-adopt it.
+                self.setCornerWidget(None, Qt.Corner.TopRightCorner)
+                button.setParent(bar)
+                button.show()
+                self._button_in_corner = False
+            y = last.top() + max(0, (last.height() - button.height()) // 2) if last else gap
+            button.move(x, y)
+        elif not self._button_in_corner:
+            self.setCornerWidget(button, Qt.Corner.TopRightCorner)
+            button.show()
+            self._button_in_corner = True
+
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        self._position_new_tab_button()
+
+    def tabInserted(self, index: int) -> None:  # noqa: N802
+        super().tabInserted(index)
+        self._reposition_soon()
+
+    def tabRemoved(self, index: int) -> None:  # noqa: N802
+        super().tabRemoved(index)
+        self._reposition_soon()
+
+    def _reposition_soon(self) -> None:
+        """Move the "+" after Qt has laid the strip out, not before.
+
+        tabInserted() runs while the bar is still being changed, so the new
+        tab's rectangle is not yet its final one - positioning from it put the
+        button on top of the second-to-last tab. Deferring by one event-loop
+        turn is the difference between measuring the strip and guessing at it.
+        """
+        QTimer.singleShot(0, self._position_new_tab_button)
 
     # -- loading indicator --------------------------------------------------
     def _advance_spinner(self) -> None:
@@ -282,11 +361,13 @@ class TabManager(QTabWidget):
         if tab.url().scheme() == "pybrowser":
             self.setTabText(index, "New Tab")
             self.setTabToolTip(index, "New Tab")
+            self._reposition_soon()
             if tab is self.current_tab():
                 self.current_title_changed.emit("New Tab")
             return
         label = title or tab.url().host() or "New Tab"
         self.setTabText(index, self._elide(label))
+        self._reposition_soon()
         # The label is elided, so the tooltip carries both the full title and
         # where it actually goes - which is the question a tooltip on a tab is
         # usually being asked.

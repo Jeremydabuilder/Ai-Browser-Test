@@ -10,7 +10,7 @@ control the user cannot find is not a cost control.
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
@@ -27,10 +27,16 @@ from PySide6.QtWidgets import (
 class ApiKeyDialog(QDialog):
     """Credentials, model and effort - everything the agent needs to be told.
 
+    Emits ``saved`` whenever anything changes, so the window can reload the
+    agent while the browser keeps running. Nothing here restarts anything.
+
     ``settings`` is a SettingsStore, or None in which case the model and effort
     choices are shown but cannot be remembered (the environment variables still
     work). The browser always has one, so None is really only for tests.
     """
+
+    #: Something changed that the agent needs to pick up.
+    saved = Signal()
 
     def __init__(self, parent: QWidget | None = None, settings=None) -> None:
         super().__init__(parent)
@@ -179,8 +185,8 @@ class ApiKeyDialog(QDialog):
         self._settings.set(effort_key, self.effort_box.currentData())
         QMessageBox.information(
             self, "Configure AI Agent",
-            "Saved. Closing this dialog restarts the agent with the new "
-            "settings, which begins a fresh conversation.\n\n"
+            "Saved. Py AI picks this up as soon as you close this dialog, "
+            "which begins a fresh conversation.\n\n"
             "The model is not changed mid-conversation on purpose - the prompt "
             "cache is per-model, so switching part-way through a task would "
             "throw away everything cached so far.")
@@ -202,13 +208,18 @@ class ApiKeyDialog(QDialog):
             return
         finally:
             self.field.clear()   # do not leave the secret in a widget
+        # No restart. The window re-reads the credential when this dialog
+        # closes and rebuilds the agent if it changed - see
+        # MainWindow._apply_agent_settings.
+        self.saved.emit()
         QMessageBox.information(
             self, "Configure AI Agent",
-            "Key saved. Restart the browser to enable the agent.")
+            "Key saved. Py AI is ready to use.")
         self.accept()
 
     def _clear(self) -> None:
         self._store.clear_key()
+        self.saved.emit()
         QMessageBox.information(self, "Configure AI Agent", "Stored key removed.")
         self.accept()
 

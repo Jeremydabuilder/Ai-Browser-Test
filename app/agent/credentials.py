@@ -87,6 +87,21 @@ class Credential:
     def describe(self) -> str:
         return self.label
 
+    @property
+    def fingerprint(self) -> str:
+        """A stable, non-reversible id for "is this the same credential?".
+
+        Needed because the window has to notice that the user swapped their key
+        while the browser was running. Comparing the secrets themselves would
+        mean keeping a second copy of one around to compare against; a hash
+        answers the only question actually being asked, and cannot be turned
+        back into a key if it ever ends up somewhere it should not.
+        """
+        import hashlib
+
+        material = f"{self.mode}|{self.region}|{self.project}|{self.secret or ''}"
+        return hashlib.sha256(material.encode("utf-8")).hexdigest()[:16]
+
 
 def _has_oauth_profile() -> bool:
     """Has the user signed in with `ant auth login`?

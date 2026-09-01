@@ -69,17 +69,31 @@ class Database:
         self._writer.start()
 
     def _connect(self) -> sqlite3.Connection:
+        """Open the file and configure the connection.
+
+        sqlite3.connect() succeeds on any file - it does not read it - so a
+        corrupt database first shows up at the PRAGMA below. When that happens
+        the connection object still exists and still holds the file open, so it
+        is closed here rather than left for the caller: on Windows an open
+        handle makes the file impossible to rename or delete, which broke the
+        corrupt-database recovery entirely.
+        """
         conn = sqlite3.connect(str(self.path), check_same_thread=False, timeout=10.0)
-        conn.row_factory = sqlite3.Row
-        # WAL lets a read proceed while a write is in flight - the right default
-        # for a desktop app that writes on every page load.
-        conn.execute("PRAGMA journal_mode=WAL")
-        # With WAL, NORMAL means we fsync at checkpoints rather than on every
-        # commit. The worst case is losing the last few history rows after an
-        # OS crash, which is an acceptable trade for never stalling the UI.
-        conn.execute("PRAGMA synchronous=NORMAL")
-        conn.execute("PRAGMA foreign_keys=ON")
-        conn.execute("PRAGMA busy_timeout=10000")
+        try:
+            conn.row_factory = sqlite3.Row
+            # WAL lets a read proceed while a write is in flight - the right
+            # default for a desktop app that writes on every page load.
+            conn.execute("PRAGMA journal_mode=WAL")
+            # With WAL, NORMAL means we fsync at checkpoints rather than on
+            # every commit. The worst case is losing the last few history rows
+            # after an OS crash, which is an acceptable trade for never
+            # stalling the UI.
+            conn.execute("PRAGMA synchronous=NORMAL")
+            conn.execute("PRAGMA foreign_keys=ON")
+            conn.execute("PRAGMA busy_timeout=10000")
+        except BaseException:
+            conn.close()
+            raise
         return conn
 
     def _open_or_recover(self) -> sqlite3.Connection:
@@ -91,12 +105,27 @@ class Database:
         surface as early as the first PRAGMA, so both the connect and the
         schema step are covered here.
         """
+        conn = None
         try:
             conn = self._connect()
             self._apply_schema(conn)
             return conn
         except sqlite3.DatabaseError:
-            pass
+            # Close whatever is still open before touching the file. _connect()
+            # cleans up after itself, but _apply_schema() can fail on a
+            # connection that opened cleanly, and that one is ours to close.
+            #
+            # This matters only on Windows, and it matters completely: a file
+            # with an open handle cannot be renamed or deleted there, so the
+            # quarantine below raised PermissionError (WinError 32) and the
+            # recovery failed - meaning a corrupt database stopped the browser
+            # starting, the exact outcome this method exists to prevent. POSIX
+            # allows renaming an open file, which is why it went unnoticed.
+            if conn is not None:
+                try:
+                    conn.close()
+                except sqlite3.Error:
+                    pass
 
         # Move the unusable file aside rather than deleting it, so a user who
         # cares can still try to recover it by hand.
@@ -104,6 +133,11 @@ class Database:
         try:
             self.path.replace(quarantine)
         except OSError:
+            # Still unmovable - a permission problem, or an antivirus holding
+            # it open. Deleting is the fallback, and if that fails too we let
+            # the error out: at that point the disk is telling us something the
+            # browser cannot work around, and a clear failure beats a silent
+            # one.
             self.path.unlink(missing_ok=True)
         for suffix in ("-wal", "-shm"):
             self.path.with_name(self.path.name + suffix).unlink(missing_ok=True)

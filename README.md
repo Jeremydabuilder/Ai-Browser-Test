@@ -58,7 +58,7 @@ nss alsa-lib`.
 ## Tests
 
 ```bash
-python -m unittest discover -s tests -v          # 388 tests
+python -m unittest discover -s tests -v          # 435 tests
 python scripts/smoke_test.py                     # headless end-to-end run
 python scripts/feature_check.py                  # 28-point feature checklist
 python scripts/agent_demo.py                     # the research demo, offline
@@ -105,6 +105,17 @@ a browser bug when the real origin served another client successfully.
 | `Ctrl+Shift+A` | Show AI agent | | `Ctrl+J` | Downloads |
 | `Ctrl+,` | Settings | | | |
 | `Ctrl+±` / `Ctrl+0` | Zoom | | `F11` | Full screen |
+
+## The Py AI mascot
+
+Py AI has a small character that shows what it is doing — idle, reading,
+thinking, working, finished, or waiting for your approval. It appears in the
+agent panel header and at the top of the new-tab page.
+
+The artwork is replaceable without touching any code: drop files named after
+those states into [`app/ui/assets/mascot/`](app/ui/assets/mascot/) and they are
+picked up. Only `idle` is required; anything missing falls back to it, and with
+no files at all a built-in placeholder is drawn. See the folder's README.
 
 ## Appearance
 

@@ -89,6 +89,9 @@ class MainWindow(QMainWindow):
         self._agent_session = None
         #: Set once the agent has actually been tried and could not start.
         self._agent_unavailable = False
+        #: Fingerprint of the credential the live session was built with, so a
+        #: swapped key is noticed. Never the credential itself.
+        self._credential_id = ""
         self._find_sequence = 0
 
         self._build_status_bar()
@@ -571,6 +574,10 @@ class MainWindow(QMainWindow):
             if self._agent_session is None:
                 self._agent_unavailable = True
                 self._show_status(f"AI agent unavailable: {reason}")
+            else:
+                self._agent_unavailable = False
+                credential = self._current_credential()
+                self._credential_id = credential.fingerprint if credential else ""
         self.set_side_panel(AgentPanel(self._agent_session, self))
         self._agent_action.setChecked(True)
 
@@ -581,39 +588,84 @@ class MainWindow(QMainWindow):
         self._apply_agent_settings()
 
     def _apply_agent_settings(self) -> None:
-        """Rebuild the agent if the model or effort preference changed.
+        """Adopt changed AI configuration immediately, without a restart.
 
-        Both settings are fixed for the life of a session rather than read per
-        request, and that is deliberate: the prompt cache is scoped to the model
-        and is invalidated by a change of effort, so switching either one
-        part-way through a conversation would silently discard everything
-        cached so far - the opposite of the saving the settings exist to make.
-        Rebuilding starts a fresh conversation, which is the honest way to
-        change them.
+        Three things used to make a new API key need a browser restart, and
+        all three are fixed here:
+
+        1. This returned early when there was no session. That is exactly the
+           case where a key has just been added for the first time - the
+           session is None *because* there was no credential a moment ago, so
+           the one moment it mattered was the one moment it did nothing.
+        2. It compared the model and the effort but not the credential, so
+           swapping a key on a running session changed nothing either.
+        3. `_agent_unavailable` was never cleared, so the new-tab page went on
+           saying the agent was not set up.
+
+        Rebuilding rather than mutating the live session is deliberate: the
+        client holds an SDK connection built from the credential and a prompt
+        cache scoped to the model, and a fresh session is the honest way to
+        change either. It costs the conversation, which is why it only happens
+        when something actually changed.
         """
-        session = self._agent_session
-        if session is None:
-            return
         from app.agent.config import AgentConfig
 
         wanted = AgentConfig.from_environment(self.settings)
-        if (wanted.model, wanted.effort) == (session.config.model, session.config.effort):
-            return
-        if session.busy:
-            self._show_status(
-                "The new model applies once the current task finishes.")
+        credential = self._current_credential()
+        session = self._agent_session
+
+        if session is None:
+            # Nothing running. If a credential has appeared, the panel is
+            # showing "not set up yet" and needs rebuilding; otherwise there is
+            # nothing to do.
+            if credential is not None and credential.available and self._agent_unavailable:
+                self._agent_unavailable = False
+                self._rebuild_agent("Py AI is ready.")
             return
 
+        unchanged = (
+            (wanted.model, wanted.effort) == (session.config.model, session.config.effort)
+            and (credential is None or credential.fingerprint == self._credential_id)
+        )
+        if unchanged:
+            return
+        if session.busy:
+            self._show_status("The new AI settings apply once this task finishes.")
+            return
+        self._rebuild_agent(f"Py AI now using {wanted.model_choice.label}.")
+
+    def _current_credential(self):
+        """The credential as it stands right now, or None if it cannot be read.
+
+        Separate so the failure is one place: reading a credential touches the
+        OS keyring, and a browser must not fall over because a keyring is
+        broken.
+        """
+        try:
+            from app.agent.credentials import resolve
+
+            return resolve()
+        except BaseException as exc:  # noqa: BLE001
+            if isinstance(exc, (KeyboardInterrupt, SystemExit)):
+                raise
+            return None
+
+    def _rebuild_agent(self, message: str) -> None:
+        """Throw the agent session away and build a fresh one.
+
+        Rebuilds the panel too if it is open, so the user sees the change land
+        rather than being told to reopen something.
+        """
         showing = self._side_panel is not None
         if showing:
             self.set_side_panel(None)
-        session.shutdown()
-        self._agent_session = None
-        self._show_status(f"AI agent now using {wanted.model_choice.label}.")
+        if self._agent_session is not None:
+            self._agent_session.shutdown()
+            self._agent_session = None
+        self._credential_id = ""
+        self._show_status(message)
         if showing:
             self._toggle_agent_panel()
-        else:
-            self._agent_action.setChecked(False)
 
     # ------------------------------------------------------------------
     # Panel plumbing

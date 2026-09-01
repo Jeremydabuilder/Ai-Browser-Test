@@ -72,6 +72,65 @@ class WriterTests(unittest.TestCase):
         db.close()
         corrupt_dir.cleanup()
 
+    def test_the_failed_connection_is_closed_before_the_file_is_moved(self):
+        """The reason this test exists is Windows.
+
+        A file with an open handle cannot be renamed or deleted on Windows, so
+        leaving the failed connection open made recovery raise PermissionError
+        (WinError 32) - and a corrupt database then stopped the browser
+        starting, which is precisely what the recovery is for. POSIX allows
+        renaming an open file, so the bug was invisible here.
+
+        Rather than pretend to be Windows, this asserts the invariant that
+        makes it safe everywhere: at the moment the corrupt file is moved, no
+        connection to it is still open. A closed sqlite3 connection raises
+        ProgrammingError on use, which is how that is checked.
+        """
+        import sqlite3
+
+        corrupt_dir = tempfile.TemporaryDirectory()
+        path = os.path.join(corrupt_dir.name, "bad.sqlite3")
+        with open(path, "wb") as fh:
+            fh.write(b"still not a sqlite database" * 60)
+
+        opened = []
+        real_connect = sqlite3.connect
+
+        def tracking_connect(*args, **kwargs):
+            conn = real_connect(*args, **kwargs)
+            opened.append(conn)
+            return conn
+
+        still_open = []
+        real_replace = os.replace
+
+        def watching_replace(src, dst):
+            for conn in opened:
+                try:
+                    conn.execute("SELECT 1")
+                    still_open.append(conn)
+                except sqlite3.ProgrammingError:
+                    pass          # closed, which is what we want
+                except sqlite3.DatabaseError:
+                    pass          # open but unreadable - it is the corrupt one
+            return real_replace(src, dst)
+
+        sqlite3.connect = tracking_connect
+        os.replace = watching_replace
+        try:
+            db = Database(path)
+        finally:
+            sqlite3.connect = real_connect
+            os.replace = real_replace
+
+        self.assertTrue(opened, "no connection was ever attempted")
+        self.assertEqual(
+            still_open, [],
+            "the corrupt file was moved while a connection to it was open - "
+            "this raises PermissionError (WinError 32) on Windows")
+        db.close()
+        corrupt_dir.cleanup()
+
     def test_writes_after_close_are_ignored(self):
         self.db.close()
         self.history.add_visit("https://e.example/", "T")  # must not raise

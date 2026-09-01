@@ -242,9 +242,53 @@ def render(data: NewTabData) -> str:
     """The complete page. No external requests: no fonts, no CDN, no analytics.
 
     Everything is inline, which is what makes it appear instantly and work with
-    no network at all.
+    no network at all - including the mascot, which is embedded rather than
+    fetched so the page never waits on a file read to finish drawing.
     """
-    return _TEMPLATE.replace("__DATA__", data.to_json())
+    return (_TEMPLATE
+            .replace("__MASCOT__", _mascot_markup())
+            .replace("__DATA__", data.to_json()))
+
+
+def _mascot_markup() -> str:
+    """The character for the top of the page, inlined.
+
+    Uses the real artwork when `app/ui/assets/mascot/` has an idle image, and
+    the placeholder mark otherwise. Inlined as a data URI rather than linked,
+    because a `pybrowser://` sub-resource would need its own handler route for
+    no benefit on a page this small.
+    """
+    try:
+        from app.ui.mascot import MascotState, asset_for
+
+        path = asset_for(MascotState.IDLE)
+        if path:
+            import base64
+            import mimetypes
+
+            with open(path, "rb") as handle:
+                encoded = base64.b64encode(handle.read()).decode("ascii")
+            media = mimetypes.guess_type(path)[0] or "image/svg+xml"
+            return (f'<img class="mark" alt="" aria-hidden="true" '
+                    f'src="data:{media};base64,{encoded}">')
+    except Exception:  # noqa: BLE001 - a missing mascot must not cost a new tab
+        pass
+    return _PLACEHOLDER_MARK
+
+
+#: The stand-in mark, until the character exists. Matches app/ui/mascot.py.
+_PLACEHOLDER_MARK = (
+    '<svg class="mark" viewBox="0 0 36 36" fill="none" aria-hidden="true">'
+    '<rect x="3" y="7" width="30" height="26" rx="9" fill="currentColor" fill-opacity=".12"/>'
+    '<rect x="3" y="7" width="30" height="26" rx="9" stroke="currentColor"'
+    ' stroke-opacity=".4" stroke-width="1.4"/>'
+    '<path d="M18 3v4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>'
+    '<circle cx="18" cy="2.6" r="1.7" fill="currentColor"/>'
+    '<circle cx="12" cy="19" r="2.1" fill="currentColor"/>'
+    '<circle cx="24" cy="19" r="2.1" fill="currentColor"/>'
+    '<path d="M14.5 26q3.5 2.4 7 0" stroke="currentColor" stroke-width="1.8"'
+    ' stroke-linecap="round" fill="none" opacity=".7"/></svg>'
+)
 
 
 _TEMPLATE = """<!doctype html>
@@ -266,6 +310,7 @@ _TEMPLATE = """<!doctype html>
     --disabled: #a8a8b4;
     --accent: #4b46d4;
     --accent-soft: #eeedfc;
+    --glow: rgba(75, 70, 212, .07);
     --shadow: 0 1px 2px rgba(20, 20, 40, .04), 0 10px 30px rgba(20, 20, 40, .06);
     --shadow-lift: 0 2px 6px rgba(20, 20, 40, .07), 0 16px 40px rgba(20, 20, 40, .10);
     --radius-sm: 6px;
@@ -283,6 +328,7 @@ _TEMPLATE = """<!doctype html>
       --disabled: #61616e;
       --accent: #8b86ff;
       --accent-soft: #282740;
+      --glow: rgba(139, 134, 255, .10);
       --shadow: 0 1px 2px rgba(0, 0, 0, .35), 0 10px 30px rgba(0, 0, 0, .35);
       --shadow-lift: 0 2px 6px rgba(0, 0, 0, .4), 0 16px 40px rgba(0, 0, 0, .45);
     }
@@ -291,7 +337,13 @@ _TEMPLATE = """<!doctype html>
   html, body { height: 100%; }
   body {
     margin: 0;
-    background: var(--bg);
+    /* A single very soft wash behind the search box, so the middle of the page
+       has a centre of gravity. Two stops, no animation, no second layer: the
+       point is that the page feels considered, not that it has a gradient. */
+    background:
+      radial-gradient(ellipse 720px 420px at 50% 22%,
+                      var(--glow) 0%, transparent 70%),
+      var(--bg);
     color: var(--text);
     font: 14px/1.55 system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
     display: flex;
@@ -320,13 +372,21 @@ _TEMPLATE = """<!doctype html>
   }
 
   .brand {
-    display: flex; align-items: center; gap: 9px;
-    justify-content: center; margin-bottom: 26px;
-    user-select: none;
+    display: flex; flex-direction: column; align-items: center;
+    gap: 12px; margin-bottom: 26px; user-select: none;
   }
-  .mark { width: 26px; height: 26px; flex: none; color: var(--accent); }
+  .mark {
+    width: 56px; height: 56px; color: var(--accent);
+    animation: breathe 5.5s ease-in-out infinite;
+  }
+  /* Barely there on purpose: enough that the page is not a still image,
+     little enough that it never asks to be watched. */
+  @keyframes breathe {
+    0%, 100% { transform: translateY(0) }
+    50%      { transform: translateY(-3px) }
+  }
   .wordmark {
-    font-size: 21px; font-weight: 600; letter-spacing: -.02em;
+    font-size: 23px; font-weight: 600; letter-spacing: -.022em;
   }
   .wordmark span { color: var(--accent); }
 
@@ -393,6 +453,24 @@ _TEMPLATE = """<!doctype html>
   .ai b { font-weight: 600; font-size: 13.5px; }
   .ai small { display: block; color: var(--muted); font-size: 12px; }
 
+  .actions {
+    margin-top: 14px;
+    display: flex; flex-wrap: wrap; gap: 7px; justify-content: center;
+  }
+  .action {
+    font: inherit; font-size: 12.5px;
+    color: var(--muted);
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    padding: 6px 14px;
+    cursor: pointer;
+    transition: color .14s ease, border-color .14s ease, transform .08s ease;
+  }
+  .action:hover { color: var(--accent); border-color: var(--accent); }
+  .action:active { transform: translateY(1px); }
+  .action:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
   .columns {
     margin-top: 40px;
     display: grid; gap: 14px 32px;
@@ -433,14 +511,10 @@ _TEMPLATE = """<!doctype html>
 <body>
 <main>
   <div class="brand">
-    <svg class="mark" viewBox="0 0 32 32" fill="none" aria-hidden="true">
-      <rect x="1.5" y="1.5" width="29" height="29" rx="9"
-            stroke="currentColor" stroke-opacity=".3" stroke-width="1.5"/>
-      <path d="M11.5 23V9h5a4.2 4.2 0 0 1 0 8.4h-5"
-            stroke="currentColor" stroke-width="2.4" stroke-linecap="round"
-            stroke-linejoin="round"/>
-      <circle cx="21.5" cy="21.5" r="2" fill="currentColor"/>
-    </svg>
+    <!-- __MASCOT__ is replaced with the character's artwork when there is
+         any; otherwise this placeholder mark is used. Both are square and the
+         same size, so the layout does not move when the artwork arrives. -->
+    __MASCOT__
     <div class="wordmark">Py<span>Browser</span></div>
   </div>
 
@@ -458,6 +532,8 @@ _TEMPLATE = """<!doctype html>
     </div>
     <p class="hint" id="hint"></p>
   </form>
+
+  <div class="actions" id="actions"></div>
 
   <button class="ai" id="ai" type="button">
     <span class="glyph">
@@ -585,6 +661,31 @@ _TEMPLATE = """<!doctype html>
 
   document.getElementById("ai").addEventListener("click", function () {
     act("ai", { q: box.value.trim() });
+  });
+
+  // Quick actions open the AI panel with the request already written, so the
+  // user lands one keystroke from an answer rather than at an empty box. They
+  // go through the same action as everything else - there is one AI here.
+  var ACTIONS = [
+    ["Research", "Research this for me and give me a few good sources: "],
+    ["Summarise", "Summarise the page I am looking at."],
+    ["Compare", "Compare my open tabs and tell me how they differ."],
+    ["Explain", "Explain what this page is and who it is for, in plain language."]
+  ];
+  var actions = document.getElementById("actions");
+  ACTIONS.forEach(function (pair) {
+    var button = document.createElement("button");
+    button.type = "button";
+    button.className = "action";
+    button.textContent = pair[0];
+    button.addEventListener("click", function () {
+      var typed = box.value.trim();
+      // "Research" is the one that wants whatever is in the box appended.
+      var prompt = pair[1].slice(-2) === ": " ? pair[1] + (typed || "this topic")
+                                              : pair[1];
+      act("ai", { q: prompt });
+    });
+    actions.appendChild(button);
   });
 })();
 </script>

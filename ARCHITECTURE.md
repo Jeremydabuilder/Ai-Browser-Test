@@ -159,6 +159,20 @@ the same `BrowserController`, with its own thread and its own bounded budget.
 The blocker is not architectural, it is arbitration: two agents driving one tab
 need a lock on that tab, and the controller does not have one.
 
+### 8a. Agent presence — **built**
+
+`app/ui/mascot.py` is a status indicator with a personality: six states
+(`idle`, `reading`, `thinking`, `working`, `complete`, `approval`) derived from
+`AgentState` plus the tool each step is running, so reading a page and clicking
+through one look different from across the room. `complete` only appears if the
+task actually produced an answer — being stopped or failing is not a success
+and the character does not claim it was.
+
+The artwork is a drop-in folder, not a code path: `app/ui/assets/mascot/*.svg`
+named per state, falling back to `idle`, falling back to a built-in
+placeholder. The state enum is the whole contract, so animation frames or
+expressions can come later without the panel or the new-tab page knowing.
+
 ### 9. Permission / approval — **built**
 
 `app/browser/safety.py` classifies every action *before* it runs, and the

@@ -82,6 +82,9 @@ class Step:
     description: str
     state: str = StepState.RUNNING
     detail: str = ""
+    #: The tool this step ran, so the UI can say something about what kind of
+    #: work it is without parsing the description.
+    tool: str = ""
 
 
 @dataclass
@@ -491,7 +494,8 @@ class AgentSession(QObject):
             self._set_state(AgentState.AWAITING_CONFIRMATION)
             self.trace.record(tracing.APPROVAL_REQUESTED, tool=call.name,
                               reasons=len(self._confirmation.reasons))
-            self._begin_step(self._tools.describe_call(call.name, call.arguments))
+            self._begin_step(self._tools.describe_call(call.name, call.arguments),
+                             tool=call.name)
             self._update_step(StepState.WAITING, "waiting for your approval")
             self.confirmation_required.emit(self._confirmation)
             return
@@ -509,7 +513,7 @@ class AgentSession(QObject):
         self._set_state(AgentState.ACTING)
         description = self._tools.describe_call(call.name, call.arguments)
         if step:
-            self._begin_step(description)
+            self._begin_step(description, tool=call.name)
         else:
             self._update_step(StepState.RUNNING)
         self.activity.emit(description)
@@ -599,8 +603,8 @@ class AgentSession(QObject):
             return [], False
 
     # -- steps -------------------------------------------------------------
-    def _begin_step(self, description: str) -> Step:
-        step = Step(index=len(self._steps), description=description)
+    def _begin_step(self, description: str, tool: str = "") -> Step:
+        step = Step(index=len(self._steps), description=description, tool=tool)
         self._steps.append(step)
         self.step_changed.emit(step)
         return step
