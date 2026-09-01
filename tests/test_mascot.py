@@ -76,12 +76,17 @@ class _Assets:
 class ShippedArtworkTests(unittest.TestCase):
     """What the repository actually carries today."""
 
-    def test_a_placeholder_exists_for_every_state_and_crop(self) -> None:
+    def test_artwork_exists_for_every_state_and_crop(self) -> None:
+        # Deliberately indifferent to the extension: the drop-in contract
+        # promises any of gif/webp/apng/png/svg will do, and the artwork went
+        # from SVG to PNG without a line of code changing. What must hold is
+        # that each state and crop has its OWN file rather than a fallback.
         for state in ALL_STATES:
             for variant in VARIANTS:
                 path = asset_for(state, variant)
                 self.assertIsNotNone(path, f"nothing to draw for {state}/{variant}")
-                self.assertEqual(os.path.basename(path), f"{state}-{variant}.svg",
+                stem = os.path.splitext(os.path.basename(path))[0]
+                self.assertEqual(stem, f"{state}-{variant}",
                                  f"{state}/{variant} fell back unexpectedly")
 
     def test_the_two_crops_are_different_drawings(self) -> None:
@@ -92,13 +97,25 @@ class ShippedArtworkTests(unittest.TestCase):
             panel = asset_for(state, Variant.PANEL)
             self.assertNotEqual(full, panel, state)
 
-    def test_the_placeholders_are_kept_apart_from_the_final_artwork(self) -> None:
-        # The final Py drops into assets/mascot/; the stand-in lives one level
-        # down so the two can never be confused for each other.
-        self.assertFalse(has_final_artwork(),
-                         "placeholders are being reported as the real artwork")
+    def test_the_supplied_artwork_outranks_the_stand_in(self) -> None:
+        # The real Py lives in assets/mascot/ and the stand-in one level down,
+        # so the two can never be confused for each other. Now that real
+        # artwork is installed, nothing may resolve to the stand-in.
+        self.assertTrue(has_final_artwork(),
+                        "the supplied artwork is not being seen as real")
         for state in ALL_STATES:
-            self.assertIn("placeholder", asset_for(state))
+            for variant in VARIANTS:
+                self.assertNotIn("placeholder", asset_for(state, variant),
+                                 f"{state}/{variant} is still on the stand-in")
+
+    def test_a_stand_in_on_its_own_is_never_called_real(self) -> None:
+        # The other half of that separation, which the shipped state can no
+        # longer demonstrate: placeholders alone must still report False.
+        with _Assets() as assets:
+            for state in ALL_STATES:
+                assets.write(assets.placeholder, f"{state}-panel.svg")
+            self.assertFalse(has_final_artwork(),
+                             "a placeholder is being reported as the real artwork")
 
     def test_every_state_draws_something(self) -> None:
         mascot = Mascot(40)
@@ -391,11 +408,12 @@ class VariantTests(unittest.TestCase):
 
         html = render(NewTabData())
         payload = html.split("base64,", 1)[1].split('"', 1)[0]
-        drawing = base64.b64decode(payload).decode("utf-8")
-        # Compared against the file itself rather than against a viewBox the
-        # artwork happens to have today: the whole point of the drop-in
-        # contract is that the final drawing may be any size it likes.
-        with open(asset_for(MascotState.IDLE, Variant.FULL), encoding="utf-8") as handle:
+        drawing = base64.b64decode(payload)
+        # Compared byte for byte against the file itself, not against anything
+        # the artwork happens to look like today: the drop-in contract promises
+        # the final drawing may be any format and any size. Bytes, not text -
+        # the artwork is a PNG.
+        with open(asset_for(MascotState.IDLE, Variant.FULL), "rb") as handle:
             self.assertEqual(drawing, handle.read(),
                              "the new tab page is not using the full-body crop")
         self.assertNotEqual(asset_for(MascotState.IDLE, Variant.FULL),
@@ -406,11 +424,17 @@ class ArtworkFirstMotionTests(unittest.TestCase):
     """Real artwork keeps its own expression."""
 
     def test_the_placeholder_is_allowed_to_be_warped(self) -> None:
-        mascot = Mascot(40)
-        mascot.set_state(MascotState.THINKING)
-        mascot._blinking = 2
-        self.assertFalse(has_final_artwork())
-        self.assertFalse(mascot._animated_frame(mascot._still).isNull())
+        # Against its own folder rather than against whatever the repository
+        # happens to ship: this is a claim about placeholders, and it used to
+        # pass only because no real artwork was installed yet.
+        with _Assets() as assets:
+            for variant in VARIANTS:
+                assets.write(assets.placeholder, f"idle-{variant}.svg")
+            self.assertFalse(has_final_artwork())
+            mascot = Mascot(40)
+            mascot.set_state(MascotState.THINKING)
+            mascot._blinking = 2
+            self.assertFalse(mascot._animated_frame(mascot._still).isNull())
 
     def test_real_artwork_is_never_squashed_or_leaned(self) -> None:
         """A squash reads as a blink on flat shapes and as a fault on a drawing.

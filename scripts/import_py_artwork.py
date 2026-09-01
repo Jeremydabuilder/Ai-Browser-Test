@@ -335,6 +335,9 @@ def main() -> int:
                         help="write one supplied image to every state")
     parser.add_argument("--no-split", action="store_true",
                         help="treat each file as one figure, never as a sheet")
+    parser.add_argument("--trim-only", action="store_true",
+                        help="crop each file to its content and keep the name; "
+                             "derives no panel and rescales nothing")
     parser.add_argument("--keep-background", action="store_true",
                         help="do not knock a flat background out to transparency")
     parser.add_argument("--tolerance", type=int, default=26,
@@ -382,6 +385,30 @@ def main() -> int:
     panel_opts = dict(probe=args.panel_probe, spread=args.panel_spread,
                       headroom=args.panel_headroom, shoulder=args.panel_shoulder)
     done: dict[str, str] = {}
+
+    if args.trim_only:
+        # Artwork often arrives on a generous canvas. That matters here because
+        # the new-tab page sizes Py by the file's own height: 40% transparent
+        # padding means 40% of the slot is spent on nothing, and the character
+        # renders small. Cropping is lossless - every pixel of the character
+        # survives untouched - and it makes the file's aspect the character's
+        # aspect, which is what the sizing assumes.
+        for path in files:
+            image = _load(path)
+            if not args.keep_background:
+                image, removed = knock_out_background(image, args.tolerance)
+            box = content_box(image)
+            if box.isNull():
+                print(f"{os.path.basename(path)}: nothing above the alpha floor")
+                continue
+            saved = 100 - (100 * box.width() * box.height()
+                           // (image.width() * image.height()))
+            print(f"{os.path.basename(path)}: {image.width()}x{image.height()} -> "
+                  f"{box.width()}x{box.height()}  ({saved}% of the canvas was empty)")
+            _save(image.copy(box),
+                  os.path.join(args.out, os.path.basename(path)),
+                  dry_run=args.dry_run)
+        return 0
 
     for path in files:
         print(f"{path}")

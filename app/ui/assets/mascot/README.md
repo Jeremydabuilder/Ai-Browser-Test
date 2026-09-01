@@ -80,6 +80,25 @@ so an animated file wins over a still one of the same name.
   shipping all fourteen; so is anything in between.
 * **`<state>@2x.png`** is preferred on a high-DPI screen.
 
+## What is installed
+
+The fourteen files at the top of this folder are the supplied Py fox artwork.
+
+`as-supplied/` holds exactly what arrived, byte for byte, so the originals are
+never lost. The difference between the two is a **crop and nothing else**:
+
+* the panels are byte-identical - they arrived at 128x128 with the character
+  filling about 90% of the frame, which is right for a bust
+* the full-body files arrived on a 220x440 canvas with the character filling
+  about 59% of it. The new-tab page sizes Py by the file's own height, so two
+  fifths of the slot was being spent on transparent padding and Py rendered
+  small. They are cropped to their content, which is lossless: every pixel of
+  the character is identical to the supplied file, verified by comparing the
+  cropped region against the original.
+
+To re-derive them: `python scripts/import_py_artwork.py as-supplied/*-full.png
+--trim-only --out . --force`
+
 ## Importing supplied artwork
 
 If the artwork arrives as full-body drawings - or as one sheet with several

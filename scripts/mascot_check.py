@@ -63,8 +63,12 @@ settle(app, 400)
 for state in ("idle", "reading", "thinking", "working", "approval", "complete", "stuck"):
     for variant in (Variant.FULL, Variant.PANEL):
         p = asset_for(state, variant)
+        # The stem, not the extension: the drop-in contract promises any of
+        # gif/webp/apng/png/svg, and the artwork went from SVG to PNG without a
+        # line of code changing.
         check(f"artwork resolves: {state}-{variant}",
-              p is not None and os.path.basename(p) == f"{state}-{variant}.svg",
+              p is not None
+              and os.path.splitext(os.path.basename(p))[0] == f"{state}-{variant}",
               os.path.basename(p or "-"))
 
 # --- new tab ---------------------------------------------------------------
@@ -72,10 +76,23 @@ from app.browser.newtab import NewTabData, render
 page = render(NewTabData())
 check("new tab inlines the artwork exactly once", page.count("data:image") == 1)
 import base64
-drawing = base64.b64decode(page.split("base64,", 1)[1].split('"', 1)[0]).decode()
-with open(asset_for(MascotState.IDLE, Variant.FULL)) as fh:
-    check("new tab uses the full-body crop", drawing == fh.read())
-check("new tab has no baked background", "<rect" not in drawing.split("<defs>")[0])
+drawing = base64.b64decode(page.split("base64,", 1)[1].split('"', 1)[0])
+with open(asset_for(MascotState.IDLE, Variant.FULL), "rb") as fh:
+    check("new tab inlines the artwork byte for byte", drawing == fh.read())
+
+# Transparency, checked on the pixels rather than trusted: a baked-in light
+# ground is invisible on a light page and obvious on a dark one.
+from PySide6.QtGui import QImage
+for _state in ("idle", "approval", "complete", "stuck"):
+    for _variant in (Variant.FULL, Variant.PANEL):
+        _img = QImage(asset_for(_state, _variant)).convertToFormat(
+            QImage.Format.Format_ARGB32)
+        _corners = [_img.pixelColor(0, 0), _img.pixelColor(_img.width() - 1, 0),
+                    _img.pixelColor(0, _img.height() - 1),
+                    _img.pixelColor(_img.width() - 1, _img.height() - 1)]
+        check(f"{_state}-{_variant} has no baked background",
+              all(c.alpha() == 0 for c in _corners),
+              ",".join(str(c.alpha()) for c in _corners))
 
 # --- + button --------------------------------------------------------------
 before = window.tabs.count()
