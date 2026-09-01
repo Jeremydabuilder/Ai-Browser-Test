@@ -436,12 +436,14 @@ class ArtworkFirstMotionTests(unittest.TestCase):
             mascot._blinking = 2
             self.assertFalse(mascot._animated_frame(mascot._still).isNull())
 
-    def test_real_artwork_is_never_squashed_or_leaned(self) -> None:
+    def test_real_artwork_is_never_squashed(self) -> None:
         """A squash reads as a blink on flat shapes and as a fault on a drawing.
 
-        Checked by comparing frames: with real artwork installed, the only
-        motion left is a translation, so a frame with blinking forced on must
-        be identical to one without it.
+        Checked by comparing frames: with real artwork installed the blink is
+        off, so a frame with blinking forced on must be identical to one
+        without it. Rotation and uniform scale are *not* covered by this - they
+        are rigid, they cannot distort the drawing, and they are what keeps
+        finished artwork from sitting there completely inert.
         """
         with _Assets() as assets:
             for variant in VARIANTS:
@@ -465,3 +467,85 @@ class ArtworkFirstMotionTests(unittest.TestCase):
                 assets.write(assets.final, f"idle-{variant}.svg")
             mascot = Mascot(40)
             self.assertTrue(mascot._frames.isActive())
+
+
+class LivelinessTests(unittest.TestCase):
+    """Py should look alive without the drawing ever looking wrong."""
+
+    def _with_artwork(self, assets) -> None:
+        for variant in VARIANTS:
+            assets.write(assets.final, f"idle-{variant}.svg")
+
+    @unittest.skipIf(reduced_motion(), "the machine asked for no animation")
+    def test_finished_artwork_still_moves(self) -> None:
+        """The regression this guards: real artwork used to be frozen solid.
+
+        Rotation and uniform scale were switched off along with the squash, on
+        the grounds that all three "warp" the image. Two of them do not.
+        """
+        with _Assets() as assets:
+            self._with_artwork(assets)
+            mascot = Mascot(64)
+            mascot.set_state(MascotState.WORKING)
+            motion = mascot_module._MOTION[MascotState.WORKING]
+            mascot._elapsed = 0
+            still = mascot._animated_frame(mascot._still).toImage()
+            mascot._elapsed = motion.period_ms // 4      # the crest of the breath
+            moved = mascot._animated_frame(mascot._still).toImage()
+            self.assertNotEqual(still, moved, "finished artwork never moves")
+
+    @unittest.skipIf(reduced_motion(), "the machine asked for no animation")
+    def test_working_reads_busier_than_idle(self) -> None:
+        # Not decoration: working is the state a user glances at to decide
+        # whether anything is happening, so its cadence has to be quicker than
+        # a resting breath rather than merely different.
+        working = mascot_module._MOTION[MascotState.WORKING]
+        idle = mascot_module._MOTION[MascotState.IDLE]
+        self.assertLess(working.period_ms, idle.period_ms)
+        self.assertGreaterEqual(working.bob, idle.bob)
+
+    def test_every_amplitude_stays_subtle(self) -> None:
+        # The brief is "glance at Py and believe he is working", not "watch Py".
+        # A pixel or so of travel and a degree or so of tilt is the whole budget.
+        for state, motion in mascot_module._MOTION.items():
+            self.assertLessEqual(motion.bob, 1.5, f"{state} bobs too far")
+            self.assertLessEqual(abs(motion.lean), 2.0, f"{state} leans too far")
+            self.assertLessEqual(motion.pulse, 0.03, f"{state} pulses too hard")
+            self.assertLessEqual(motion.entry_pop, 0.08, f"{state} pops too hard")
+
+    @unittest.skipIf(reduced_motion(), "the machine asked for no animation")
+    def test_complete_celebrates_on_arrival_and_then_settles(self) -> None:
+        """A celebration that loops forever stops being a celebration."""
+        motion = mascot_module._MOTION[MascotState.COMPLETE]
+        self.assertTrue(motion.entry_ms, "complete has no arrival animation")
+        mascot = Mascot(64)
+        mascot.set_state(MascotState.COMPLETE)
+        self.assertEqual(mascot._elapsed, 0, "set_state did not restart the clock")
+        peak = max(mascot._entry_curve_at(ms)
+                   for ms in range(0, motion.entry_ms, 20))
+        self.assertAlmostEqual(peak, 1.0, delta=0.06)
+        mascot._elapsed = motion.entry_ms
+        self.assertEqual(mascot._entry_curve(motion), 0.0,
+                         "the celebration is still running after it should end")
+        mascot._elapsed = motion.entry_ms * 40
+        self.assertEqual(mascot._entry_curve(motion), 0.0)
+
+    def test_no_other_state_pops_on_arrival(self) -> None:
+        # An arrival animation on a state the agent passes through constantly
+        # would make the panel twitch its way through every task.
+        for state, motion in mascot_module._MOTION.items():
+            if state != MascotState.COMPLETE:
+                self.assertEqual(motion.entry_ms, 0, f"{state} pops on arrival")
+
+    def test_reduced_motion_stops_the_arrival_animation_too(self) -> None:
+        real = mascot_module.reduced_motion
+        try:
+            mascot_module.reduced_motion = lambda: True
+            mascot = Mascot(64)
+            mascot.set_state(MascotState.COMPLETE)
+            mascot._elapsed = 200          # mid-celebration
+            frame = mascot._animated_frame(mascot._still)
+            self.assertIs(frame, mascot._still,
+                          "the celebration ran with reduced motion on")
+        finally:
+            mascot_module.reduced_motion = real

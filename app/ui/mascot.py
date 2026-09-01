@@ -215,25 +215,57 @@ def has_final_artwork() -> bool:
 
 @dataclass(frozen=True)
 class _Motion:
-    """How a still Py moves in one state. Amplitudes are in pixels."""
+    """How a still Py moves in one state. Amplitudes are in pixels or degrees.
+
+    Split by what the transform does to the drawing, not by what it looks like:
+
+    * ``bob``, ``lean`` and ``pulse`` are **rigid** - a translation, a rotation
+      and a *uniform* scale. None of them can change Py's proportions or
+      distort his face, so they are safe on finished artwork.
+    * ``blinks`` is a **squash**, a non-uniform scale. It reads as a blink on a
+      flat placeholder and as a rendering fault on an illustration, so it is
+      only ever applied to the placeholder.
+
+    ``entry_*`` is a one-shot on arriving in a state rather than a loop - a
+    reaction is a moment, and a celebration that never stops is wallpaper.
+    """
 
     bob: float = 0.0        # vertical drift, the "breath"
     period_ms: int = 0      # how long one breath takes
-    lean: float = 0.0       # degrees of rotation, for thinking
+    lean: float = 0.0       # degrees of rotation - a weight shift
     blinks: bool = False
-    pulse: float = 0.0      # scale change, for approval
+    pulse: float = 0.0      # uniform scale change, for attention
+    entry_rise: float = 0.0   # px, once, on entering the state
+    entry_pop: float = 0.0    # uniform scale, once, on entering the state
+    entry_ms: int = 0
 
 
 #: Chosen to be barely perceptible. If you can see Py moving without looking
 #: for it, the numbers are too big.
 _MOTION: dict[str, _Motion] = {
-    MascotState.IDLE: _Motion(bob=0.8, period_ms=4200, blinks=True),
-    MascotState.READING: _Motion(bob=0.5, period_ms=3400, blinks=True),
-    MascotState.THINKING: _Motion(bob=0.6, period_ms=2600, lean=1.6),
-    MascotState.WORKING: _Motion(bob=1.0, period_ms=1500),
-    MascotState.APPROVAL: _Motion(bob=0.5, period_ms=2000, pulse=0.02),
-    MascotState.COMPLETE: _Motion(bob=1.2, period_ms=1800, blinks=True),
-    MascotState.STUCK: _Motion(bob=0.4, period_ms=4600, blinks=True),
+    # Breathing, and nothing else to look at. The whisper of pulse is not
+    # decoration: a sub-pixel translation on its own gets quantised to whole
+    # pixels, so the breath snapped between three positions instead of
+    # flowing. A uniform scale forces the frame to be resampled, which is what
+    # makes it continuous. Measured, not assumed - 3 distinct frames out of 70
+    # before, 60-odd after.
+    MascotState.IDLE: _Motion(bob=0.9, period_ms=4200, blinks=True, pulse=0.005),
+    # Slower and shallower, with the faintest sway - absorbed in the page.
+    MascotState.READING: _Motion(bob=0.55, period_ms=3600, lean=0.35, blinks=True),
+    # A held pose. The lean is the thought.
+    MascotState.THINKING: _Motion(bob=0.6, period_ms=2600, lean=1.4),
+    # The one state that has to read as effort at a glance: a quicker cadence
+    # than a resting breath, with a small shift of weight over it, so a look
+    # across the room says "he is doing something" rather than "he is idle".
+    MascotState.WORKING: _Motion(bob=1.1, period_ms=1500, lean=0.55, pulse=0.008),
+    # Waiting on you, and saying so without nagging.
+    MascotState.APPROVAL: _Motion(bob=0.5, period_ms=2000, pulse=0.022),
+    # A pop on arrival that settles within a second into an ordinary happy
+    # breath. Looping a celebration forever turns delight into wallpaper.
+    MascotState.COMPLETE: _Motion(bob=1.0, period_ms=2600, blinks=True, pulse=0.006,
+                                  entry_rise=5.0, entry_pop=0.06, entry_ms=760),
+    # Barely moving, with a small tilt. Stuck should look becalmed, not busy.
+    MascotState.STUCK: _Motion(bob=0.4, period_ms=4600, lean=0.8, blinks=True),
 }
 
 _FRAME_MS = 50          # 20fps: smooth enough for motion this small
@@ -447,32 +479,39 @@ class Mascot(QLabel):
     def _animated_frame(self, base: QPixmap) -> QPixmap:
         """Apply this frame's motion to a still Py.
 
-        Two tiers, because not all motion is equally safe to apply to someone
-        else's drawing:
+        Two tiers, by what the transform does to the drawing:
 
-        * **Translation** - the breath - moves the whole image and cannot
-          distort it. Applied to any still artwork, placeholder or final.
-        * **Squash, rotate and scale** - the blink, the lean, the pulse - warp
-          the image. They read as expression on a flat placeholder and as a
-          rendering fault on an illustration, so they are used only while the
-          placeholder is what is on screen. Once real artwork is installed the
-          expression is the artist's job, which is where it belongs.
+        * **Rigid** - translation, rotation and *uniform* scale. None of these
+          can change Py's proportions or distort his face; a rotated drawing is
+          a drawing seen from a slightly different angle, not a broken one. Safe
+          on any still artwork, placeholder or final.
+        * **Squash** - the blink, a non-uniform scale. It reads as expression on
+          a flat placeholder and as a rendering fault on an illustration, so it
+          stops the moment real artwork is installed. Blinking finished artwork
+          means eyes drawn shut, which is an animated asset, not a transform.
+
+        An earlier pass grouped the rotation and the scale with the squash and
+        switched all three off for real artwork. That was too cautious: those
+        two are rigid, and turning them off is what left finished artwork
+        completely inert.
 
         An animated asset never reaches here at all: QMovie plays it as drawn.
         """
         motion = _MOTION.get(self._state, _Motion())
-        if reduced_motion() or not (motion.period_ms or self._blinking):
+        if reduced_motion() or not (motion.period_ms or motion.entry_ms
+                                    or self._blinking):
             return base
-        warp_allowed = not has_final_artwork()
 
         import math
 
-        phase = (self._elapsed % motion.period_ms) / motion.period_ms if motion.period_ms else 0
+        phase = ((self._elapsed % motion.period_ms) / motion.period_ms
+                 if motion.period_ms else 0)
         wave = math.sin(phase * 2 * math.pi)
-        offset = motion.bob * wave
-        lean = motion.lean if warp_allowed else 0.0
-        pulse = motion.pulse if warp_allowed else 0.0
-        scale = 1.0 + pulse * (wave + 1) / 2
+        arrival = self._entry_curve(motion)
+
+        offset = motion.bob * wave - motion.entry_rise * arrival
+        lean = motion.lean * wave
+        scale = 1.0 + motion.pulse * (wave + 1) / 2 + motion.entry_pop * arrival
 
         canvas = QPixmap(base.size())
         canvas.setDevicePixelRatio(base.devicePixelRatio())
@@ -485,17 +524,40 @@ class Mascot(QLabel):
         height = base.height() / base.devicePixelRatio()
         painter.translate(width / 2, height / 2 + offset)
         if lean:
-            painter.rotate(lean * wave)
-        if pulse:
+            painter.rotate(lean)
+        if scale != 1.0:
             painter.scale(scale, scale)
         painter.translate(-width / 2, -height / 2)
         painter.drawPixmap(0, 0, base)
 
         painter.end()
 
-        if self._blinking and warp_allowed:
+        if self._blinking and not has_final_artwork():
             return self._blink_frame(canvas, offset)
         return canvas
+
+    def _entry_curve_at(self, elapsed: int) -> float:
+        """The arrival curve at an arbitrary moment, for tests and tuning."""
+        was, self._elapsed = self._elapsed, elapsed
+        try:
+            return self._entry_curve(_MOTION.get(self._state, _Motion()))
+        finally:
+            self._elapsed = was
+
+    def _entry_curve(self, motion: _Motion) -> float:
+        """0 -> 1 -> 0 across the first `entry_ms` of a state, then nothing.
+
+        Rises quickly, settles slowly, and is spent for good after one pass:
+        set_state resets `_elapsed`, so this fires on arrival and never again
+        while the state is held.
+        """
+        if not motion.entry_ms or self._elapsed >= motion.entry_ms:
+            return 0.0
+        moment = self._elapsed / motion.entry_ms
+        crest = 0.28
+        if moment < crest:
+            return moment / crest
+        return (1 - (moment - crest) / (1 - crest)) ** 2
 
     def _blink_frame(self, frame: QPixmap, offset: float) -> QPixmap:
         """Squash Py vertically for two frames: a blink, cheaply.

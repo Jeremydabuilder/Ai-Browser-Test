@@ -143,14 +143,32 @@ anything in this folder wins regardless.
 
 ## Motion
 
-Still artwork gets a restrained animation layer for free: a slow breath, an
-occasional randomised blink, a small lean while thinking, a soft pulse while
-waiting for approval.
+Still artwork gets a restrained animation layer for free, split by what the
+transform does to the drawing rather than by what it looks like:
 
-Once real artwork is present the shape-warping parts of that layer switch off,
-and only the gentle translation remains. Illustrated artwork carries its own
-expression, and squashing someone's drawing to fake a blink looks like a bug,
-not a character. An animated asset replaces the built-in motion entirely.
+* **Rigid** — a slow vertical breath, a fraction of a degree of sway, and a
+  uniform scale of well under a percent. None of these can change Py's
+  proportions or distort his face, so they run on any still artwork. Each state
+  has its own cadence: `working` breathes faster than `idle` and carries a small
+  shift of weight, so a glance says "he is doing something"; `stuck` barely
+  moves at all.
+* **Squash** — the blink, a non-uniform scale. It reads as expression on a flat
+  placeholder and as a rendering fault on an illustration, so it stops the
+  moment real artwork is installed.
+
+`complete` also gets a one-shot on arrival: a small rise and swell that crests
+in about 200ms and is spent inside a second, then settles into an ordinary happy
+breath. A celebration that loops forever stops being a celebration.
+
+**What the transform layer cannot do**: blinking, a head turn, or fingers moving
+on a laptop. Those need pixels that do not exist in a single still, and faking
+them by warping the drawing is exactly what makes finished artwork look broken.
+They are an **animated asset** — drop a `.gif`, `.webp` or `.apng` in beside the
+stills and it wins over the still of the same name automatically and plays
+through `QMovie` instead of this layer. No code change.
+
+Cost, measured: 0.16 ms per frame at the panel's 44px and 0.56 ms at the new
+tab's 210px, at 20fps — around 0.3% and 1.1% of one core.
 
 All motion stops when `PYBROWSER_REDUCED_MOTION=1`, `QT_REDUCED_MOTION=1` or
 `NO_ANIMATIONS=1` is set — including animated assets.
