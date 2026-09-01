@@ -77,7 +77,12 @@ class ClaudeError(RuntimeError):
 
 
 class ClaudeTransport(Protocol):
-    """What the session needs from a model. Implemented for real below."""
+    """What the session needs from a model. Implemented for real below.
+
+    ``on_text`` is called with each fragment of the answer as it arrives, from
+    the worker thread. Passing None asks for a single blocking request instead,
+    which is what the tests use - a scripted transport has nothing to stream.
+    """
 
     def send(
         self,
@@ -85,6 +90,7 @@ class ClaudeTransport(Protocol):
         system: str,
         messages: list[dict[str, Any]],
         tools: list[dict[str, Any]],
+        on_text=None,
     ) -> AgentResponse: ...
 
 
@@ -194,7 +200,7 @@ class ClaudeClient:
             params["output_config"] = {"effort": effort}
         return params
 
-    def _create(self, *, system: str, messages: list, tools: list):
+    def _create(self, *, system: str, messages: list, tools: list, on_text=None):
         """The API call, retried once without whatever the platform rejected.
 
         The cost parameters are not universally available - the older Amazon
@@ -206,18 +212,29 @@ class ClaudeClient:
         then costs more and works, instead of failing.
         """
         while True:
+            kwargs = dict(
+                model=self._model,
+                max_tokens=self.config.max_tokens,
+                system=self._system_param(system),
+                messages=messages,
+                tools=tools,
+                # Claude Opus 5 thinks by default and rejects budget_tokens;
+                # adaptive is the whole configuration.
+                thinking={"type": "adaptive"},
+                **self._extra_params(),
+            )
             try:
-                return self._client.messages.create(
-                    model=self._model,
-                    max_tokens=self.config.max_tokens,
-                    system=self._system_param(system),
-                    messages=messages,
-                    tools=tools,
-                    # Claude Opus 5 thinks by default and rejects budget_tokens;
-                    # adaptive is the whole configuration.
-                    thinking={"type": "adaptive"},
-                    **self._extra_params(),
-                )
+                if on_text is None:
+                    return self._client.messages.create(**kwargs)
+                # Streaming: hand each fragment over as it arrives, then take
+                # the assembled message. The loop needs the whole message
+                # regardless - tool_use blocks only make sense complete - so
+                # streaming changes what the user sees, not what the loop gets.
+                with self._client.messages.stream(**kwargs) as stream:
+                    for fragment in stream.text_stream:
+                        if fragment:
+                            on_text(fragment)
+                    return stream.get_final_message()
             except self._anthropic.BadRequestError as exc:
                 offender = self._rejected_parameter(str(exc))
                 if offender is None:
@@ -247,11 +264,19 @@ class ClaudeClient:
         system: str,
         messages: list[dict[str, Any]],
         tools: list[dict[str, Any]],
+        on_text=None,
     ) -> AgentResponse:
-        """One blocking round-trip. Raises ClaudeError on failure."""
+        """One round-trip. Raises ClaudeError on failure.
+
+        With ``on_text`` the answer is streamed and each fragment handed over as
+        it arrives; without it the call blocks until the whole message is ready.
+        Either way the return value is the same, so the agent loop does not
+        care which happened.
+        """
         anthropic = self._anthropic
         try:
-            response = self._create(system=system, messages=messages, tools=tools)
+            response = self._create(system=system, messages=messages, tools=tools,
+                                    on_text=on_text)
         except anthropic.AuthenticationError as exc:
             raise ClaudeError(
                 f"Claude rejected the credential ({self.credential.label}). "

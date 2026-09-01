@@ -36,7 +36,8 @@ class ScriptedClaude:
         self.requests: list[dict[str, Any]] = []
         self.delay_event: threading.Event | None = None
 
-    def send(self, *, system: str, messages: list, tools: list) -> AgentResponse:
+    def send(self, *, system: str, messages: list, tools: list,
+             on_text=None) -> AgentResponse:
         with self._lock:
             self.requests.append({
                 "system": system,
@@ -55,7 +56,12 @@ class ScriptedClaude:
         if isinstance(entry, Exception):
             raise entry
         if callable(entry):
-            return entry(messages)
+            entry = entry(messages)
+        if on_text is not None and entry.text:
+            # Deliver the answer in pieces, as the real API does, so the panel's
+            # streaming path is exercised rather than only its final-message one.
+            for fragment in _fragments(entry.text):
+                on_text(fragment)
         return entry
 
     # -- introspection used by the tests ---------------------------------
@@ -97,6 +103,11 @@ class ScriptedClaude:
 # ---------------------------------------------------------------------------
 # Builders, so tests read as a story rather than as dict literals
 # ---------------------------------------------------------------------------
+
+
+def _fragments(text: str, size: int = 7) -> list[str]:
+    """Chop text the way a stream arrives: at no particular boundary."""
+    return [text[i:i + size] for i in range(0, len(text), size)]
 
 
 def says(text: str) -> AgentResponse:

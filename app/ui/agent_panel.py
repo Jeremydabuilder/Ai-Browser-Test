@@ -22,6 +22,15 @@ from PySide6.QtWidgets import (
 
 from app.agent.session import AgentSession, AgentState, ConfirmationRequest
 
+#: The prompts behind the quick-action buttons. Written as things a person
+#: would actually say, because they go through the same path as anything the
+#: user types - there is no second, hard-coded summarising system.
+QUICK_ACTIONS: tuple[tuple[str, str], ...] = (
+    ("Summarise", "Summarise the page I am looking at."),
+    ("Key points", "What are the main points on this page? Answer as a short list."),
+    ("Explain", "Explain what this page is and who it is for, in plain language."),
+)
+
 
 class _MessageBox(QPlainTextEdit):
     """Input where Enter sends and Shift+Enter makes a new line."""
@@ -83,6 +92,9 @@ class AgentPanel(QWidget):
         super().__init__(parent)
         self.setMinimumWidth(320)
         self._session = session
+        #: True while an answer is being written into the transcript piece by
+        #: piece, so the finished message is not appended a second time.
+        self._streaming = False
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(8, 8, 8, 8)
@@ -91,11 +103,31 @@ class AgentPanel(QWidget):
         model = ""
         if session is not None:
             model = session.config.model_choice.label
+        top = QHBoxLayout()
         header = QLabel(
-            "<b>AI Agent</b>" + (f" <span style='color:#777'>{model}</span>" if model else ""),
+            "<b>Py AI</b>" + (f" <span style='color:#777'>{model}</span>" if model else ""),
             self)
         header.setTextFormat(Qt.TextFormat.RichText)
-        layout.addWidget(header)
+        top.addWidget(header, 1)
+        self.clear_button = QPushButton("Clear", self)
+        self.clear_button.setToolTip("Forget this conversation and start again")
+        self.clear_button.setFlat(True)
+        self.clear_button.clicked.connect(self._clear)
+        top.addWidget(self.clear_button)
+        layout.addLayout(top)
+
+        # Quick actions. These are not a separate system: each one sends an
+        # ordinary message through the same session, so whatever the agent can
+        # do by being asked, it does here too.
+        self.quick = QHBoxLayout()
+        self.quick.setSpacing(4)
+        for label, prompt in QUICK_ACTIONS:
+            button = QPushButton(label, self)
+            button.setToolTip(prompt)
+            button.clicked.connect(lambda _checked=False, text=prompt: self._ask(text))
+            self.quick.addWidget(button)
+        self.quick.addStretch(1)
+        layout.addLayout(self.quick)
 
         self.transcript = QTextBrowser(self)
         self.transcript.setOpenExternalLinks(False)
@@ -150,10 +182,17 @@ class AgentPanel(QWidget):
         session.confirmation_required.connect(self.confirmation.ask)
         session.finished.connect(self._on_finished)
         session.usage_updated.connect(self._on_usage)
+        session.assistant_delta.connect(self._on_delta)
+        session.cleared.connect(self._on_cleared)
 
     def _show_unconfigured(self) -> None:
         self.input.setEnabled(False)
         self.send_button.setEnabled(False)
+        self.clear_button.setEnabled(False)
+        for index in range(self.quick.count()):
+            widget = self.quick.itemAt(index).widget()
+            if widget is not None:
+                widget.setEnabled(False)
         self._append(
             "system",
             "The agent is not configured. Add an Anthropic API key "
@@ -175,6 +214,21 @@ class AgentPanel(QWidget):
         if self._session is not None:
             self._session.cancel()
 
+    def _clear(self) -> None:
+        if self._session is None:
+            return
+        if self._session.busy:
+            self._append("system", "Stop the current task before clearing.")
+            return
+        self._session.clear()
+
+    def _ask(self, text: str) -> None:
+        """Send a prepared message, exactly as if the user had typed it."""
+        if self._session is None or self._session.busy:
+            return
+        self._append("user", text)
+        self._session.send(text)
+
     def _answer_confirmation(self, allowed: bool) -> None:
         self.confirmation.hide()
         if self._session is not None:
@@ -182,7 +236,39 @@ class AgentPanel(QWidget):
 
     # -- session events --------------------------------------------------
     def _on_assistant(self, text: str) -> None:
+        if self._streaming:
+            # Already on screen, written as it arrived.
+            self._end_stream()
+            return
         self._append("assistant", text)
+
+    def _on_delta(self, fragment: str) -> None:
+        """Write a fragment of the answer as it arrives.
+
+        Inserted as plain text so a page that streams back something looking
+        like markup is displayed, not rendered - the transcript shows what
+        Claude said, and Claude is quoting untrusted pages.
+        """
+        cursor = self.transcript.textCursor()
+        cursor.movePosition(QTextCursor.MoveOperation.End)
+        if not self._streaming:
+            self._streaming = True
+            self.transcript.setTextCursor(cursor)
+            self.transcript.insertHtml('<p style="margin:6px 0"><b>Claude:</b> </p>')
+            cursor = self.transcript.textCursor()
+            cursor.movePosition(QTextCursor.MoveOperation.End)
+        cursor.insertText(fragment)
+        self.transcript.setTextCursor(cursor)
+        self.transcript.ensureCursorVisible()
+
+    def _end_stream(self) -> None:
+        self._streaming = False
+
+    def _on_cleared(self) -> None:
+        self.transcript.clear()
+        self.usage.hide()
+        self._streaming = False
+        self._append("system", "Conversation cleared.")
 
     def _on_activity(self, text: str) -> None:
         self._append("activity", text)
@@ -194,6 +280,10 @@ class AgentPanel(QWidget):
         busy = state != AgentState.IDLE
         self.stop_button.setEnabled(busy)
         self.send_button.setEnabled(not busy)
+        for index in range(self.quick.count()):
+            widget = self.quick.itemAt(index).widget()
+            if widget is not None:
+                widget.setEnabled(not busy)
         self.status.setText({
             AgentState.THINKING: "Claude is thinking…",
             AgentState.ACTING: "Working in the browser…",
@@ -220,6 +310,7 @@ class AgentPanel(QWidget):
         self.usage.show()
 
     def _on_finished(self) -> None:
+        self._end_stream()
         self.confirmation.hide()
         self.status.setText("")
         self.input.setFocus()

@@ -76,26 +76,57 @@ class ConfirmationRequest:
 # ---------------------------------------------------------------------------
 
 
+def _accepts_streaming(transport) -> bool:
+    """Does this transport take an `on_text` callback?
+
+    Asked of the signature rather than by calling and catching TypeError: a
+    TypeError raised *inside* a real streaming call would look identical, and
+    we would silently fall back to non-streaming and hide the bug. The
+    scripted transport in the tests has no on_text, and that is the only case
+    this needs to recognise.
+    """
+    import inspect
+
+    try:
+        return "on_text" in inspect.signature(transport.send).parameters
+    except (AttributeError, TypeError, ValueError):
+        # No send at all, or a builtin/C callable with no readable signature.
+        return False
+
+
 class _ClaudeWorker(QObject):
     """Runs blocking Claude requests. Lives on a QThread; never touches Qt UI."""
 
     responded = Signal(object)   # AgentResponse
     failed = Signal(object)      # ClaudeError
+    text_delta = Signal(str)     # a fragment of the answer, as it arrives
 
     def __init__(self, transport: ClaudeTransport) -> None:
         super().__init__()
         self._transport = transport
+        self._streaming = _accepts_streaming(transport)
 
     @Slot(str, list, list)
     def request(self, system: str, messages: list, tools: list) -> None:
         try:
-            self.responded.emit(self._transport.send(
-                system=system, messages=messages, tools=tools))
+            self.responded.emit(self._send(system, messages, tools))
         except ClaudeError as exc:
             self.failed.emit(exc)
         except Exception as exc:  # noqa: BLE001 - a worker crash must not kill the app
             self.failed.emit(ClaudeError(
                 "Something went wrong talking to Claude.", detail=f"{type(exc).__name__}: {exc}"))
+
+    def _send(self, system: str, messages: list, tools: list) -> AgentResponse:
+        """Stream if the transport can, otherwise make one blocking call.
+
+        Emitting from here is safe: Qt queues a signal across the thread
+        boundary, so fragments arrive on the GUI thread, in order.
+        """
+        if self._streaming:
+            return self._transport.send(
+                system=system, messages=messages, tools=tools,
+                on_text=self.text_delta.emit)
+        return self._transport.send(system=system, messages=messages, tools=tools)
 
 
 # ---------------------------------------------------------------------------
@@ -114,6 +145,10 @@ class AgentSession(QObject):
     finished = Signal()                          # task over (done or stopped)
     confirmation_required = Signal(object)       # ConfirmationRequest
     usage_updated = Signal(object)               # Usage for the current task
+    #: A fragment of the answer as it is generated, before assistant_message.
+    assistant_delta = Signal(str)
+    #: The conversation was reset.
+    cleared = Signal()
     #: Emitted with the outgoing request so a worker thread can pick it up.
     _dispatch = Signal(str, list, list)
 
@@ -161,6 +196,7 @@ class AgentSession(QObject):
         self._dispatch.connect(self._worker.request)          # queued: GUI -> worker
         self._worker.responded.connect(self._on_response)     # queued: worker -> GUI
         self._worker.failed.connect(self._on_failure)
+        self._worker.text_delta.connect(self._on_text_delta)
         self._thread.start()
 
     # -- public API -------------------------------------------------------
@@ -196,6 +232,34 @@ class AgentSession(QObject):
         self._trim_history()
         self._request()
         return True
+
+    @Slot(str)
+    def _on_text_delta(self, fragment: str) -> None:
+        """Pass a streamed fragment on, unless the task was cancelled.
+
+        Fragments already in Qt's queue when the user pressed Stop would
+        otherwise keep arriving after the panel said the task had stopped.
+        """
+        if self._cancelled:
+            return
+        self.assistant_delta.emit(fragment)
+
+    def clear(self) -> None:
+        """Forget the conversation and start again.
+
+        Refused while a task is running: dropping the history out from under an
+        in-flight request would leave the next turn answering tool results for
+        tool calls it can no longer see.
+        """
+        if self.busy:
+            return
+        self._messages.clear()
+        self._result_tools.clear()
+        self._pruned.clear()
+        self.task_usage.reset()
+        self._task = ""
+        self.usage_updated.emit(self.task_usage)
+        self.cleared.emit()
 
     def cancel(self) -> None:
         """Stop the current task.
