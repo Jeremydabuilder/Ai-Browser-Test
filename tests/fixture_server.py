@@ -243,6 +243,14 @@ class _Handler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(body)
             self.close_connection = True
+        elif path == "/frames":
+            # A cross-origin child too: localhost and 127.0.0.1 are different
+            # origins to the browser even on the same port, which is exactly
+            # the case that matters for iframe extraction.
+            port = self.server.server_address[1]
+            self._send(FRAMES % f"http://localhost:{port}/frame-inner")
+        elif path == "/frame-inner":
+            self._send(FRAME_INNER)
         elif path == "/downloads-page":
             self._send(DOWNLOADS_PAGE)
         elif path == "/injection":
@@ -264,6 +272,24 @@ class _Handler(BaseHTTPRequestHandler):
     def log_message(self, *args) -> None:  # silence request logging
         return
 
+
+FRAMES = """<!doctype html><html><head><title>Frames Host</title></head>
+<body><h1>Frames Host</h1>
+<p>Outer paragraph.</p>
+<button id="outer-button">Outer button</button>
+<iframe id="same" src="/frame-inner" width="400" height="200"></iframe>
+<iframe id="srcdoc" srcdoc="<h2>Srcdoc heading</h2><button id='sd'>Srcdoc button</button>"
+        width="400" height="120"></iframe>
+<iframe id="cross" src="%s" width="400" height="200"></iframe>
+</body></html>"""
+
+FRAME_INNER = """<!doctype html><html><head><title>Inner Frame</title></head>
+<body><h2>Inner heading</h2>
+<p>Text that lives inside the iframe.</p>
+<a id="inner-link" href="/second">Inner link</a>
+<input id="inner-field" type="text" aria-label="Inner field">
+<button id="inner-button">Inner button</button>
+</body></html>"""
 
 DOWNLOADS_PAGE = """<!doctype html><html><head><title>Downloads</title></head>
 <body><h1>Downloads</h1>

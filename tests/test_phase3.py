@@ -610,16 +610,35 @@ class FindInPageTests(Phase3TestCase):
         self.window.find_bar.field.setText("zzz-not-on-this-page")
         self.assertTrue(pump(lambda: self.window.find_bar.status.text() == "No results", 8000))
 
+    def _settled_status(self, timeout_ms: int = 8000) -> str:
+        """The find status once it has stopped changing.
+
+        Qt's findText is asynchronous, and stepping while a previous search is
+        still in flight races it - the step lands, the stale result arrives
+        afterwards, and the status appears not to have moved. Waiting for
+        quiescence tests our stepping rather than Qt's scheduling; without it
+        this test failed roughly one full-suite run in two, purely on load.
+        """
+        pump(lambda: " of " in self.window.find_bar.status.text(), timeout_ms)
+        last = self.window.find_bar.status.text()
+        for _ in range(40):
+            pump(lambda: False, 50)
+            current = self.window.find_bar.status.text()
+            if current == last:
+                return current
+            last = current
+        return last
+
     def test_stepping_moves_through_matches(self):
         """Which match is active first is Qt's business; that stepping moves is ours."""
         self.window._open_find()
         self.window.find_bar.field.setText("button")
-        self.assertTrue(pump(lambda: " of " in self.window.find_bar.status.text(), 8000))
-        first = self.window.find_bar.status.text()
+        first = self._settled_status()
+        self.assertIn(" of ", first)
         self.window._find_step(False)
         self.assertTrue(pump(lambda: self.window.find_bar.status.text() != first, 8000),
                         f"stepping forward did not move on from {first!r}")
-        moved = self.window.find_bar.status.text()
+        moved = self._settled_status()
         self.window._find_step(True)
         self.assertTrue(pump(lambda: self.window.find_bar.status.text() != moved, 8000),
                         "stepping back did not move")

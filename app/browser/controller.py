@@ -56,7 +56,22 @@ SETTLE_MAX_MS = 2500       # ...but never watch longer than this
 DEFAULT_TIMEOUT_MS = 30000
 DEFAULT_POLL_MS = 100
 
-_REF_PATTERN = re.compile(r"^s\d+:[ef]\d+$")
+# A reference is "s3:e12" in the main document, "s3.2:e12" inside the second
+# frame of that same snapshot. The frame part is produced and consumed only by
+# this module; a caller passes the whole string back and never parses it.
+_REF_PATTERN = re.compile(r"^s\d+(?:\.\d+)?:[ef]\d+$")
+
+#: How many frames deep to look, and how many in total. A page can nest frames
+#: arbitrarily and some ad-heavy pages carry dozens; both are bounded so one
+#: pathological page cannot turn a snapshot into a hundred round-trips.
+MAX_FRAME_DEPTH = 3
+MAX_FRAMES = 12
+
+
+def _frame_tag(ref: str) -> str:
+    """The frame part of a reference, or "" for the main document."""
+    head = ref.split(":", 1)[0]
+    return head.split(".", 1)[1] if "." in head else ""
 
 
 class ScrollDirection:
@@ -105,6 +120,12 @@ class PageElement:
     expanded: bool | None = None
     form: int | None = None
     options: list[dict[str, Any]] | None = None
+    #: Which frame this element lives in: None for the page's own document,
+    #: otherwise the frame's index within this snapshot.
+    frame: int | None = None
+    #: The frame's origin, when it differs from the page's. Present so a caller
+    #: can tell embedded third-party content from the site's own.
+    frame_origin: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {k: v for k, v in asdict(self).items() if v is not None}
@@ -157,6 +178,9 @@ class PageStructure:
     viewport_width: int = 0
     at_bottom: bool = False
     tab_id: int = -1
+    #: One entry per embedded frame that was read: index, url, origin, and
+    #: whether it is same-origin with the page.
+    frames: list[dict[str, Any]] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -178,6 +202,7 @@ class PageStructure:
             "elements_truncated": self.elements_truncated,
             "text": self.text,
             "text_truncated": self.text_truncated,
+            **({"frames": self.frames} if self.frames else {}),
         }
 
     def to_json(self, indent: int | None = None) -> str:
@@ -426,40 +451,79 @@ class BrowserController(QObject):
         max_elements: int = 300,
         max_text: int = 20000,
         include_invisible: bool = False,
+        include_frames: bool = True,
     ) -> BrowserFuture:
-        """Capture a fresh structural snapshot of the page.
+        """Capture a fresh structural snapshot of the page, frames included.
 
         Every call mints a NEW snapshot id, and element references are scoped
         to it. References from an older snapshot keep working only while the
         document and the elements themselves are unchanged - see the module
         documentation on staleness.
+
+        A page with iframes is captured as one logical snapshot spanning
+        several documents: the main document first, then each frame, all filed
+        under the same snapshot id. Elements from a frame carry the frame's
+        index and origin, so a caller can tell embedded third-party content
+        from the page's own. Pass ``include_frames=False`` for the main
+        document alone.
         """
         started = time.monotonic()
         tab = self._tab_for(tab_id)
         if tab is None:
             return resolved("get_page_structure", self._no_tab("get_page_structure", started))
         future = BrowserFuture("get_page_structure", self)
-        options = json.dumps({
-            "max_elements": max_elements,
-            "max_text": max_text,
-            "include_invisible": include_invisible,
-        })
+
+        def options_for(snapshot_id: str | None) -> str:
+            payload: dict[str, Any] = {
+                "max_elements": max_elements,
+                "max_text": max_text,
+                "include_invisible": include_invisible,
+            }
+            if snapshot_id:
+                payload["snapshot_id"] = snapshot_id
+            return json.dumps(payload)
+
+        def fail() -> None:
+            self._finish(future, self._failure(
+                "get_page_structure", tab, started, ErrorCode.SCRIPT_FAILED,
+                "The page could not be inspected. It may still be loading, "
+                "or it may be an internal page that does not allow inspection."))
 
         def on_result(raw: Any) -> None:
             if not isinstance(raw, dict):
-                self._finish(future, self._failure(
-                    "get_page_structure", tab, started, ErrorCode.SCRIPT_FAILED,
-                    "The page could not be inspected. It may still be loading, "
-                    "or it may be an internal page that does not allow inspection."))
+                fail()
                 return
-            structure = self._structure_from(raw, tab)
+            frames = self._frames(tab)[1:] if include_frames else []
+            if not frames:
+                finish(raw, [])
+                return
+            # Capture each frame under the main document's snapshot id, so one
+            # reference space covers the whole page.
+            snapshot_id = raw.get("snapshot_id") or ""
+            collected: list[tuple[str, dict]] = []
+            pending = {"count": len(frames)}
+
+            def collect(tag: str, frame_raw: Any) -> None:
+                if isinstance(frame_raw, dict):
+                    collected.append((tag, frame_raw))
+                pending["count"] -= 1
+                if pending["count"] == 0:
+                    collected.sort(key=lambda item: int(item[0]))
+                    finish(raw, collected)
+
+            for tag, frame in frames:
+                self._call_page(
+                    tab, f"window.__pb.capture({options_for(f'{snapshot_id}.{tag}')})",
+                    lambda frame_raw, t=tag: collect(t, frame_raw), frame=frame)
+
+        def finish(raw: dict, frames: list[tuple[str, dict]]) -> None:
+            structure = self._structure_from(raw, tab, frames)
             self._structures[self._id_of(tab)] = structure
-            result = self._success("get_page_structure", tab, started,
-                                   data={"structure": structure})
-            self._finish(future, result)
+            self._finish(future, self._success(
+                "get_page_structure", tab, started, data={"structure": structure}))
 
         def capture() -> None:
-            self._call_page(tab, f"window.__pb.capture({options})", on_result)
+            self._call_page(tab, f"window.__pb.capture({options_for(None)})", on_result)
 
         # Inspecting a page mid-navigation would race the document swap and
         # fail spuriously. Waiting first means a caller always gets the
@@ -771,8 +835,79 @@ class BrowserController(QObject):
     # ------------------------------------------------------------------
     # internals
     # ------------------------------------------------------------------
-    def _call_page(self, tab: BrowserTab, expression: str, callback: Callable[[Any], None]) -> None:
+    # -- frames -----------------------------------------------------------
+    #
+    # A page is not one document. Anything inside an <iframe> is a separate
+    # document with its own DOM, and until now the page representation stopped
+    # at the frame boundary - which meant embedded logins, payment forms,
+    # comment widgets and video players were invisible to automation.
+    #
+    # Qt 6.8 added QWebEngineFrame, so each frame can be scripted directly.
+    # Our automation script already runs in every frame (setRunsOnSubFrames),
+    # in the isolated world, so nothing new is injected: this only routes calls
+    # to the right frame.
+    #
+    # Note this reaches cross-origin frames as well as same-origin ones. It is
+    # not a same-origin-policy bypass: the engine runs our script inside each
+    # frame's own context, exactly as it already does for the main document,
+    # and no page script gains any access it did not have. Every frame's origin
+    # is reported alongside its content so the model can tell third-party
+    # content apart - see get_page_structure.
+
+    def _frames(self, tab: BrowserTab) -> list[tuple[str, Any]]:
+        """Every frame worth capturing: [("", main), ("1", child), ...].
+
+        Depth-first, so the order matches reading order on the page. Bounded by
+        MAX_FRAME_DEPTH and MAX_FRAMES; an invalid frame (one that navigated
+        away mid-walk) is skipped rather than raising.
+        """
+        try:
+            main = tab.page.mainFrame()
+        except Exception:  # noqa: BLE001 - older Qt without the frame API
+            return [("", None)]
+        if main is None:
+            return [("", None)]
+
+        found: list[tuple[str, Any]] = [("", main)]
+        counter = [0]
+
+        def walk(frame, depth: int) -> None:
+            if depth >= MAX_FRAME_DEPTH or len(found) > MAX_FRAMES:
+                return
+            try:
+                children = list(frame.children())
+            except Exception:  # noqa: BLE001
+                return
+            for child in children:
+                if len(found) > MAX_FRAMES:
+                    return
+                try:
+                    if not child.isValid():
+                        continue
+                except Exception:  # noqa: BLE001
+                    continue
+                counter[0] += 1
+                found.append((str(counter[0]), child))
+                walk(child, depth + 1)
+
+        walk(main, 0)
+        return found
+
+    def _frame_for(self, tab: BrowserTab, tag: str):
+        """The frame a reference belongs to, or None if it is gone."""
+        if not tag:
+            return None                      # main document: the ordinary path
+        for found_tag, frame in self._frames(tab):
+            if found_tag == tag:
+                return frame
+        return None
+
+    def _call_page(self, tab: BrowserTab, expression: str,
+                   callback: Callable[[Any], None], frame=None) -> None:
         """Evaluate one of OUR expressions in the isolated world.
+
+        With ``frame`` the expression runs inside that frame's document instead
+        of the main one; the isolated world is the same either way.
 
         Private on purpose: callers cannot reach this, cannot pass an
         expression to it, and cannot influence what it runs. Every call site
@@ -802,7 +937,16 @@ class BrowserController(QObject):
                 return
             callback(None if isinstance(parsed, dict) and "__error" in parsed else parsed)
 
-        tab.run_isolated_javascript(wrapped, on_raw)
+        if frame is None:
+            tab.run_isolated_javascript(wrapped, on_raw)
+            return
+        try:
+            from PySide6.QtWebEngineCore import QWebEngineScript
+
+            frame.runJavaScript(
+                wrapped, QWebEngineScript.ScriptWorldId.ApplicationWorld, on_raw)
+        except Exception:  # noqa: BLE001 - a frame that vanished mid-call
+            callback(None)
 
     def _invalidate(self, tab: BrowserTab) -> None:
         self._structures.pop(self._id_of(tab), None)
@@ -894,26 +1038,65 @@ class BrowserController(QObject):
     def _finish(self, future: BrowserFuture, result: ActionResult) -> None:
         future.set_result(result)
 
-    def _structure_from(self, raw: dict[str, Any], tab: BrowserTab) -> PageStructure:
+    def _structure_from(self, raw: dict[str, Any], tab: BrowserTab,
+                        frames: list[tuple[str, dict]] | None = None) -> PageStructure:
         known = {f.name for f in PageElement.__dataclass_fields__.values()}  # type: ignore[attr-defined]
-        elements = [
-            PageElement(**{k: v for k, v in item.items() if k in known})
-            for item in raw.get("elements", [])
-        ]
+
+        def build(item: dict, tag: str = "", origin: str = "") -> PageElement:
+            fields = {k: v for k, v in item.items() if k in known}
+            if tag:
+                fields["frame"] = int(tag)
+                if origin:
+                    fields["frame_origin"] = origin
+            return PageElement(**fields)
+
+        elements = [build(item) for item in raw.get("elements", [])]
+        page_origin = raw.get("origin", "")
+        headings = [Heading(level=h.get("level", 2), text=h.get("text", ""))
+                    for h in raw.get("headings", [])]
+        text_parts = [raw.get("text", "")]
+        frame_summary: list[dict[str, Any]] = []
+        truncated = raw.get("elements_truncated", False)
+
+        for tag, frame_raw in frames or []:
+            origin = frame_raw.get("origin", "")
+            frame_elements = frame_raw.get("elements", [])
+            if not frame_elements and not (frame_raw.get("text") or "").strip():
+                continue                     # an empty frame is noise
+            elements.extend(build(item, tag, origin) for item in frame_elements)
+            headings.extend(
+                Heading(level=h.get("level", 2), text=h.get("text", ""))
+                for h in frame_raw.get("headings", []))
+            frame_text = (frame_raw.get("text") or "").strip()
+            if frame_text:
+                # Labelled, not merged silently: text from an embedded document
+                # is not the page's own words, and a caller reading a summary
+                # should be able to see where each part came from.
+                text_parts.append(f"\n[frame {tag} - {origin or frame_raw.get('url', '')}]\n"
+                                  f"{frame_text}")
+            truncated = truncated or frame_raw.get("elements_truncated", False)
+            frame_summary.append({
+                "index": int(tag),
+                "url": frame_raw.get("url", ""),
+                "origin": origin,
+                "same_origin": bool(origin) and origin == page_origin,
+                "element_count": len(frame_elements),
+            })
+
         return PageStructure(
+            frames=frame_summary,
             url=raw.get("url", ""),
             title=raw.get("title", ""),
             lang=raw.get("lang", ""),
             snapshot_id=raw.get("snapshot_id", ""),
             doc_id=raw.get("doc_id", ""),
             dom_revision=raw.get("dom_revision", 0),
-            headings=[Heading(level=h.get("level", 2), text=h.get("text", ""))
-                      for h in raw.get("headings", [])],
+            headings=headings,
             forms=[PageForm(**f) for f in raw.get("forms", [])],
             elements=elements,
-            element_count=raw.get("element_count", len(elements)),
-            elements_truncated=raw.get("elements_truncated", False),
-            text=raw.get("text", ""),
+            element_count=len(elements),
+            elements_truncated=truncated,
+            text="".join(text_parts),
             text_truncated=raw.get("text_truncated", False),
             scroll_y=raw.get("scroll_y", 0),
             scroll_height=raw.get("scroll_height", 0),
@@ -1140,7 +1323,16 @@ class BrowserController(QObject):
             self._settle(tab, future, action, started, target, url_before,
                          raw.get("dom_revision", 0), sensitivity, watch)
 
-        self._call_page(tab, f"window.__pb.act({payload})", on_result)
+        # Run the action in the document the reference came from. A reference
+        # to an element inside an iframe resolves only in that frame - the main
+        # document has never heard of it.
+        frame = self._frame_for(tab, _frame_tag(ref)) if ref else None
+        if ref and _frame_tag(ref) and frame is None:
+            return resolved(action, self._failure(
+                action, tab, started, ErrorCode.STALE_DOCUMENT,
+                "The frame that element was in is no longer on the page.",
+                recoverable=True))
+        self._call_page(tab, f"window.__pb.act({payload})", on_result, frame=frame)
         future.set_timeout(DEFAULT_TIMEOUT_MS, lambda: self._failure(
             action, tab, started, ErrorCode.TIMEOUT, "The action did not complete in time."))
         return future

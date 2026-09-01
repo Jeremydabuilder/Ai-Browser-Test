@@ -251,7 +251,11 @@
     var maxText = options.max_text || 20000;
     var includeInvisible = !!options.include_invisible;
 
-    var snapshotId = "s" + (++state.nextSnapshot);
+    /* The caller may name the snapshot. A page with iframes is captured as one
+       logical snapshot made of several per-frame captures, and every frame
+       must file its elements under the same id for a reference to resolve
+       later. With no id supplied this generates one exactly as before. */
+    var snapshotId = options.snapshot_id || ("s" + (++state.nextSnapshot));
     var formNodes = Array.prototype.slice.call(document.forms, 0, 50);
     var elements = formNodes.slice();
     var fingerprints = formNodes.map(fingerprint);
@@ -316,6 +320,8 @@
       doc_id: state.docId,
       dom_revision: state.domRevision,
       url: location.href,
+      origin: location.origin || "",
+      is_main_frame: window === window.top,
       title: document.title || "",
       lang: document.documentElement.getAttribute("lang") || "",
       headings: headings,
@@ -522,7 +528,7 @@
     }).filter(Boolean);
     var wantRole = options.role || "";
     var limit = options.limit || 10;
-    var snapshotId = "s" + (++state.nextSnapshot);
+    var snapshotId = options.snapshot_id || ("s" + (++state.nextSnapshot));
 
     var scored = [];
     var candidates = deepQuery(INTERACTIVE, 3000);
