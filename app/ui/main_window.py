@@ -58,7 +58,10 @@ class MainWindow(QMainWindow):
         self.nav_bar = NavigationBar(self)
         self.addToolBar(self.nav_bar)
 
-        self.tabs = TabManager(profile, self.settings.home_url, self)
+        self.tabs = TabManager(profile, self.settings.new_tab_url(), self)
+        # The new-tab page reads history and bookmarks through this callback;
+        # the profile itself stays ignorant of SQLite.
+        profile.set_new_tab_provider(self._new_tab_data)
         # The supported programmatic interface to this window. The UI does not
         # need it, but keeping one audited control surface (rather than letting
         # callers poke at widgets) is what Phase 2 will build on.
@@ -84,6 +87,8 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(self.splitter)
         self._side_panel: QWidget | None = None
         self._agent_session = None
+        #: Set once the agent has actually been tried and could not start.
+        self._agent_unavailable = False
         self._find_sequence = 0
 
         self._build_status_bar()
@@ -91,7 +96,7 @@ class MainWindow(QMainWindow):
         self._connect_signals()
         self._install_shortcuts()
 
-        for url in start_urls or [self.settings.home_url]:
+        for url in start_urls or [self.settings.new_tab_url()]:
             self.tabs.new_tab(url)
 
     # ------------------------------------------------------------------
@@ -147,6 +152,8 @@ class MainWindow(QMainWindow):
         )
 
         tools_menu: QMenu = menubar.addMenu("&Tools")
+        self._add_action(tools_menu, "&Settings…", "Ctrl+,", self._show_settings)
+        tools_menu.addSeparator()
         self._agent_action = self._add_action(
             tools_menu, "Show &AI Agent", "Ctrl+Shift+A", self._toggle_agent_panel)
         self._agent_action.setCheckable(True)
@@ -188,6 +195,7 @@ class MainWindow(QMainWindow):
         self.tabs.security_message.connect(
             lambda text: self.notice.show_message(text, level="warning")
         )
+        self.tabs.internal_action.connect(self._on_internal_action)
         self.tabs.page_visited.connect(self.history.add_visit)
         self.tabs.page_title_resolved.connect(self.history.update_title)
         # Closing the last tab closes the window, like Chrome.
@@ -252,7 +260,80 @@ class MainWindow(QMainWindow):
 
     def _go_home(self) -> None:
         if tab := self._current():
-            tab.navigate(self.settings.home_url)
+            tab.navigate(self.settings.new_tab_url())
+
+    # ------------------------------------------------------------------
+    # The PyBrowser new-tab page
+    # ------------------------------------------------------------------
+    def _new_tab_data(self):
+        """Build what the new-tab page shows, right now.
+
+        Called by the scheme handler each time the page is served, so the lists
+        are always current without any cache to invalidate.
+        """
+        from app.browser.newtab import collect
+
+        return collect(self.history, self.bookmarks,
+                       agent_available=self._agent_configured())
+
+    def _agent_configured(self) -> bool:
+        """Whether the AI entry point should promise anything.
+
+        This deliberately does **not** ask the credential layer. An earlier
+        version called `credentials.resolve()` here, which reads the OS
+        keyring - and on a machine whose keyring backend is broken, the keyring
+        library's Rust extension aborts the process outright rather than
+        raising something Python can catch. Rendering a new tab must never be
+        able to do that.
+
+        So the answer comes from memory only: optimistic until we have actually
+        watched the agent fail to start. The panel itself explains a missing
+        credential properly; the new-tab page only sets an expectation.
+        """
+        return not self._agent_unavailable
+
+    def _on_internal_action(self, name: str, params: dict) -> None:
+        """Act on a request from the new-tab page.
+
+        The page can only ask for these five things, and each is something the
+        user could already do from a menu. It never navigates by itself: the
+        URL-or-search decision below is the same code path the address bar
+        uses, so the two cannot drift apart.
+        """
+        if name == "search":
+            query = (params.get("q") or "").strip()
+            if query:
+                self._navigate_from_address_bar(query)
+        elif name == "open":
+            target = (params.get("url") or "").strip()
+            if target and (tab := self._current()):
+                tab.navigate(target)
+        elif name == "ai":
+            self._open_agent_with(params.get("q") or "")
+        elif name == "history":
+            self._show_history()
+        elif name == "bookmarks":
+            self._show_bookmarks()
+
+    def _open_agent_with(self, text: str) -> None:
+        """Open the AI panel, carrying whatever was typed on the new-tab page.
+
+        This deliberately reuses the existing panel and session rather than
+        starting anything of its own - there is one AI in this browser.
+        """
+        if self._side_panel is None:
+            self._toggle_agent_panel()
+        panel = self._side_panel
+        if panel is None:
+            return
+        box = getattr(panel, "input", None)
+        if box is not None and box.isEnabled():
+            if text:
+                box.setPlainText(text)
+                cursor = box.textCursor()
+                cursor.movePosition(cursor.MoveOperation.End)
+                box.setTextCursor(cursor)
+            box.setFocus()
 
     def _navigate_from_address_bar(self, text: str) -> None:
         url = url_utils.normalize(text, self.settings.search_url)
@@ -429,6 +510,22 @@ class MainWindow(QMainWindow):
         dialog.open_requested.connect(lambda url: self.tabs.new_tab(url))
         dialog.exec()
 
+    def _show_settings(self) -> None:
+        from app.ui.settings_dialog import SettingsDialog
+
+        dialog = SettingsDialog(self.settings, self)
+        dialog.saved.connect(self._apply_settings)
+        dialog.exec()
+
+    def _apply_settings(self) -> None:
+        """Adopt changed preferences without a restart.
+
+        Only the tab manager holds a copy of the new-tab address, so this is
+        the whole of it - everything else reads the store when it needs to.
+        """
+        self.tabs.home_url = self.settings.new_tab_url()
+        self._show_status("Settings saved.")
+
     def _show_about(self) -> None:
         from PySide6.QtCore import qVersion
 
@@ -456,6 +553,7 @@ class MainWindow(QMainWindow):
             self._agent_session, reason = build_session(
                 self.controller, self, self.settings)
             if self._agent_session is None:
+                self._agent_unavailable = True
                 self._show_status(f"AI agent unavailable: {reason}")
         self.set_side_panel(AgentPanel(self._agent_session, self))
         self._agent_action.setChecked(True)

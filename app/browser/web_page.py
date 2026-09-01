@@ -15,7 +15,7 @@ Security posture, stated once so it is easy to audit:
 
 from __future__ import annotations
 
-from PySide6.QtCore import QObject, QUrl, Signal
+from PySide6.QtCore import QObject, QTimer, QUrl, Signal
 from PySide6.QtWebEngineCore import (
     QWebEngineCertificateError,
     QWebEngineLoadingInfo,
@@ -34,6 +34,8 @@ class BrowserPage(QWebEnginePage):
     certificate_rejected = Signal(str, str)  # host, human-readable reason
     render_process_crashed = Signal(str)
     permission_decided = Signal(str, bool)   # description, granted
+    #: An action requested by one of PyBrowser's own internal pages.
+    internal_action = Signal(str, dict)      # name, parameters
 
     def __init__(self, profile, parent: QObject | None = None) -> None:
         super().__init__(profile, parent)
@@ -71,6 +73,37 @@ class BrowserPage(QWebEnginePage):
                 self.load_error.emit(error)
         elif status == QWebEngineLoadingInfo.LoadStatus.LoadSucceededStatus:
             self._last_error = None
+
+    # -- internal pages -------------------------------------------------
+    def acceptNavigationRequest(  # noqa: N802 - Qt's name
+        self, url: QUrl, nav_type, is_main_frame: bool
+    ) -> bool:
+        """Intercept the new-tab page's action URLs; allow everything else.
+
+        PyBrowser's internal pages cannot call Python, so they navigate to
+        `pybrowser://newtab/action/...` to say what they want. We refuse the
+        navigation and emit it instead, which keeps the decision in Python: the
+        page states an intention and never carries it out itself.
+
+        Only our own scheme is affected. A website cannot reach this - it would
+        have to navigate the top frame to `pybrowser:`, which Chromium does not
+        permit from a web origin - and even if one did, every action below is
+        something the user could do from the menus anyway.
+        """
+        from app.browser.newtab import parse_action
+
+        action = parse_action(url)
+        if action is not None and is_main_frame:
+            name, params = action
+            # Emit on the next turn of the event loop, not now. We are inside
+            # Chromium's navigation-decision callback, and starting a fresh
+            # navigation from in here re-enters the engine while it is still
+            # deciding about this one - which aborts the render process
+            # outright (SIGTRAP), not merely misbehaves. Deferring by one tick
+            # lets the engine finish rejecting this navigation first.
+            QTimer.singleShot(0, lambda: self.internal_action.emit(name, params))
+            return False
+        return super().acceptNavigationRequest(url, nav_type, is_main_frame)
 
     # -- new windows ----------------------------------------------------
     def createWindow(self, window_type: QWebEnginePage.WebWindowType):  # noqa: N802

@@ -26,6 +26,9 @@ from dataclasses import dataclass
 SERVICE_NAME = "PyBrowser"
 ACCOUNT_NAME = "anthropic-api-key"
 ENV_VAR = "ANTHROPIC_API_KEY"
+#: Skip the keyring entirely. The escape hatch exists because a broken backend
+#: can fail in a way no Python code can catch - see _keyring() below.
+ENV_DISABLE = "PYBROWSER_DISABLE_KEYRING"
 
 
 class KeyringUnavailable(RuntimeError):
@@ -56,8 +59,23 @@ def _guard(exc: BaseException) -> KeyringUnavailable:
     return KeyringUnavailable(str(exc) or type(exc).__name__)
 
 
+def keyring_disabled() -> bool:
+    return (os.environ.get(ENV_DISABLE) or "").strip().lower() in ("1", "true", "yes", "on")
+
+
 def _keyring():
-    """Import keyring lazily and defensively."""
+    """Import keyring lazily and defensively.
+
+    `_guard` handles every failure Python can observe, including the Rust
+    `PanicException`. One case it cannot: if the backend's native extension
+    calls `abort()` rather than raising, the process dies before any Python
+    runs - no try/except anywhere can help. That is rare and specific to a
+    damaged install, but when it happens the browser is unusable, so
+    PYBROWSER_DISABLE_KEYRING=1 skips the keyring altogether and the agent
+    falls back to the environment variable or an OAuth profile.
+    """
+    if keyring_disabled():
+        raise KeyringUnavailable(f"disabled by {ENV_DISABLE}")
     try:
         import keyring as keyring_module
 

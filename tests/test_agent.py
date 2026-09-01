@@ -32,7 +32,7 @@ from app.agent.config import AgentConfig, ContextLimits  # noqa: E402
 from app.agent.session import AgentSession, AgentState  # noqa: E402
 from app.agent.tools import UNTRUSTED_CLOSE, UNTRUSTED_OPEN, ToolRegistry  # noqa: E402
 from app.browser.controller import BrowserController  # noqa: E402
-from app.browser.profile import BrowserProfile  # noqa: E402
+from tests.qt_profile import shared_profile  # noqa: E402
 from app.browser.tab_manager import TabManager  # noqa: E402
 from tests.fake_claude import (  # noqa: E402
     ScriptedClaude, calls, calls_many, find_ref, says, structure_from,
@@ -41,26 +41,24 @@ from tests.fixture_server import FixtureServer  # noqa: E402
 
 _app: QApplication | None = None
 _server: FixtureServer | None = None
-_profile: BrowserProfile | None = None
+_profile = None
 
 
 def setUpModule() -> None:
     global _app, _server, _profile
     _app = QApplication.instance() or QApplication(sys.argv[:1])
     _server = FixtureServer()
-    _profile = BrowserProfile(_app)
+    _profile = shared_profile()
 
 
 def tearDownModule() -> None:
-    global _profile
     if _server is not None:
         _server.stop()
     if _app is not None:
         for _ in range(3):
             _app.processEvents()
-    if _profile is not None:
-        _profile.deleteLater()
-        _profile = None
+    # The profile is shared across the whole test process and outlives this
+    # module; see tests/qt_profile.py.
 
 
 def pump(predicate, timeout_ms: int = 20000) -> bool:

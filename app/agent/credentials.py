@@ -52,7 +52,9 @@ class Mode:
 SETUP_HELP: dict[str, str] = {
     Mode.OAUTH_PROFILE: "Sign in with the Anthropic CLI: `ant auth login`. "
                         "No key is stored by this browser.",
-    Mode.KEYRING: "Stored in your operating system's keyring by this browser.",
+    Mode.KEYRING: "Stored in your operating system's keyring by this browser. "
+                  "Set PYBROWSER_DISABLE_KEYRING=1 to skip the keyring if it "
+                  "is broken on this machine.",
     Mode.ENV_KEY: f"Set the {ENV_API_KEY} environment variable before launching.",
     Mode.AUTH_TOKEN: f"Set the {ENV_AUTH_TOKEN} environment variable before launching.",
     Mode.BEDROCK: f"Set {ENV_BACKEND}=bedrock and AWS_REGION; "

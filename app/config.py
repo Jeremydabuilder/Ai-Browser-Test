@@ -13,7 +13,10 @@ from pathlib import Path
 
 APP_DIR_NAME = "PyBrowser"
 
-DEFAULT_HOME_URL = "https://www.google.com"
+# PyBrowser's own new-tab page - not a website. A search provider is where
+# searches GO; it is not the browser's home. See app/browser/newtab.py.
+NEW_TAB_URL = "pybrowser://newtab/"
+DEFAULT_HOME_URL = NEW_TAB_URL
 DEFAULT_SEARCH_URL = "https://duckduckgo.com/?q={query}"
 
 # Qt WebEngine needs a stable on-disk profile directory for cookies, cache and

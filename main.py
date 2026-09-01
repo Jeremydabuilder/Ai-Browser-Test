@@ -18,6 +18,7 @@ from PySide6.QtWebEngineCore import QWebEngineProfile  # noqa: F401
 from PySide6.QtWidgets import QApplication
 
 from app import APP_NAME, ORG_NAME, __version__
+from app.browser.newtab import register_scheme
 from app.browser.profile import BrowserProfile
 from app.config import database_path
 from app.storage import Database
@@ -33,6 +34,10 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv if argv is not None else sys.argv[1:])
+
+    # Chromium reads its scheme registry once, before the application exists,
+    # so pybrowser:// has to be declared here and not a line later.
+    register_scheme()
 
     QCoreApplication.setApplicationName(APP_NAME)
     QCoreApplication.setOrganizationName(ORG_NAME)

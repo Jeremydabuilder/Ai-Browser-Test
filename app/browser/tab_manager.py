@@ -33,6 +33,8 @@ class TabManager(QTabWidget):
     page_visited = Signal(str, str)   # url, title
     page_title_resolved = Signal(str, str)
     all_tabs_closed = Signal()
+    # An action requested by the new-tab page in any tab.
+    internal_action = Signal(str, dict)
     # Emitted when the user switches tab; payload is that tab's loading state.
     current_tab_switched = Signal(bool)
 
@@ -93,6 +95,7 @@ class TabManager(QTabWidget):
         tab.load_progress.connect(lambda p, t=tab: self._forward_if_current(t, self.current_load_progress, p))
         tab.load_finished.connect(lambda ok, t=tab: self._on_tab_load_finished(t, ok))
         tab.status_message.connect(self.status_message)
+        tab.internal_action.connect(self.internal_action)
         tab.load_error.connect(lambda err, t=tab: self._forward_if_current(t, self.load_error, err))
         tab.page.certificate_rejected.connect(
             lambda host, desc, t=tab: self._on_security_event(
@@ -125,6 +128,12 @@ class TabManager(QTabWidget):
     def _on_tab_title(self, tab: BrowserTab, title: str) -> None:
         index = self.indexOf(tab)
         if index == -1:
+            return
+        if tab.url().scheme() == "pybrowser":
+            self.setTabText(index, "New Tab")
+            self.setTabToolTip(index, "New Tab")
+            if tab is self.current_tab():
+                self.current_title_changed.emit("New Tab")
             return
         label = title or tab.url().host() or "New Tab"
         self.setTabText(index, self._elide(label))

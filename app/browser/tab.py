@@ -37,6 +37,8 @@ class BrowserTab(QWidget):
     status_message = Signal(str)
     # A load failure, already translated into a human-readable message.
     load_error = Signal(object)  # payload: LoadError
+    # An action requested by PyBrowser's own new-tab page.
+    internal_action = Signal(str, dict)
 
     def __init__(
         self,
@@ -73,6 +75,7 @@ class BrowserTab(QWidget):
         self._page.load_error.connect(self._on_load_error)
         self._page.certificate_rejected.connect(self._on_certificate_rejected)
         self._page.render_process_crashed.connect(self.status_message)
+        self._page.internal_action.connect(self.internal_action)
         self._page.fullScreenRequested.connect(self._on_fullscreen_requested)
 
     def _on_load_started(self) -> None:

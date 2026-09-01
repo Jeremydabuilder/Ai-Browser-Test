@@ -85,8 +85,15 @@ def is_probably_search(text: str) -> bool:
 
 
 def display_text(url: QUrl) -> str:
-    """What to show in the address bar for a loaded URL."""
+    """What to show in the address bar for a loaded URL.
+
+    Blank for a new tab: `pybrowser://newtab/` is browser UI, not a place you
+    went, and showing its address would only invite the user to select and
+    delete it before typing.
+    """
     if url.isEmpty() or url.toString() == "about:blank":
+        return ""
+    if url.scheme() == "pybrowser":
         return ""
     return url.toString()
 

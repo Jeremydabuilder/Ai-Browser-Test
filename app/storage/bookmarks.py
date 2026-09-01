@@ -22,7 +22,10 @@ class BookmarkStore:
         self._db = db
 
     # Bookmarking a blank tab or an error page is never what the user meant.
-    IGNORED_SCHEMES = ("about:", "data:", "chrome-error:", "chrome://", "javascript:", "blob:")
+    # Never recorded: blank tabs, error pages, inline data - and PyBrowser's
+    # own internal pages, which are UI rather than places you visited.
+    IGNORED_SCHEMES = ("about:", "data:", "chrome-error:", "chrome://", "javascript:",
+                       "blob:", "pybrowser:")
 
     def is_bookmarkable(self, url: str) -> bool:
         url = (url or "").strip()

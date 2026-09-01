@@ -23,6 +23,7 @@ from PySide6.QtWebEngineCore import (
     QWebEngineSettings,
 )
 
+from app.browser.newtab import NewTabData, claim_scheme
 from app.config import cache_path, downloads_path, profile_storage_path
 
 # Opt-in override for the rare case where a user needs a different UA. We do
@@ -45,7 +46,25 @@ class BrowserProfile(QObject):
         self._configure_identity()
         self._configure_settings()
         self._install_automation_script()
+        self._install_new_tab_handler()
         self._profile.downloadRequested.connect(self._on_download_requested)
+
+    # -- internal pages --------------------------------------------------
+    def _install_new_tab_handler(self) -> None:
+        """Serve pybrowser://newtab/ from this profile.
+
+        The provider is swapped in later by the window, which owns the history
+        and bookmark stores. Until then the page still renders - with empty
+        sections - so a profile built without a database (the tests, the
+        automation scripts) is not a special case.
+        """
+        # Only one profile in the process can serve pybrowser:// - see
+        # claim_scheme(), which also explains what happens if you ignore that.
+        self._new_tab_handler = claim_scheme(self._profile, NewTabData)
+
+    def set_new_tab_provider(self, provider) -> None:
+        """Point the new-tab page at real history and bookmarks."""
+        self._new_tab_handler.set_provider(provider or NewTabData)
 
     # -- storage ---------------------------------------------------------
     def _configure_storage(self) -> None:

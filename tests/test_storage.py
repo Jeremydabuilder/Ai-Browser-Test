@@ -7,6 +7,7 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from app.config import NEW_TAB_URL
 from app.storage import BookmarkStore, Database, HistoryStore, SettingsStore  # noqa: E402
 
 
@@ -62,7 +63,8 @@ class StoreTests(unittest.TestCase):
         self.assertFalse(self.bookmarks.contains("https://a.example/"))
 
     def test_settings_defaults_and_roundtrip(self):
-        self.assertTrue(self.settings.home_url.startswith("http"))
+        # The default home is PyBrowser's own new-tab page, not a website.
+        self.assertEqual(self.settings.home_url, NEW_TAB_URL)
         self.settings.home_url = "https://example.org"
         self.assertEqual(self.settings.home_url, "https://example.org")
         self.settings.set_bool("restore_tabs", True)

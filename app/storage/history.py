@@ -38,7 +38,10 @@ class HistoryStore:
     """Append-only visit log with lookup helpers for the address bar."""
 
     # URLs we never want in history: blank tabs, error pages, inline data.
-    IGNORED_SCHEMES = ("about:", "data:", "chrome-error:", "chrome://", "javascript:", "blob:")
+    # Never recorded: blank tabs, error pages, inline data - and PyBrowser's
+    # own internal pages, which are UI rather than places you visited.
+    IGNORED_SCHEMES = ("about:", "data:", "chrome-error:", "chrome://", "javascript:",
+                       "blob:", "pybrowser:")
 
     def __init__(self, db: Database) -> None:
         self._db = db
