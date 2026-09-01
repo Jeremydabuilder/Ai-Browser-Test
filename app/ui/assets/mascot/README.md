@@ -80,6 +80,30 @@ so an animated file wins over a still one of the same name.
   shipping all fourteen; so is anything in between.
 * **`<state>@2x.png`** is preferred on a high-DPI screen.
 
+## Importing supplied artwork
+
+If the artwork arrives as full-body drawings - or as one sheet with several
+figures on it - `scripts/import_py_artwork.py` produces the fourteen files by
+**cropping it**. It draws nothing: every pixel it writes comes out of the file
+it was given.
+
+```
+python scripts/import_py_artwork.py ~/py-art/            # a file per state
+python scripts/import_py_artwork.py sheet.png            # a sheet, split left to right
+python scripts/import_py_artwork.py py.png --all-states  # one drawing, every state
+```
+
+It knocks a flat background out to transparency (flood-filled from the border,
+so an enclosed white highlight in an eye survives), trims the margin tight to
+the character, finds the neck by looking for where the drawing suddenly gets
+wider and cuts a square head-and-shoulders bust above it, and writes `@2x`
+alongside each file. `--dry-run` reports without writing; the crop boxes it
+chooses are printed, and `--panel-spread`, `--panel-headroom` and
+`--panel-shoulder` adjust them if a bust comes out framed wrong.
+
+It never scales artwork up. A file smaller than the target is left at its own
+size and the UI scales it down instead.
+
 ## Placeholders
 
 `placeholder/` holds the stand-in Py that ships with the source, kept in a
