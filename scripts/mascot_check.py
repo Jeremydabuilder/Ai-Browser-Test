@@ -82,17 +82,23 @@ with open(asset_for(MascotState.IDLE, Variant.FULL), "rb") as fh:
 
 # Transparency, checked on the pixels rather than trusted: a baked-in light
 # ground is invisible on a light page and obvious on a dark one.
+#
+# Measured as the share of the frame that is fully transparent, not by
+# sampling the corners. A bust crop legitimately puts a shoulder in a corner -
+# approval and stuck both do - and asserting on corners called that a baked
+# background when it was the character.
 from PySide6.QtGui import QImage
-for _state in ("idle", "approval", "complete", "stuck"):
+for _state in ("idle", "reading", "thinking", "working", "approval", "complete", "stuck"):
     for _variant in (Variant.FULL, Variant.PANEL):
         _img = QImage(asset_for(_state, _variant)).convertToFormat(
             QImage.Format.Format_ARGB32)
-        _corners = [_img.pixelColor(0, 0), _img.pixelColor(_img.width() - 1, 0),
-                    _img.pixelColor(0, _img.height() - 1),
-                    _img.pixelColor(_img.width() - 1, _img.height() - 1)]
+        _clear = sum(1 for _y in range(0, _img.height(), 4)
+                     for _x in range(0, _img.width(), 4)
+                     if _img.pixelColor(_x, _y).alpha() == 0)
+        _total = len(range(0, _img.height(), 4)) * len(range(0, _img.width(), 4))
+        _share = 100 * _clear // max(1, _total)
         check(f"{_state}-{_variant} has no baked background",
-              all(c.alpha() == 0 for c in _corners),
-              ",".join(str(c.alpha()) for c in _corners))
+              _share >= 15, f"{_share}% of the frame is transparent")
 
 # --- + button --------------------------------------------------------------
 before = window.tabs.count()

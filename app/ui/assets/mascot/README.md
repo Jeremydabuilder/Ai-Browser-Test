@@ -1,8 +1,7 @@
 # Py artwork
 
-Py is an anthropomorphic fox: warm orange fur, cream muzzle, chest and tail
-tip, large ears, fluffy tail, royal-blue hoodie with a white "P." badge, dark
-joggers and blue sneakers.
+Py is a boy in a royal-blue hoodie with a white "P." badge, dark jeans and blue
+sneakers, in a semi-realistic animated-film style.
 
 Drop the final Py files straight into **this folder**. That is the whole
 integration — no code changes, no registration, no rebuild.
@@ -82,22 +81,37 @@ so an animated file wins over a still one of the same name.
 
 ## What is installed
 
-The fourteen files at the top of this folder are the supplied Py fox artwork.
+The twenty-eight files at the top of this folder are Py, derived from the seven
+supplied full-body renders. `as-supplied/` holds those seven exactly as they
+arrived, byte for byte.
 
-`as-supplied/` holds exactly what arrived, byte for byte, so the originals are
-never lost. The difference between the two is a **crop and nothing else**:
+Everything in between is cropping and scaling — no pixel of the character was
+redrawn or recoloured:
 
-* the panels are byte-identical - they arrived at 128x128 with the character
-  filling about 90% of the frame, which is right for a bust
-* the full-body files arrived on a 220x440 canvas with the character filling
-  about 59% of it. The new-tab page sizes Py by the file's own height, so two
-  fifths of the slot was being spent on transparent padding and Py rendered
-  small. They are cropped to their content, which is lossless: every pixel of
-  the character is identical to the supplied file, verified by comparing the
-  cropped region against the original.
+* the **cream backdrop** each render arrived on is flooded out to transparency
+  from the border, so an enclosed highlight inside the figure survives
+* the **contact shadow** painted onto that backdrop is cleared as well; it is
+  not the backdrop colour, so the flat knock-out leaves it as an opaque grey
+  smudge — barely visible on a light page, a bright blob on the dark theme
+* the canvas is **trimmed tight** to the character, because the new-tab page
+  sizes Py by the file's own height and padding is height spent on nothing
+* the **panel bust** is cut from the same render rather than being a separate
+  image, so the face in the sidebar is literally the face on the new-tab page
 
-To re-derive them: `python scripts/import_py_artwork.py as-supplied/*-full.png
---trim-only --out . --force`
+To re-derive the whole set:
+
+```
+python scripts/import_py_artwork.py as-supplied --out . --force \
+    --panel-spread 2.0 --panel-min-height 0.38
+```
+
+`--panel-spread` is the one number worth knowing. It sets how much wider than
+the head the bust is, and it is a real trade-off, decided by looking at 44px
+rather than by taste: at 1.45 the face is large and clear but every prop is
+cropped away, so `approval`, `reading` and `working` are indistinguishable from
+`idle` in the sidebar. At 2.6 every prop is present and the face is mush. 2.0
+keeps enough of the raised hand, the book and the laptop to tell the states
+apart while the face still reads.
 
 ## Commissioning new artwork
 

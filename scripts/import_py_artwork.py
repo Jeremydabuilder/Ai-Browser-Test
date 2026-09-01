@@ -263,71 +263,77 @@ def split_figures(image: QImage, gap: int = 12,
     return boxes
 
 
-def _row_widths(image: QImage, figure: QRect, rows: int) -> list[int]:
-    """How wide the artwork is on each of the first `rows` rows of a figure.
+def _widest_run(image: QImage, y: int, box: QRect) -> tuple[int, int] | None:
+    """The longest unbroken stretch of content on one row, and where it is.
 
-    One pass over the buffer rather than a content_box call per row: on a
-    2000-pixel-tall drawing that is the difference between a moment and a
-    minute.
+    The row's *total* width is the wrong measurement on real artwork: a raised
+    arm beside the head, or a held-up book, makes the row as wide as the figure
+    while the head itself is a separate, narrower stretch. The longest single
+    run at head height is the head.
     """
-    data, stride, width, height = _pixels(image)
-    widths: list[int] = []
-    left_edge = max(0, figure.left())
-    right_edge = min(width - 1, figure.right())
-    for y in range(figure.top(), min(height, figure.top() + rows)):
-        row = y * stride
-        first = last = -1
-        for x in range(left_edge, right_edge + 1):
-            if data[row + x * 4 + 3] > ALPHA_FLOOR:
-                if first < 0:
-                    first = x
-                last = x
-        widths.append(0 if first < 0 else last - first + 1)
-    return widths
+    data, stride, width, _ = _pixels(image)
+    row = y * stride
+    best: tuple[int, int] | None = None
+    start = None
+    for x in range(max(0, box.left()), min(width, box.right() + 1)):
+        if data[row + x * 4 + 3] > ALPHA_FLOOR:
+            if start is None:
+                start = x
+        elif start is not None:
+            if best is None or x - start > best[1] - best[0]:
+                best = (start, x - 1)
+            start = None
+    if start is not None and (best is None or box.right() - start > best[1] - best[0]):
+        best = (start, box.right())
+    return best
 
 
-def panel_box(image: QImage, figure: QRect, *, probe: float = 0.55,
-              spread: float = 1.95, headroom: float = 0.07,
-              shoulder: float = 1.45) -> QRect:
+def _median(values: list[float]) -> float:
+    ordered = sorted(values)
+    middle = len(ordered) // 2
+    if not ordered:
+        return 0.0
+    if len(ordered) % 2:
+        return ordered[middle]
+    return (ordered[middle - 1] + ordered[middle]) / 2
+
+
+def panel_box(image: QImage, figure: QRect, *, spread: float = 1.45,
+              headroom: float = 0.06, min_height: float = 0.30,
+              band: tuple[float, float] = (0.08, 0.20)) -> QRect:
     """A head-and-shoulders crop of a full-body figure.
 
-    Found from the artwork rather than guessed. Walking down from the top, the
-    head is the narrow part and the shoulders are where the drawing suddenly
-    gets `shoulder` times wider; the crop is the head's own width times
-    `spread`, centred on the head and dropped by `headroom` so the ears are not
-    against the top edge.
+    Measured off the artwork. Across a band of rows near the top, the longest
+    unbroken run on each row is taken to be the head; the median of those runs
+    gives the head's width and centre, which is robust against one row where a
+    raised arm merges into the silhouette.
 
-    Taking a fixed fraction of the height instead put the crop on the chest of
-    any figure with a wide stance - the probe band swallowed the shoulders and
-    "the head" came out as the whole torso. Every number is an option, and the
-    box that gets chosen is printed, because no single framing is right for
-    every drawing.
+    An earlier version looked for the neck - the row where the drawing suddenly
+    gets wider than the head - and it failed on real artwork in two ways at
+    once. A child in a hoodie is barely wider at the shoulders than his hair is
+    at the temples, so the step never came; and on a celebration pose with both
+    arms up, the *widest* rows are at the very top, so the head measured as the
+    entire figure. Busts came out 746 to 1083 pixels across on figures 389 to
+    634 wide.
+
+    The crop is square, at least `min_height` of the figure tall so a head that
+    is taller than it is wide still fits, and clamped to the canvas.
     """
-    scanned = max(4, int(figure.height() * probe))
-    widths = _row_widths(image, figure, scanned)
-    if not widths:
-        return QRect(figure)
+    top_of, bottom_of = band
+    rows = [figure.top() + int(figure.height() * fraction)
+            for fraction in (top_of, (top_of + bottom_of) / 2, bottom_of)]
+    runs = [run for run in (_widest_run(image, y, figure) for y in rows) if run]
+    if runs:
+        head_width = _median([run[1] - run[0] + 1 for run in runs])
+        centre = _median([(run[0] + run[1]) / 2 for run in runs])
+    else:
+        head_width, centre = figure.width(), figure.left() + figure.width() / 2
 
-    peak_band = max(2, int(len(widths) * 0.35))
-    head_peak = max(widths[:peak_band]) or max(widths)
-    neck = len(widths)
-    for index in range(peak_band, len(widths)):
-        if widths[index] > head_peak * shoulder:
-            neck = index
-            break
-
-    head = content_box(image, QRect(figure.left(), figure.top(),
-                                    figure.width(), max(1, neck)))
-    if head.isNull():
-        head = figure
-
-    # Clamped against the canvas as well as the figure: a generous --panel-
-    # spread used to walk the crop straight off the edge of the image.
-    side = max(1, int(head.width() * spread))
-    side = min(side, figure.height(), image.width(), image.height())
-    centre = head.left() + head.width() // 2
-    left = max(0, min(centre - side // 2, image.width() - side))
-    top = max(0, min(head.top() - int(side * headroom), image.height() - side))
+    side = max(head_width * spread, figure.height() * min_height)
+    side = int(min(side, image.width(), image.height()))
+    side = max(1, side)
+    left = max(0, min(int(centre - side / 2), image.width() - side))
+    top = max(0, min(figure.top() - int(side * headroom), image.height() - side))
     return QRect(left, top, side, side)
 
 
@@ -413,13 +419,11 @@ def main() -> int:
     parser.add_argument("--panel-size", type=int, default=256,
                         help="longest side of the 1x panel file")
     parser.add_argument("--no-retina", action="store_true", help="skip @2x files")
-    parser.add_argument("--panel-probe", type=float, default=0.55,
-                        help="fraction of the figure's height scanned for the neck")
-    parser.add_argument("--panel-shoulder", type=float, default=1.45,
-                        help="how much wider than the head the shoulders are")
-    parser.add_argument("--panel-spread", type=float, default=1.95,
+    parser.add_argument("--panel-min-height", type=float, default=0.30,
+                        help="the bust is at least this fraction of the figure tall")
+    parser.add_argument("--panel-spread", type=float, default=1.45,
                         help="crop width as a multiple of the head's width")
-    parser.add_argument("--panel-headroom", type=float, default=0.07,
+    parser.add_argument("--panel-headroom", type=float, default=0.06,
                         help="space above the head, as a fraction of the crop")
     parser.add_argument("--force", action="store_true", help="overwrite existing files")
     parser.add_argument("--dry-run", action="store_true",
@@ -448,8 +452,8 @@ def main() -> int:
                 f"{'...' if len(clash) > 4 else ''}).\n"
                 "Pass --force to replace it, or --dry-run to see what would happen.")
 
-    panel_opts = dict(probe=args.panel_probe, spread=args.panel_spread,
-                      headroom=args.panel_headroom, shoulder=args.panel_shoulder)
+    panel_opts = dict(spread=args.panel_spread, headroom=args.panel_headroom,
+                      min_height=args.panel_min_height)
     done: dict[str, str] = {}
 
     if args.trim_only:
