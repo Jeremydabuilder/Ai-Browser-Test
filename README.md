@@ -106,6 +106,24 @@ a browser bug when the real origin served another client successfully.
 | `Ctrl+,` | Settings | | | |
 | `Ctrl+±` / `Ctrl+0` | Zoom | | `F11` | Full screen |
 
+## Appearance
+
+PyBrowser follows your desktop's light or dark preference automatically. The
+whole interface is generated from one small design system in
+[`app/ui/theme.py`](app/ui/theme.py): a colour palette named by role
+(`surface`, `line`, `muted`, `accent`), a 4px spacing scale, three corner
+radii and a handful of control heights. Icons are drawn from
+[`app/ui/icons.py`](app/ui/icons.py) rather than taken from the desktop's icon
+theme, so PyBrowser looks the same on every machine.
+
+Set `PYBROWSER_REDUCED_MOTION=1` (or `QT_REDUCED_MOTION=1`) to turn off the
+sidebar animation.
+
+```bash
+python scripts/ui_shots.py /tmp/shots          # photograph every screen
+python scripts/ui_shots.py /tmp/shots --dark   # ...in the dark theme
+```
+
 ## Where your data lives
 
 One SQLite file plus a Chromium profile directory:

@@ -16,17 +16,46 @@ from app.ui import icons, theme
 
 
 class AddressBar(QLineEdit):
-    """Address bar that selects all of its text the first time you click it."""
+    """Address bar that selects all of its text the first time you click it.
+
+    Carries a leading icon that says what pressing Enter would do: a magnifier
+    when the text is a search, a globe-ish page mark when it is an address.
+    That is the one piece of feedback an address bar can give before you commit,
+    and PyBrowser already knows the answer - `url_utils.is_probably_search` is
+    the same function the navigation itself uses.
+    """
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setPlaceholderText("Search or enter address")
         self.setClearButtonEnabled(True)
+        self.setAccessibleName("Address and search bar")
         self._select_on_next_focus = False
         completer = QCompleter(self)
         completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
         completer.setFilterMode(Qt.MatchFlag.MatchContains)
         self.setCompleter(completer)
+
+        from PySide6.QtWidgets import QApplication
+
+        colours = theme.palette_for(QApplication.instance())
+        self._search_icon = icons.icon("search_glass", colours.muted, size=32, weight=2.0) \
+            if "search_glass" in icons.available() else icons.icon("page", colours.muted)
+        self._page_icon = icons.icon("page", colours.muted, size=32, weight=1.8)
+        self._mode_action = self.addAction(
+            self._search_icon, QLineEdit.ActionPosition.LeadingPosition)
+        self._mode_action.setToolTip("")
+        self.textChanged.connect(self._update_mode_icon)
+        self._update_mode_icon("")
+
+    def _update_mode_icon(self, text: str) -> None:
+        from app.utils import urls as url_utils
+
+        searching = url_utils.is_probably_search(text)
+        self._mode_action.setIcon(self._search_icon if searching else self._page_icon)
+        self._mode_action.setToolTip(
+            "Press Enter to search the web" if searching
+            else "Press Enter to go to this address")
 
     def focusInEvent(self, event) -> None:  # noqa: N802
         super().focusInEvent(event)

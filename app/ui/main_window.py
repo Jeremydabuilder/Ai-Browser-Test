@@ -619,19 +619,71 @@ class MainWindow(QMainWindow):
     # Panel plumbing
     # ------------------------------------------------------------------
     def set_side_panel(self, panel: QWidget | None) -> None:
-        """Install (or remove) the right-hand panel.
+        """Install (or remove) the right-hand panel, with a short slide.
 
-        Phase 2 will call this with the AI agent widget. Nothing else in the
-        window needs to change.
+        The panel's width is a share of the window rather than a constant: 380
+        pixels is comfortable at 1400 and takes almost half the window at 900,
+        where it stops being a side panel and starts being the application.
         """
+        from app.ui import theme
+
         if self._side_panel is not None:
+            self._animate_panel(closing=True)
             self._side_panel.setParent(None)
             self._side_panel.deleteLater()
             self._side_panel = None
         if panel is not None:
+            m = theme.METRICS
+            width = max(m.panel_min, min(m.panel_default,
+                                         int(self.width() * m.panel_max_share)))
             self.splitter.addWidget(panel)
-            self.splitter.setSizes([self.width() - 380, 380])
             self._side_panel = panel
+            self.splitter.setSizes([self.width() - width, width])
+            self._animate_panel(closing=False, width=width)
+
+    def _animate_panel(self, *, closing: bool, width: int = 0) -> None:
+        """Slide the panel in or out.
+
+        Short and only on this one transition: a panel appearing instantly
+        makes the whole window look like it jumped, and that is the only place
+        in this browser where motion earns its cost. Anything longer than
+        about a sixth of a second reads as waiting rather than as movement.
+        """
+        if self._reduced_motion():
+            return
+        from PySide6.QtCore import QEasingCurve, QVariantAnimation
+
+        start, end = (width, 0) if closing else (0, width)
+        animation = QVariantAnimation(self)
+        animation.setDuration(150)
+        animation.setStartValue(start)
+        animation.setEndValue(end)
+        animation.setEasingCurve(QEasingCurve.Type.OutCubic)
+
+        def step(value) -> None:
+            if self.splitter.count() < 2:
+                return
+            self.splitter.setSizes([max(0, self.width() - int(value)), int(value)])
+
+        animation.valueChanged.connect(step)
+        # Held on the window so Python does not collect it mid-flight.
+        self._panel_animation = animation
+        animation.start()
+
+    @staticmethod
+    def _reduced_motion() -> bool:
+        """Honour a request for less motion, however it was made.
+
+        Qt has no cross-platform "reduce motion" query, so this reads the
+        environment variable the freedesktop and Qt tooling both use, plus our
+        own. Someone who asked for less animation should not have to ask twice.
+        """
+        import os
+
+        for name in ("PYBROWSER_REDUCED_MOTION", "QT_REDUCED_MOTION", "NO_ANIMATIONS"):
+            if (os.environ.get(name) or "").strip().lower() in ("1", "true", "yes", "on"):
+                return True
+        return False
 
     # ------------------------------------------------------------------
     def closeEvent(self, event) -> None:  # noqa: N802

@@ -26,6 +26,64 @@ from dataclasses import dataclass
 
 from PySide6.QtGui import QPalette
 
+
+# ---------------------------------------------------------------------------
+# The design system
+# ---------------------------------------------------------------------------
+#
+# One set of numbers, used by the stylesheet below AND by the widget code that
+# cannot be styled in CSS (icon sizes, panel widths, the height a text box
+# grows to). Before this existed, the same idea was spelled 8px in one file, 10
+# in another and 9 in a third, which is most of what makes an interface look
+# assembled rather than designed.
+
+
+@dataclass(frozen=True)
+class Metrics:
+    """Spacing, size and shape. Every number in the UI should come from here."""
+
+    # A 4px spacing scale. Anything not on it looks like a mistake, because it
+    # usually is one.
+    space_1: int = 4
+    space_2: int = 8
+    space_3: int = 12
+    space_4: int = 16
+    space_5: int = 24
+    space_6: int = 32
+
+    # Corner radii, from tightest to loosest. Three, not seven.
+    radius_sm: int = 6      # icon buttons, list rows, tags
+    radius_md: int = 9      # inputs, buttons, tabs
+    radius_lg: int = 12     # cards and panels
+
+    # Control heights. A browser feels cramped or clumsy mostly through these.
+    control: int = 32       # buttons, the address bar
+    control_sm: int = 26    # compact buttons: quick actions, find bar
+    tab: int = 34
+    icon_button: int = 30
+
+    # Icon sizes, kept to two.
+    icon: int = 18
+    icon_sm: int = 14
+
+    # Type scale.
+    text: int = 13
+    text_sm: int = 12
+    text_xs: int = 11
+    text_lg: int = 15
+
+    # The AI panel: wide enough to read, never more than a third of the window.
+    panel_default: int = 380
+    panel_min: int = 300
+    panel_max_share: float = 0.42
+
+    # Tabs.
+    tab_min_width: int = 120
+    tab_max_width: int = 220
+
+
+METRICS = Metrics()
+
 #: The accent. Shared with the new-tab page (app/browser/newtab.py), because
 #: the page inside the browser and the chrome around it should look related.
 ACCENT_LIGHT = "#4b46d4"
@@ -34,27 +92,60 @@ ACCENT_DARK = "#8b86ff"
 
 @dataclass(frozen=True)
 class Palette:
-    bg: str            # window background, behind everything
-    surface: str       # raised things: the toolbar, the address bar
-    surface_alt: str   # the tab strip, hover states
-    line: str          # borders and separators
+    """Colour by role, never by name.
+
+    Nothing in the UI asks for "the grey one"; it asks for a surface, a line, a
+    muted text. That is what lets the dark theme be a different set of values
+    rather than a different set of rules.
+    """
+
+    bg: str             # window background, behind everything
+    surface: str        # raised things: the address bar, cards, the active tab
+    surface_alt: str    # recessed things: inactive tabs, hover on the toolbar
+    surface_hover: str  # hover on a surface
+    line: str           # ordinary borders and separators
+    line_strong: str    # a border that needs to be seen: hover, scrollbars
     text: str
-    muted: str         # secondary text
+    muted: str          # secondary text
+    disabled: str       # text on a control that cannot be used
     accent: str
-    accent_soft: str   # accent at low intensity, for fills
+    accent_hover: str
+    accent_soft: str    # accent at low intensity, for fills
+    #: Text drawn ON the accent. White fails against the lighter accent the
+    #: dark theme needs, so this is a palette entry rather than a constant.
+    accent_text: str
     danger: str
+    danger_soft: str
+    warning: str        # the approval prompt, which is a caution and not an error
+    warning_soft: str
+    warning_text: str
+    success: str
+    tooltip_bg: str
+    tooltip_text: str
 
 
 LIGHT = Palette(
-    bg="#f2f2f5", surface="#ffffff", surface_alt="#e9e9ef", line="#dcdce4",
-    text="#1b1b21", muted="#6c6c7a", accent=ACCENT_LIGHT, accent_soft="#eeedfc",
-    danger="#b3261e",
+    bg="#f4f4f7", surface="#ffffff", surface_alt="#eaeaf0", surface_hover="#f0f0f5",
+    line="#e0e0e8", line_strong="#c9c9d4",
+    text="#17171d", muted="#65656f", disabled="#a8a8b4",
+    accent=ACCENT_LIGHT, accent_hover="#3f3ac2", accent_soft="#eeedfc",
+    accent_text="#ffffff",
+    danger="#b3261e", danger_soft="#fdeceb",
+    warning="#a97400", warning_soft="#fff8e6", warning_text="#5c3d00",
+    success="#2e7d32",
+    tooltip_bg="#2a2a33", tooltip_text="#f4f4f7",
 )
 
 DARK = Palette(
-    bg="#17171c", surface="#1f1f26", surface_alt="#26262f", line="#33333d",
-    text="#f0f0f4", muted="#9a9aab", accent=ACCENT_DARK, accent_soft="#26253a",
-    danger="#f2b8b5",
+    bg="#141419", surface="#1e1e25", surface_alt="#262630", surface_hover="#2c2c38",
+    line="#30303b", line_strong="#43434f",
+    text="#eeeef3", muted="#9797a6", disabled="#61616e",
+    accent=ACCENT_DARK, accent_hover="#a29dff", accent_soft="#282740",
+    accent_text="#16162a",
+    danger="#f2b8b5", danger_soft="#3a2422",
+    warning="#e0b661", warning_soft="#332a17", warning_text="#f0dcb4",
+    success="#7bc47f",
+    tooltip_bg="#33333f", tooltip_text="#eeeef3",
 )
 
 
@@ -71,166 +162,230 @@ def palette_for(app) -> Palette:
         return LIGHT
 
 
-def stylesheet(palette: Palette) -> str:
-    """The whole application's styling, as one Qt stylesheet."""
+def stylesheet(palette: Palette, m: Metrics = METRICS) -> str:
+    """The whole application's styling, as one Qt stylesheet.
+
+    Every colour comes from `palette` and every measurement from `m`, so there
+    is one place to change how the browser looks and no way for two controls to
+    disagree by four pixels.
+    """
     p = palette
     return f"""
     QMainWindow, QDialog {{ background: {p.bg}; }}
-    QWidget {{ color: {p.text}; }}
+    QWidget {{ color: {p.text}; font-size: {m.text}px; }}
 
     /* -- the toolbar ------------------------------------------------- */
     QToolBar {{
         background: {p.bg};
         border: none;
-        border-bottom: 1px solid {p.line};
-        padding: 5px 8px;
-        spacing: 2px;
+        padding: {m.space_2}px {m.space_3}px {m.space_1}px;
+        spacing: {m.space_1}px;
     }}
     QToolBar QToolButton {{
         background: transparent;
         border: none;
-        border-radius: 7px;
-        padding: 6px;
-        margin: 0 1px;
+        border-radius: {m.radius_sm}px;
+        min-width: {m.icon_button}px;
+        min-height: {m.icon_button}px;
+        padding: 0;
     }}
     QToolBar QToolButton:hover {{ background: {p.surface_alt}; }}
     QToolBar QToolButton:pressed {{ background: {p.line}; }}
-    QToolBar QToolButton:disabled {{ opacity: .4; }}
     QToolBar QToolButton:checked {{ background: {p.accent_soft}; }}
 
-    /* -- the address bar --------------------------------------------- */
+    /* -- inputs -------------------------------------------------------- */
     QLineEdit {{
         background: {p.surface};
         border: 1px solid {p.line};
-        border-radius: 9px;
-        padding: 6px 11px;
+        border-radius: {m.radius_md}px;
+        min-height: {m.control}px;
+        padding: 0 {m.space_3}px;
         selection-background-color: {p.accent};
-        selection-color: #ffffff;
+        selection-color: {p.accent_text};
     }}
-    QLineEdit:focus {{ border-color: {p.accent}; }}
-    QLineEdit:disabled {{ color: {p.muted}; }}
+    QLineEdit:hover {{ border-color: {p.line_strong}; }}
+    /* Focus is a ring, not a thicker border - a border that changes width
+       makes the whole control shift by a pixel as you click into it. */
+    QLineEdit:focus {{
+        border-color: {p.accent};
+        background: {p.surface};
+    }}
+    QLineEdit:disabled {{ color: {p.muted}; background: {p.surface_alt}; }}
 
-    /* -- tabs --------------------------------------------------------- */
+    /* -- tabs ---------------------------------------------------------- */
     QTabWidget::pane {{ border: none; background: {p.bg}; }}
     QTabBar {{ background: {p.bg}; qproperty-drawBase: 0; }}
     QTabBar::tab {{
-        background: transparent;
+        background: {p.surface_alt};
         color: {p.muted};
         border: 1px solid transparent;
-        border-radius: 8px;
-        padding: 7px 12px;
-        margin: 4px 2px 4px 0;
-        min-width: 108px;
-        max-width: 230px;
+        border-radius: {m.radius_md}px;
+        height: {m.tab}px;
+        padding: 0 {m.space_2}px;
+        margin: {m.space_1}px {m.space_1}px 0 0;
+        min-width: {m.tab_min_width}px;
+        max-width: {m.tab_max_width}px;
     }}
-    QTabBar::tab:hover {{ background: {p.surface_alt}; color: {p.text}; }}
-    /* The active tab is the one thing on screen that must be unmistakable. */
+    QTabBar::tab:hover {{ background: {p.surface_hover}; color: {p.text}; }}
+    /* The active tab is the one thing on screen that must be unmistakable:
+       it is the only tab with the page's own background. */
     QTabBar::tab:selected {{
         background: {p.surface};
         color: {p.text};
         border-color: {p.line};
         font-weight: 600;
     }}
-    QTabBar::close-button {{
-        subcontrol-position: right;
-        margin-left: 4px;
+    QTabBar::close-button {{ subcontrol-position: right; }}
+    QTabBar QToolButton {{
+        background: {p.surface_alt};
+        border: 1px solid {p.line};
+        border-radius: {m.radius_sm}px;
+        margin: {m.space_1}px 0;
     }}
+    QTabBar QToolButton:hover {{ background: {p.surface_hover}; }}
 
-    /* -- buttons ------------------------------------------------------ */
+    /* -- buttons -------------------------------------------------------- */
     QPushButton {{
         background: {p.surface};
         border: 1px solid {p.line};
-        border-radius: 8px;
-        padding: 6px 14px;
+        border-radius: {m.radius_md}px;
+        min-height: {m.control}px;
+        padding: 0 {m.space_4}px;
+        color: {p.text};
     }}
-    QPushButton:hover {{ border-color: {p.accent}; }}
+    QPushButton:hover {{ background: {p.surface_hover}; border-color: {p.line_strong}; }}
     QPushButton:pressed {{ background: {p.surface_alt}; }}
-    QPushButton:disabled {{ color: {p.muted}; border-color: {p.line}; }}
-    QPushButton:default {{
-        background: {p.accent};
-        border-color: {p.accent};
-        color: #ffffff;
+    QPushButton:disabled {{ color: {p.disabled}; border-color: {p.line}; background: {p.bg}; }}
+    QPushButton:focus {{ border-color: {p.accent}; }}
+    QPushButton[kind="primary"] {{
+        background: {p.accent}; border-color: {p.accent};
+        color: {p.accent_text}; font-weight: 600;
     }}
+    QPushButton[kind="primary"]:hover {{ background: {p.accent_hover}; border-color: {p.accent_hover}; }}
+    QPushButton[kind="primary"]:disabled {{
+        background: {p.surface_alt}; border-color: {p.line}; color: {p.disabled};
+    }}
+    QPushButton[kind="quiet"] {{
+        background: transparent; border-color: transparent; color: {p.muted};
+        min-height: {m.control_sm}px; padding: 0 {m.space_2}px;
+    }}
+    QPushButton[kind="quiet"]:hover {{ background: {p.surface_alt}; color: {p.text}; }}
+    QPushButton[kind="chip"] {{
+        min-height: {m.control_sm}px; padding: 0 {m.space_3}px;
+        border-radius: {m.control_sm // 2}px; color: {p.muted};
+        background: {p.surface};
+    }}
+    QPushButton[kind="chip"]:hover {{ color: {p.accent}; border-color: {p.accent}; }}
+    QPushButton[kind="danger"] {{ color: {p.danger}; }}
+    QPushButton[kind="danger"]:hover {{ border-color: {p.danger}; background: {p.danger_soft}; }}
 
-    /* -- lists and trees ---------------------------------------------- */
-    QTreeWidget, QListWidget, QTextBrowser, QPlainTextEdit {{
+    /* -- lists, trees, text ---------------------------------------------- */
+    QTreeWidget, QListWidget {{
         background: {p.surface};
         border: 1px solid {p.line};
-        border-radius: 9px;
-        padding: 2px;
+        border-radius: {m.radius_md}px;
+        padding: {m.space_1}px;
     }}
-    QTreeWidget::item {{ padding: 4px 2px; border-radius: 5px; }}
+    QTextBrowser, QPlainTextEdit {{
+        background: {p.surface};
+        border: 1px solid {p.line};
+        border-radius: {m.radius_md}px;
+        padding: {m.space_2}px;
+        selection-background-color: {p.accent};
+        selection-color: {p.accent_text};
+    }}
+    QTextBrowser[kind="flat"] {{
+        background: transparent; border: none; padding: 0;
+    }}
+    QTreeWidget::item {{ padding: {m.space_1}px 2px; border-radius: {m.radius_sm}px; }}
     QTreeWidget::item:selected, QListWidget::item:selected {{
-        background: {p.accent_soft};
-        color: {p.text};
+        background: {p.accent_soft}; color: {p.text};
     }}
     QHeaderView::section {{
         background: {p.bg};
         border: none;
         border-bottom: 1px solid {p.line};
-        padding: 5px 6px;
+        padding: {m.space_1}px {m.space_2}px;
         color: {p.muted};
         font-weight: 600;
+        font-size: {m.text_sm}px;
     }}
 
-    /* -- chrome ------------------------------------------------------- */
-    QStatusBar {{ background: {p.bg}; border-top: 1px solid {p.line}; color: {p.muted}; }}
+    /* -- chrome ---------------------------------------------------------- */
+    QStatusBar {{
+        background: {p.bg}; border-top: 1px solid {p.line};
+        color: {p.muted}; font-size: {m.text_sm}px;
+    }}
     QStatusBar::item {{ border: none; }}
-    QMenuBar {{ background: {p.bg}; border-bottom: 1px solid {p.line}; }}
-    QMenuBar::item {{ padding: 5px 10px; border-radius: 6px; background: transparent; }}
+    QMenuBar {{ background: {p.bg}; padding: 2px {m.space_2}px; }}
+    QMenuBar::item {{
+        padding: {m.space_1}px {m.space_2}px; border-radius: {m.radius_sm}px;
+        background: transparent;
+    }}
     QMenuBar::item:selected {{ background: {p.surface_alt}; }}
     QMenu {{
         background: {p.surface};
         border: 1px solid {p.line};
-        border-radius: 9px;
-        padding: 5px;
+        border-radius: {m.radius_md}px;
+        padding: {m.space_1}px;
     }}
-    QMenu::item {{ padding: 6px 22px 6px 14px; border-radius: 6px; }}
-    QMenu::item:selected {{ background: {p.accent_soft}; }}
-    QMenu::separator {{ height: 1px; background: {p.line}; margin: 5px 8px; }}
+    QMenu::item {{
+        padding: {m.space_2}px {m.space_5}px {m.space_2}px {m.space_3}px;
+        border-radius: {m.radius_sm}px;
+    }}
+    QMenu::item:selected {{ background: {p.accent_soft}; color: {p.text}; }}
+    QMenu::separator {{ height: 1px; background: {p.line}; margin: {m.space_1}px {m.space_2}px; }}
 
     QProgressBar {{
-        background: {p.surface_alt};
-        border: none;
-        border-radius: 3px;
-        height: 5px;
+        background: {p.surface_alt}; border: none;
+        border-radius: 2px; height: 4px;
     }}
-    QProgressBar::chunk {{ background: {p.accent}; border-radius: 3px; }}
+    QProgressBar::chunk {{ background: {p.accent}; border-radius: 2px; }}
 
     QSplitter::handle {{ background: {p.line}; width: 1px; }}
     QSplitter::handle:hover {{ background: {p.accent}; }}
 
-    QScrollBar:vertical {{ background: transparent; width: 11px; margin: 0; }}
+    QScrollBar:vertical {{ background: transparent; width: 10px; margin: 0; }}
     QScrollBar::handle:vertical {{
-        background: {p.line}; border-radius: 5px; min-height: 28px;
+        background: {p.line_strong}; border-radius: 5px; min-height: 30px;
     }}
     QScrollBar::handle:vertical:hover {{ background: {p.muted}; }}
-    QScrollBar:horizontal {{ background: transparent; height: 11px; }}
+    QScrollBar:horizontal {{ background: transparent; height: 10px; }}
     QScrollBar::handle:horizontal {{
-        background: {p.line}; border-radius: 5px; min-width: 28px;
+        background: {p.line_strong}; border-radius: 5px; min-width: 30px;
     }}
     QScrollBar::add-line, QScrollBar::sub-line {{ width: 0; height: 0; }}
     QScrollBar::add-page, QScrollBar::sub-page {{ background: transparent; }}
 
-    QRadioButton, QCheckBox {{ padding: 3px 0; }}
+    QRadioButton, QCheckBox {{ padding: {m.space_1}px 0; spacing: {m.space_2}px; }}
     QComboBox {{
         background: {p.surface};
         border: 1px solid {p.line};
-        border-radius: 8px;
-        padding: 6px 10px;
+        border-radius: {m.radius_md}px;
+        min-height: {m.control}px;
+        padding: 0 {m.space_3}px;
     }}
-    QComboBox:hover {{ border-color: {p.accent}; }}
+    QComboBox:hover {{ border-color: {p.line_strong}; }}
+    QComboBox:focus {{ border-color: {p.accent}; }}
+    QComboBox::drop-down {{ border: none; width: {m.space_5}px; }}
     QComboBox QAbstractItemView {{
         background: {p.surface};
         border: 1px solid {p.line};
+        border-radius: {m.radius_md}px;
+        padding: {m.space_1}px;
         selection-background-color: {p.accent_soft};
         selection-color: {p.text};
     }}
     QToolTip {{
-        background: {p.surface};
-        color: {p.text};
-        border: 1px solid {p.line};
-        padding: 4px 7px;
+        background: {p.tooltip_bg};
+        color: {p.tooltip_text};
+        border: none;
+        border-radius: {m.radius_sm}px;
+        padding: {m.space_1}px {m.space_2}px;
+    }}
+    QLabel[kind="muted"] {{ color: {p.muted}; font-size: {m.text_sm}px; }}
+    QLabel[kind="section"] {{
+        color: {p.muted}; font-size: {m.text_xs}px; font-weight: 600;
     }}
     """
 

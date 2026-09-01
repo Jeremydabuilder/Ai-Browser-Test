@@ -253,26 +253,38 @@ _TEMPLATE = """<!doctype html>
 <meta charset="utf-8">
 <title>New Tab</title>
 <style>
+  /* Kept in step with app/ui/theme.py: same accent, same radii, same 4px
+     spacing scale. The page inside the browser and the chrome around it are
+     one design, so they use one set of numbers. */
   :root {
-    --bg: #fbfbfd;
+    --bg: #f4f4f7;
     --surface: #ffffff;
-    --line: #e6e6ee;
-    --text: #1b1b21;
-    --muted: #6c6c7a;
+    --surface-alt: #eaeaf0;
+    --line: #e0e0e8;
+    --text: #17171d;
+    --muted: #65656f;
+    --disabled: #a8a8b4;
     --accent: #4b46d4;
     --accent-soft: #eeedfc;
-    --shadow: 0 1px 2px rgba(20, 20, 40, .05), 0 8px 24px rgba(20, 20, 40, .06);
+    --shadow: 0 1px 2px rgba(20, 20, 40, .04), 0 10px 30px rgba(20, 20, 40, .06);
+    --shadow-lift: 0 2px 6px rgba(20, 20, 40, .07), 0 16px 40px rgba(20, 20, 40, .10);
+    --radius-sm: 6px;
+    --radius-md: 9px;
+    --radius-lg: 14px;
   }
   @media (prefers-color-scheme: dark) {
     :root {
-      --bg: #131318;
-      --surface: #1c1c23;
-      --line: #2e2e39;
-      --text: #f2f2f6;
-      --muted: #9a9aab;
+      --bg: #141419;
+      --surface: #1e1e25;
+      --surface-alt: #262630;
+      --line: #30303b;
+      --text: #eeeef3;
+      --muted: #9797a6;
+      --disabled: #61616e;
       --accent: #8b86ff;
-      --accent-soft: #24233a;
-      --shadow: 0 1px 2px rgba(0, 0, 0, .3), 0 8px 24px rgba(0, 0, 0, .35);
+      --accent-soft: #282740;
+      --shadow: 0 1px 2px rgba(0, 0, 0, .35), 0 10px 30px rgba(0, 0, 0, .35);
+      --shadow-lift: 0 2px 6px rgba(0, 0, 0, .4), 0 16px 40px rgba(0, 0, 0, .45);
     }
   }
   * { box-sizing: border-box; }
@@ -281,109 +293,141 @@ _TEMPLATE = """<!doctype html>
     margin: 0;
     background: var(--bg);
     color: var(--text);
-    font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+    font: 14px/1.55 system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
     display: flex;
     justify-content: center;
     -webkit-font-smoothing: antialiased;
   }
   main {
     width: 100%;
-    max-width: 720px;
-    padding: 0 24px 64px;
+    max-width: 640px;
+    padding: 0 24px 72px;
     display: flex;
     flex-direction: column;
-    /* Sits a little above centre - the classic new-tab optical centre. */
-    padding-top: clamp(48px, 14vh, 140px);
+    /* Above the true centre - the optical centre of a screen sits higher than
+       its middle, and a search box pinned to the exact middle looks low. */
+    padding-top: clamp(56px, 15vh, 148px);
+    animation: rise .32s cubic-bezier(.22, .8, .3, 1) both;
   }
+  @keyframes rise {
+    from { opacity: 0; transform: translateY(8px); }
+    to   { opacity: 1; transform: none; }
+  }
+  /* Someone who has asked their system not to animate things means it. */
+  @media (prefers-reduced-motion: reduce) {
+    main { animation: none; }
+    * { transition: none !important; }
+  }
+
   .brand {
-    display: flex; align-items: center; gap: 10px;
-    justify-content: center; margin-bottom: 28px;
+    display: flex; align-items: center; gap: 9px;
+    justify-content: center; margin-bottom: 26px;
     user-select: none;
   }
-  .mark {
-    width: 30px; height: 30px; flex: none;
-  }
+  .mark { width: 26px; height: 26px; flex: none; color: var(--accent); }
   .wordmark {
-    font-size: 25px; font-weight: 640; letter-spacing: -.022em;
+    font-size: 21px; font-weight: 600; letter-spacing: -.02em;
   }
   .wordmark span { color: var(--accent); }
 
   form { position: static; }
-  /* The icon is centred on the INPUT, not on the form - the hint line lives
-     inside the form too, so centring on the form put the icon below the box. */
   .field { position: relative; }
   #q {
     width: 100%;
-    padding: 15px 18px 15px 46px;
+    height: 52px;
+    padding: 0 46px 0 46px;
     font: inherit;
-    font-size: 16px;
+    font-size: 15px;
     color: var(--text);
     background: var(--surface);
     border: 1px solid var(--line);
-    border-radius: 13px;
+    border-radius: 26px;
     box-shadow: var(--shadow);
     outline: none;
-    transition: border-color .15s, box-shadow .15s;
+    transition: border-color .16s ease, box-shadow .16s ease;
   }
   #q::placeholder { color: var(--muted); }
+  #q:hover { box-shadow: var(--shadow-lift); }
   #q:focus {
     border-color: var(--accent);
-    box-shadow: var(--shadow), 0 0 0 3px var(--accent-soft);
+    box-shadow: var(--shadow-lift), 0 0 0 4px var(--accent-soft);
   }
   .search-icon {
-    position: absolute; left: 16px; top: 50%; transform: translateY(-50%);
-    width: 18px; height: 18px; color: var(--muted); pointer-events: none;
+    position: absolute; left: 17px; top: 50%; transform: translateY(-50%);
+    width: 17px; height: 17px; color: var(--muted); pointer-events: none;
+    transition: color .16s ease;
+  }
+  #q:focus ~ .search-icon { color: var(--accent); }
+  .enter {
+    position: absolute; right: 14px; top: 50%; transform: translateY(-50%);
+    font-size: 11px; color: var(--disabled); pointer-events: none;
+    opacity: 0; transition: opacity .16s ease;
   }
   .hint {
-    margin: 9px 2px 0; font-size: 12.5px; color: var(--muted);
-    min-height: 18px;
+    margin: 8px 4px 0; font-size: 12px; color: var(--muted);
+    min-height: 17px;
   }
 
   .ai {
-    margin-top: 22px;
-    display: flex; align-items: center; gap: 12px; width: 100%;
-    padding: 13px 16px;
+    margin-top: 14px;
+    display: flex; align-items: center; gap: 11px; width: 100%;
+    padding: 12px 15px;
     text-align: left;
     font: inherit;
     color: var(--text);
-    background: var(--accent-soft);
-    border: 1px solid transparent;
-    border-radius: 12px;
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: var(--radius-lg);
     cursor: pointer;
-    transition: border-color .15s, transform .06s;
+    transition: border-color .16s ease, box-shadow .16s ease, transform .08s ease;
   }
-  .ai:hover { border-color: var(--accent); }
+  .ai:hover { border-color: var(--accent); box-shadow: var(--shadow); }
   .ai:active { transform: translateY(1px); }
-  .ai svg { width: 18px; height: 18px; color: var(--accent); flex: none; }
-  .ai b { font-weight: 600; }
-  .ai small { display: block; color: var(--muted); font-size: 12.5px; }
+  .ai:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .ai .glyph {
+    width: 30px; height: 30px; flex: none;
+    display: flex; align-items: center; justify-content: center;
+    background: var(--accent-soft); border-radius: 50%;
+  }
+  .ai svg { width: 16px; height: 16px; color: var(--accent); }
+  .ai b { font-weight: 600; font-size: 13.5px; }
+  .ai small { display: block; color: var(--muted); font-size: 12px; }
 
   .columns {
-    margin-top: 34px;
-    display: grid; gap: 26px;
-    grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+    margin-top: 40px;
+    display: grid; gap: 14px 32px;
+    grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
   }
   h2 {
-    margin: 0 0 10px; font-size: 11.5px; font-weight: 600;
-    letter-spacing: .07em; text-transform: uppercase; color: var(--muted);
+    margin: 0 0 6px; font-size: 11px; font-weight: 600;
+    letter-spacing: .08em; text-transform: uppercase; color: var(--disabled);
   }
   ul { list-style: none; margin: 0; padding: 0; }
   li a {
-    display: block; padding: 8px 10px; margin: 0 -10px;
-    border-radius: 8px; text-decoration: none; color: inherit;
+    display: flex; align-items: baseline; gap: 8px;
+    padding: 7px 9px; margin: 0 -9px;
+    border-radius: var(--radius-md); text-decoration: none; color: inherit;
+    transition: background .12s ease;
+  }
+  li a:hover { background: var(--surface-alt); }
+  li a:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+  li a .title {
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
-  li a:hover { background: var(--surface); box-shadow: var(--shadow); }
-  li a .host { color: var(--muted); font-size: 12.5px; margin-left: 8px; }
+  li a .host {
+    color: var(--disabled); font-size: 12px; flex: none;
+    max-width: 42%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
   .empty {
-    color: var(--muted); font-size: 13.5px; padding: 8px 0;
+    color: var(--disabled); font-size: 13px; padding: 7px 0;
   }
   footer {
-    margin-top: 40px; text-align: center;
-    font-size: 12px; color: var(--muted);
+    margin-top: 44px; text-align: center;
+    font-size: 12px; color: var(--disabled);
   }
   footer a { color: var(--muted); text-decoration: none; }
-  footer a:hover { color: var(--accent); text-decoration: underline; }
+  footer a:hover { color: var(--accent); }
+  footer a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 </style>
 </head>
 <body>
@@ -391,39 +435,42 @@ _TEMPLATE = """<!doctype html>
   <div class="brand">
     <svg class="mark" viewBox="0 0 32 32" fill="none" aria-hidden="true">
       <rect x="1.5" y="1.5" width="29" height="29" rx="9"
-            stroke="currentColor" stroke-opacity=".18" stroke-width="1.6"/>
-      <path d="M11 23V9h5.4a4.3 4.3 0 0 1 0 8.6H11"
-            stroke="currentColor" stroke-width="2.6" stroke-linecap="round"
-            stroke-linejoin="round" style="color:var(--accent)"/>
-      <circle cx="22" cy="21.5" r="2.2" fill="currentColor" style="color:var(--accent)"/>
+            stroke="currentColor" stroke-opacity=".3" stroke-width="1.5"/>
+      <path d="M11.5 23V9h5a4.2 4.2 0 0 1 0 8.4h-5"
+            stroke="currentColor" stroke-width="2.4" stroke-linecap="round"
+            stroke-linejoin="round"/>
+      <circle cx="21.5" cy="21.5" r="2" fill="currentColor"/>
     </svg>
     <div class="wordmark">Py<span>Browser</span></div>
   </div>
 
   <form id="f" autocomplete="off">
     <div class="field">
-    <svg class="search-icon" viewBox="0 0 20 20" fill="none" aria-hidden="true">
-      <circle cx="9" cy="9" r="6" stroke="currentColor" stroke-width="1.8"/>
-      <path d="m13.5 13.5 3.5 3.5" stroke="currentColor" stroke-width="1.8"
-            stroke-linecap="round"/>
-    </svg>
     <input id="q" name="q" type="text" autofocus
            placeholder="Search the web or enter an address"
            aria-label="Search the web or enter an address">
+    <svg class="search-icon" viewBox="0 0 20 20" fill="none" aria-hidden="true">
+      <circle cx="9" cy="9" r="6" stroke="currentColor" stroke-width="1.7"/>
+      <path d="m13.5 13.5 3.5 3.5" stroke="currentColor" stroke-width="1.7"
+            stroke-linecap="round"/>
+    </svg>
+    <span class="enter" id="enter">Enter</span>
     </div>
     <p class="hint" id="hint"></p>
   </form>
 
   <button class="ai" id="ai" type="button">
-    <svg viewBox="0 0 20 20" fill="none" aria-hidden="true">
-      <path d="M10 2.5 11.6 7 16 8.6 11.6 10.2 10 14.7 8.4 10.2 4 8.6 8.4 7 10 2.5Z"
-            fill="currentColor"/>
-      <path d="M15.5 13.2 16.3 15.2 18.3 16 16.3 16.8 15.5 18.8 14.7 16.8 12.7 16 14.7 15.2 15.5 13.2Z"
-            fill="currentColor" opacity=".55"/>
-    </svg>
+    <span class="glyph">
+      <svg viewBox="0 0 20 20" fill="none" aria-hidden="true">
+        <path d="M10 2.5 11.6 7 16 8.6 11.6 10.2 10 14.7 8.4 10.2 4 8.6 8.4 7 10 2.5Z"
+              fill="currentColor"/>
+        <path d="M15.5 13.2 16.2 15 18 15.7 16.2 16.4 15.5 18.2 14.8 16.4 13 15.7 14.8 15 15.5 13.2Z"
+              fill="currentColor" opacity=".55"/>
+      </svg>
+    </span>
     <span>
       <b>Ask Py AI</b>
-      <small id="ai-sub">Summarise a page, compare tabs, or research something</small>
+      <small id="ai-sub">Summarise this page, compare tabs, or research a topic</small>
     </span>
   </button>
 
@@ -489,9 +536,12 @@ _TEMPLATE = """<!doctype html>
       var li = document.createElement("li");
       var a = document.createElement("a");
       a.href = "pybrowser://newtab/action/open?url=" + encodeURIComponent(item.url);
+      var title = document.createElement("span");
+      title.className = "title";
       // textContent, never innerHTML: these titles come from arbitrary
       // websites and this is a privileged page.
-      a.textContent = item.title;
+      title.textContent = item.title;
+      a.appendChild(title);
       a.title = item.url;
       var span = document.createElement("span");
       span.className = "host";
@@ -521,8 +571,10 @@ _TEMPLATE = """<!doctype html>
 
   // A hint, not a decision: Python still decides URL vs. search, so this only
   // has to be roughly right, and being wrong here changes nothing.
+  var enter = document.getElementById("enter");
   box.addEventListener("input", function () {
     var text = box.value.trim();
+    enter.style.opacity = text ? "1" : "0";
     if (!text) { hint.textContent = ""; return; }
     var looksLikeUrl = /^[a-z][a-z0-9+.-]*:\\/\\//i.test(text) ||
                        /^[^\\s]+\\.[a-z]{2,}([/:?#]|$)/i.test(text) ||

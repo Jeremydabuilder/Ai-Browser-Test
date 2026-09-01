@@ -39,6 +39,16 @@ _SHAPES: dict[str, str] = {
     "plus": '<path d="M12 6v12M6 12h12"/>',
     "up": '<path d="M6 15l6-6 6 6"/>',
     "down": '<path d="M6 9l6 6 6-6"/>',
+    # A tab with no favicon of its own, so the strip does not shift when one
+    # loads: every tab always has an icon slot filled.
+    "page": ('<path d="M6.5 3.5h7l4.5 4.5v12a1 1 0 0 1-1 1h-10.5a1 1 0 0 1-1-1v-15a1 1 0 0 1 1-1Z"/>'
+             '<path d="M13.5 3.5V8H18"/>'),
+    # Three quarters of a circle: rotated, it reads as a spinner.
+    "spinner": '<path d="M20 12a8 8 0 0 0-8-8 8 8 0 0 0-8 8 8 8 0 0 0 5 7.4"/>',
+    "search_glass": ('<circle cx="10.5" cy="10.5" r="6"/>'
+                     '<path d="m15 15 4.5 4.5"/>'),
+    "sidebar": ('<rect x="3.5" y="4.5" width="17" height="15" rx="2.5"/>'
+                '<path d="M14.5 4.5v15"/>'),
 }
 
 _TEMPLATE = (

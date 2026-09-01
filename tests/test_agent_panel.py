@@ -147,7 +147,8 @@ class PanelTests(unittest.TestCase):
         panel._clear()
         self.assertEqual(self.session.messages, [])
         self.assertNotIn("First answer.", panel.transcript.toPlainText())
-        self.assertIn("cleared", panel.transcript.toPlainText().lower())
+        # Clearing returns the panel to its invitation, not to a blank box.
+        self.assertIn("ask about the page", panel.transcript.toPlainText().lower())
 
     def test_the_agent_still_works_after_clearing(self) -> None:
         panel = self.start([says("First answer."), says("Second answer.")])

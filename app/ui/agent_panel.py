@@ -10,15 +10,19 @@ from __future__ import annotations
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QKeyEvent, QTextCursor
 from PySide6.QtWidgets import (
+    QApplication,
     QFrame,
     QHBoxLayout,
     QLabel,
     QPlainTextEdit,
     QPushButton,
+    QSizePolicy,
     QTextBrowser,
     QVBoxLayout,
     QWidget,
 )
+
+from app.ui import icons, theme
 
 from app.agent.session import (
     AgentSession,
@@ -28,14 +32,18 @@ from app.agent.session import (
     StepState,
 )
 
-#: How each step state reads. A step is a thing the agent did to the browser,
-#: never a thing it thought - the panel shows actions, not reasoning.
+#: How each step state reads: a mark, and which palette colour names it. A step
+#: is a thing the agent did to the browser, never a thing it thought - the panel
+#: shows actions, not reasoning.
+#:
+#: The marks are drawn from the geometric-shapes block rather than from emoji,
+#: which render inconsistently and sometimes not at all.
 _STEP_MARKS = {
-    StepState.RUNNING: ("&#9679;", "#4b46d4"),   # filled dot: happening now
-    StepState.DONE: ("&#10003;", "#2e7d32"),     # tick
-    StepState.FAILED: ("&#10007;", "#a11"),      # cross
-    StepState.WAITING: ("&#9679;", "#b8860b"),
-    StepState.SKIPPED: ("&#9675;", "#888"),      # hollow dot: never happened
+    StepState.RUNNING: ("&#9679;", "accent"),    # filled dot: happening now
+    StepState.DONE: ("&#10003;", "success"),     # tick
+    StepState.FAILED: ("&#10007;", "danger"),    # cross
+    StepState.WAITING: ("&#9679;", "warning"),
+    StepState.SKIPPED: ("&#9675;", "disabled"),  # hollow dot: never happened
 }
 
 #: The prompts behind the quick-action buttons. Written as things a person
@@ -49,14 +57,29 @@ QUICK_ACTIONS: tuple[tuple[str, str], ...] = (
 
 
 class _MessageBox(QPlainTextEdit):
-    """Input where Enter sends and Shift+Enter makes a new line."""
+    """Input where Enter sends and Shift+Enter makes a new line.
+
+    Grows with what you type, up to a few lines, then scrolls. A box that is
+    always four lines tall is four lines of empty space for the 95% of messages
+    that are one line long.
+    """
 
     submitted = Signal()
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self.setPlaceholderText("What can I do for you?")
-        self.setMaximumHeight(84)
+        self.setPlaceholderText("Ask Py AI about this page\u2026")
+        self.setAccessibleName("Message to Py AI")
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self._min_height = 38
+        self._max_height = 132
+        self.setFixedHeight(self._min_height)
+        self.document().contentsChanged.connect(self._fit_to_content)
+
+    def _fit_to_content(self) -> None:
+        wanted = int(self.document().size().height()) + 16
+        self.setFixedHeight(max(self._min_height, min(self._max_height, wanted)))
 
     def keyPressEvent(self, event: QKeyEvent) -> None:  # noqa: N802
         enter = event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter)
@@ -67,26 +90,62 @@ class _MessageBox(QPlainTextEdit):
 
 
 class ConfirmationBar(QFrame):
-    """Allow / Deny strip shown when a sensitive action is pending."""
+    """The approval card: what would happen, where, and why we are asking.
+
+    Deliberately the most legible thing in the panel. A person reads this while
+    deciding whether to let software spend their money, so it states the action,
+    the site and the reason as three separate lines rather than one sentence,
+    and Deny is the default - the safe answer should be the one you get by
+    pressing Enter without reading carefully.
+    """
 
     answered = Signal(bool)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self.setStyleSheet(
-            "background:#fdf1d6; color:#5c3d00; border:1px solid #e6c56b; border-radius:4px;")
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(10, 8, 10, 8)
-        layout.setSpacing(6)
+        from app.ui import theme
 
-        self._label = QLabel("", self)
-        self._label.setWordWrap(True)
-        layout.addWidget(self._label)
+        self._colours = theme.palette_for(QApplication.instance())
+        m = theme.METRICS
+        c = self._colours
+        self.setObjectName("approval")
+        # Scoped to the object name, so the labels inside do not inherit a
+        # border and background of their own - which is what made this look
+        # like a box inside a box.
+        self.setStyleSheet(
+            f"#approval {{ background: {c.warning_soft};"
+            f" border: 1px solid {c.warning};"
+            f" border-radius: {m.radius_lg}px; }}"
+            f"#approval QLabel {{ background: transparent; border: none;"
+            f" color: {c.warning_text}; }}")
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(m.space_4, m.space_3, m.space_4, m.space_3)
+        layout.setSpacing(m.space_2)
+
+        heading = QHBoxLayout()
+        heading.setSpacing(m.space_2)
+        self._glyph = QLabel(self)
+        self._glyph.setPixmap(
+            icons.icon("sparkle", c.warning, size=32).pixmap(m.icon, m.icon))
+        heading.addWidget(self._glyph, 0, Qt.AlignmentFlag.AlignTop)
+        self._title = QLabel("", self)
+        self._title.setWordWrap(True)
+        self._title.setTextFormat(Qt.TextFormat.RichText)
+        heading.addWidget(self._title, 1)
+        layout.addLayout(heading)
+
+        self._detail = QLabel("", self)
+        self._detail.setWordWrap(True)
+        self._detail.setTextFormat(Qt.TextFormat.RichText)
+        layout.addWidget(self._detail)
 
         buttons = QHBoxLayout()
-        self.allow_button = QPushButton("Allow", self)
+        buttons.setSpacing(m.space_2)
         self.deny_button = QPushButton("Deny", self)
-        self.deny_button.setDefault(True)   # the safe answer is the default
+        self.deny_button.setDefault(True)      # the safe answer is the default
+        self.allow_button = QPushButton("Allow", self)
+        self.allow_button.setProperty("kind", "primary")
         self.allow_button.clicked.connect(lambda: self.answered.emit(True))
         self.deny_button.clicked.connect(lambda: self.answered.emit(False))
         buttons.addStretch(1)
@@ -107,19 +166,24 @@ class ConfirmationBar(QFrame):
         def escape(text: str) -> str:
             return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
-        lines = [f"<b>Py AI wants to {escape(request.description)}</b>"]
-        if request.site:
-            lines.append(f"on <b>{escape(request.site)}</b>")
+        action = escape(request.description)
+        site = f' on <b>{escape(request.site)}</b>' if request.site else ""
+        self._title.setText(
+            f'<span style="font-size:11px;letter-spacing:.04em;opacity:.75">'
+            f"PY AI WANTS TO</span><br>"
+            f'<span style="font-size:14px;font-weight:600">{action}</span>{site}')
+
+        lines = []
         if request.reasons:
             lines.append(f"This {escape(', '.join(request.reasons))}.")
         if request.submits:
             shown = ", ".join(escape(name) for name in request.submits[:6])
             more = f" and {len(request.submits) - 6} more" if len(request.submits) > 6 else ""
-            lines.append(f"Sends: {shown}{more}.")
+            lines.append(f"<b>Sends:</b> {shown}{more}.")
         if request.sensitive_fields:
-            lines.append("<b>One of those fields is a password or payment field.</b>")
-        self._label.setText("<br>".join(lines))
-        self._label.setTextFormat(Qt.TextFormat.RichText)
+            lines.append("<b>One of those is a password or payment field.</b>")
+        self._detail.setText("<br>".join(lines))
+        self._detail.setVisible(bool(lines))
         self.show()
         self.deny_button.setFocus()
 
@@ -129,13 +193,19 @@ class AgentPanel(QWidget):
 
     def __init__(self, session: AgentSession | None, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self.setMinimumWidth(320)
+        m = theme.METRICS
+        self._colours = theme.palette_for(QApplication.instance())
+        c = self._colours
+        self.setMinimumWidth(m.panel_min)
         self._session = session
         #: True while an answer is being written into the transcript piece by
         #: piece, so the finished message is not appended a second time.
         self._streaming = False
         #: The step checklist for the task in progress.
         self._steps_by_index: dict[int, Step] = {}
+        #: True while the transcript is showing the invitation rather than a
+        #: conversation, so the first message replaces it instead of following it.
+        self._empty = True
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(8, 8, 8, 8)
@@ -144,15 +214,28 @@ class AgentPanel(QWidget):
         model = ""
         if session is not None:
             model = session.config.model_choice.label
+        # -- header: who is answering, and how to start over ---------------
         top = QHBoxLayout()
-        header = QLabel(
-            "<b>Py AI</b>" + (f" <span style='color:#777'>{model}</span>" if model else ""),
-            self)
-        header.setTextFormat(Qt.TextFormat.RichText)
-        top.addWidget(header, 1)
+        top.setSpacing(m.space_2)
+        mark = QLabel(self)
+        mark.setPixmap(icons.icon("sparkle", c.accent, size=32).pixmap(m.icon, m.icon))
+        top.addWidget(mark)
+        header = QLabel("Py AI", self)
+        header.setStyleSheet(f"font-size:{m.text_lg}px; font-weight:600;")
+        top.addWidget(header)
+        if model:
+            badge = QLabel(model.replace(" (default)", ""), self)
+            badge.setToolTip(f"Answers come from {model}. Change it in "
+                             "Tools \u2192 Configure AI Agent.")
+            badge.setStyleSheet(
+                f"color:{c.muted}; font-size:{m.text_xs}px;"
+                f" background:{c.surface_alt}; border-radius:{m.radius_sm}px;"
+                f" padding:2px {m.space_2}px;")
+            top.addWidget(badge)
+        top.addStretch(1)
         self.clear_button = QPushButton("Clear", self)
+        self.clear_button.setProperty("kind", "quiet")
         self.clear_button.setToolTip("Forget this conversation and start again")
-        self.clear_button.setFlat(True)
         self.clear_button.clicked.connect(self._clear)
         top.addWidget(self.clear_button)
         layout.addLayout(top)
@@ -161,9 +244,10 @@ class AgentPanel(QWidget):
         # ordinary message through the same session, so whatever the agent can
         # do by being asked, it does here too.
         self.quick = QHBoxLayout()
-        self.quick.setSpacing(4)
+        self.quick.setSpacing(m.space_1)
         for label, prompt in QUICK_ACTIONS:
             button = QPushButton(label, self)
+            button.setProperty("kind", "chip")
             button.setToolTip(prompt)
             button.clicked.connect(lambda _checked=False, text=prompt: self._ask(text))
             self.quick.addWidget(button)
@@ -173,20 +257,39 @@ class AgentPanel(QWidget):
         self.transcript = QTextBrowser(self)
         self.transcript.setOpenExternalLinks(False)
         self.transcript.setOpenLinks(False)
+        # Flat: the conversation is the panel's content, not a widget sitting
+        # in it. A bordered box around a mostly-empty transcript is the single
+        # thing that made this panel look like a form.
+        self.transcript.setProperty("kind", "flat")
+        self.transcript.setAccessibleName("Conversation with Py AI")
         layout.addWidget(self.transcript, 1)
 
         # What the agent is doing, as a checklist that updates in place rather
-        # than a log that scrolls. Hidden between tasks so an idle panel is
-        # just a conversation.
+        # than a log that scrolls. Sized to its contents and hidden between
+        # tasks, so an idle panel is just a conversation.
+        # A hairline above the checklist, so the space between the last
+        # message and the steps reads as separation rather than as a gap
+        # someone forgot to fill.
+        self.steps_rule = QFrame(self)
+        self.steps_rule.setFrameShape(QFrame.Shape.HLine)
+        self.steps_rule.setFixedHeight(1)
+        self.steps_rule.setStyleSheet(f"background:{c.line}; border:none;")
+        self.steps_rule.hide()
+        layout.addWidget(self.steps_rule)
+
         self.steps = QTextBrowser(self)
-        self.steps.setMaximumHeight(132)
+        self.steps.setProperty("kind", "flat")
         self.steps.setOpenLinks(False)
+        self.steps.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.steps.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.steps.setAccessibleName("What Py AI is doing")
         self.steps.hide()
         layout.addWidget(self.steps)
 
         self.status = QLabel("", self)
         self.status.setWordWrap(True)
-        self.status.setStyleSheet("color:#666;")
+        self.status.setProperty("kind", "muted")
+        self.status.setStyleSheet(f"color:{c.muted}; font-size:{m.text_sm}px;")
         layout.addWidget(self.status)
 
         # Spend, shown while it is still possible to do something about it.
@@ -194,7 +297,7 @@ class AgentPanel(QWidget):
         # cluttered with zeroes.
         self.usage = QLabel("", self)
         self.usage.setWordWrap(True)
-        self.usage.setStyleSheet("color:#888; font-size:11px;")
+        self.usage.setStyleSheet(f"color:{c.disabled}; font-size:{m.text_xs}px;")
         self.usage.hide()
         layout.addWidget(self.usage)
 
@@ -205,10 +308,18 @@ class AgentPanel(QWidget):
         layout.addWidget(self.input)
 
         buttons = QHBoxLayout()
-        self.send_button = QPushButton("Send", self)
-        self.stop_button = QPushButton("Stop", self)
-        self.stop_button.setEnabled(False)
+        buttons.setSpacing(m.space_2)
+        self.hint = QLabel("Enter to send", self)
+        self.hint.setStyleSheet(f"color:{c.disabled}; font-size:{m.text_xs}px;")
+        buttons.addWidget(self.hint)
         buttons.addStretch(1)
+        self.stop_button = QPushButton("Stop", self)
+        self.stop_button.setProperty("kind", "danger")
+        self.stop_button.setToolTip("Stop the current task")
+        self.stop_button.setEnabled(False)
+        self.stop_button.hide()          # only shown while something is running
+        self.send_button = QPushButton("Send", self)
+        self.send_button.setProperty("kind", "primary")
         buttons.addWidget(self.stop_button)
         buttons.addWidget(self.send_button)
         layout.addLayout(buttons)
@@ -222,6 +333,7 @@ class AgentPanel(QWidget):
             self._show_unconfigured()
         else:
             self._connect(session)
+            self._show_empty_state()
 
     # -- wiring ----------------------------------------------------------
     def _connect(self, session: AgentSession) -> None:
@@ -236,7 +348,35 @@ class AgentPanel(QWidget):
         session.cleared.connect(self._on_cleared)
         session.step_changed.connect(self._on_step)
 
+    def _show_empty_state(self) -> None:
+        """What the panel says before it has been asked anything.
+
+        An invitation with two concrete examples, not a blank box: the hardest
+        part of using an assistant is knowing what it can be asked.
+        """
+        self._empty = True
+        c = self._colours
+        m = theme.METRICS
+        # <p>, not <div>: Qt's rich text lays consecutive divs out inline
+        # here, which ran the heading and the body together on one line.
+        self.transcript.setHtml(
+            f'<p style="color:{c.text};font-size:{m.text}px;font-weight:600;'
+            f'margin:{m.space_5}px 0 {m.space_2}px">Ask about the page you are on.</p>'
+            f'<p style="color:{c.muted};font-size:{m.text_sm}px;margin:0 0 {m.space_4}px">'
+            "Py AI can read this page, look across your tabs, and follow links "
+            "to find things out.</p>"
+            f'<p style="color:{c.disabled};font-size:{m.text_sm}px;margin:0">'
+            "Try &ldquo;summarise this&rdquo; or &ldquo;compare my two tabs&rdquo;.</p>")
+
     def _show_unconfigured(self) -> None:
+        """The panel with no credential: explain, and point at the fix.
+
+        Everything is disabled rather than hidden, so the panel still looks
+        like itself - a disabled control says "not yet", a missing one says
+        "never".
+        """
+        c = self._colours
+        m = theme.METRICS
         self.input.setEnabled(False)
         self.send_button.setEnabled(False)
         self.clear_button.setEnabled(False)
@@ -244,11 +384,15 @@ class AgentPanel(QWidget):
             widget = self.quick.itemAt(index).widget()
             if widget is not None:
                 widget.setEnabled(False)
-        self._append(
-            "system",
-            "The agent is not configured. Add an Anthropic API key "
-            "(Tools → Configure AI Agent…) and reopen this panel.",
-        )
+        self.transcript.setHtml(
+            f'<p style="color:{c.text};font-size:{m.text}px;font-weight:600;'
+            f'margin:{m.space_5}px 0 {m.space_2}px">Py AI is not set up yet.</p>'
+            f'<p style="color:{c.muted};font-size:{m.text_sm}px;margin:0 0 {m.space_3}px">'
+            "Open <b>Tools \u2192 Configure AI Agent</b> to connect it. You can sign "
+            "in with the Anthropic CLI, use cloud credentials you already have, "
+            "or paste an API key.</p>"
+            f'<p style="color:{c.disabled};font-size:{m.text_sm}px;margin:0">'
+            "The rest of the browser works exactly as normal without it.</p>")
 
     # -- user actions ----------------------------------------------------
     def _send(self) -> None:
@@ -258,7 +402,7 @@ class AgentPanel(QWidget):
         if not text or self._session.busy:
             return
         self.input.clear()
-        self._steps_by_index.clear()
+        self._begin_conversation()
         self._append("user", text)
         self._session.send(text)
 
@@ -278,9 +422,16 @@ class AgentPanel(QWidget):
         """Send a prepared message, exactly as if the user had typed it."""
         if self._session is None or self._session.busy:
             return
-        self._steps_by_index.clear()
+        self._begin_conversation()
         self._append("user", text)
         self._session.send(text)
+
+    def _begin_conversation(self) -> None:
+        """Clear the invitation the first time something is actually asked."""
+        self._steps_by_index.clear()
+        if self._empty:
+            self.transcript.clear()
+            self._empty = False
 
     def _answer_confirmation(self, allowed: bool) -> None:
         self.confirmation.hide()
@@ -307,7 +458,8 @@ class AgentPanel(QWidget):
         if not self._streaming:
             self._streaming = True
             self.transcript.setTextCursor(cursor)
-            self.transcript.insertHtml('<p style="margin:6px 0"><b>Claude:</b> </p>')
+            self.transcript.insertHtml(
+                f'<div style="margin:{theme.METRICS.space_2}px 0"></div>')
             cursor = self.transcript.textCursor()
             cursor.movePosition(QTextCursor.MoveOperation.End)
         cursor.insertText(fragment)
@@ -320,10 +472,10 @@ class AgentPanel(QWidget):
     def _on_cleared(self) -> None:
         self._steps_by_index.clear()
         self.steps.hide()
-        self.transcript.clear()
+        self.steps_rule.hide()
         self.usage.hide()
         self._streaming = False
-        self._append("system", "Conversation cleared.")
+        self._show_empty_state()
 
     def _on_activity(self, text: str) -> None:
         # Activity now lives in the step list; the transcript keeps only the
@@ -335,22 +487,36 @@ class AgentPanel(QWidget):
         self._render_steps()
 
     def _render_steps(self) -> None:
+        """Draw the checklist, and size the box to exactly what it holds.
+
+        A fixed-height step box is empty space under a two-step task and a
+        scrollbar under a ten-step one. Measuring the document is a few lines
+        and removes both.
+        """
         if not self._steps_by_index:
             self.steps.hide()
+            self.steps_rule.hide()
             return
+        c = self._colours
         rows = []
         for index in sorted(self._steps_by_index):
             step = self._steps_by_index[index]
-            mark, colour = _STEP_MARKS.get(step.state, ("&#9675;", "#888"))
-            faded = "color:#888;" if step.state == StepState.SKIPPED else ""
-            detail = (f' <span style="color:#888">&mdash; {self._escape(step.detail)}</span>'
-                      if step.detail else "")
+            mark, role = _STEP_MARKS.get(step.state, ("&#9675;", "disabled"))
+            colour = getattr(c, role, c.muted)
+            body = "color:%s;" % c.disabled if step.state == StepState.SKIPPED else ""
+            detail = (f' <span style="color:{c.muted}">&mdash; '
+                      f"{self._escape(step.detail)}</span>" if step.detail else "")
             rows.append(
-                f'<div style="margin:2px 0;{faded}">'
-                f'<span style="color:{colour}">{mark}</span> '
+                f'<div style="margin:3px 0;{body}">'
+                f'<span style="color:{colour}">{mark}</span>&nbsp;&nbsp;'
                 f"{self._escape(step.description)}{detail}</div>")
-        self.steps.setHtml("".join(rows))
+        self.steps.setHtml(
+            f'<div style="font-size:{theme.METRICS.text_sm}px">' + "".join(rows) + "</div>")
+        self.steps_rule.show()
         self.steps.show()
+        self.steps.document().setTextWidth(self.steps.viewport().width())
+        wanted = int(self.steps.document().size().height()) + 4
+        self.steps.setFixedHeight(min(wanted, 190))
         self.steps.verticalScrollBar().setValue(
             self.steps.verticalScrollBar().maximum())
 
@@ -363,17 +529,24 @@ class AgentPanel(QWidget):
 
     def _on_state(self, state: str) -> None:
         busy = state != AgentState.IDLE
+        # Stop replaces Send rather than sitting next to it: only one of them
+        # is ever the thing you want, and two live buttons is a decision the
+        # user should not have to make.
+        self.stop_button.setVisible(busy)
         self.stop_button.setEnabled(busy)
+        self.send_button.setVisible(not busy)
         self.send_button.setEnabled(not busy)
+        self.hint.setVisible(not busy)
         for index in range(self.quick.count()):
             widget = self.quick.itemAt(index).widget()
             if widget is not None:
                 widget.setEnabled(not busy)
         self.status.setText({
-            AgentState.THINKING: "Claude is thinking…",
-            AgentState.ACTING: "Working in the browser…",
-            AgentState.AWAITING_CONFIRMATION: "Waiting for your approval…",
-            AgentState.CANCELLING: "Stopping…",
+            AgentState.THINKING: "Thinking\u2026",
+            AgentState.ACTING: "Working in the browser\u2026",
+            # The card below says what is being asked, so this does not repeat it.
+            AgentState.AWAITING_CONFIRMATION: "",
+            AgentState.CANCELLING: "Stopping\u2026",
             AgentState.IDLE: "",
         }.get(state, ""))
 
@@ -402,16 +575,27 @@ class AgentPanel(QWidget):
 
     # -- transcript ------------------------------------------------------
     def _append(self, kind: str, text: str) -> None:
-        escaped = (text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;"))
+        """Add one message to the conversation.
+
+        The user's words sit in a tinted bubble and Claude's run full width.
+        Two bubble styles facing each other would halve the reading width in a
+        panel this narrow, and Claude's answers are the long ones.
+        """
+        c = self._colours
+        m = theme.METRICS
+        escaped = self._escape(text).replace("\n", "<br>")
         html = {
-            "user": f'<p style="margin:6px 0"><b>You:</b> {escaped}</p>',
-            "assistant": f'<p style="margin:6px 0"><b>Claude:</b> {escaped}</p>',
-            # Actions are shown, reasoning is not: the user should be able to
-            # see what the agent did to their browser, not read its thoughts.
-            "activity": f'<p style="margin:2px 0 2px 12px; color:#555">→ {escaped}</p>',
-            "error": f'<p style="margin:6px 0; color:#a11">{escaped}</p>',
-            "system": f'<p style="margin:6px 0; color:#666"><i>{escaped}</i></p>',
-        }.get(kind, f"<p>{escaped}</p>")
+            "user": (f'<table width="100%" cellpadding="0" cellspacing="0"'
+                     f' style="margin:{m.space_2}px 0"><tr><td></td><td'
+                     f' style="background:{c.accent_soft};border-radius:{m.radius_lg}px;'
+                     f'padding:{m.space_2}px {m.space_3}px">{escaped}</td></tr></table>'),
+            "assistant": f'<div style="margin:{m.space_2}px 0">{escaped}</div>',
+            "error": (f'<div style="margin:{m.space_2}px 0;padding:{m.space_2}px '
+                      f'{m.space_3}px;background:{c.danger_soft};'
+                      f'border-radius:{m.radius_md}px;color:{c.danger}">{escaped}</div>'),
+            "system": (f'<div style="margin:{m.space_2}px 0;color:{c.muted};'
+                       f'font-size:{m.text_sm}px">{escaped}</div>'),
+        }.get(kind, f"<div>{escaped}</div>")
         self.transcript.moveCursor(QTextCursor.MoveOperation.End)
         self.transcript.insertHtml(html)
         self.transcript.moveCursor(QTextCursor.MoveOperation.End)
