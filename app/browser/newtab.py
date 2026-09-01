@@ -329,7 +329,7 @@ _TEMPLATE = """<!doctype html>
     --text: #17171d;
     --muted: #65656f;
     --disabled: #a8a8b4;
-    --accent: #4b46d4;
+    --accent: #6c4cff;
     --accent-soft: #eeedfc;
     --glow: rgba(75, 70, 212, .07);
     --shadow: 0 1px 2px rgba(20, 20, 40, .04), 0 10px 30px rgba(20, 20, 40, .06);
@@ -352,7 +352,7 @@ _TEMPLATE = """<!doctype html>
       --text: #eeeef3;
       --muted: #9797a6;
       --disabled: #61616e;
-      --accent: #8b86ff;
+      --accent: #8a6bff;
       --accent-soft: #282740;
       --glow: rgba(139, 134, 255, .10);
       --shadow: 0 1px 2px rgba(0, 0, 0, .35), 0 10px 30px rgba(0, 0, 0, .35);
@@ -367,7 +367,7 @@ _TEMPLATE = """<!doctype html>
     --text: #eeeef3;
     --muted: #9797a6;
     --disabled: #61616e;
-    --accent: #8b86ff;
+    --accent: #8a6bff;
     --accent-soft: #282740;
     --glow: rgba(139, 134, 255, .10);
     --shadow: 0 1px 2px rgba(0, 0, 0, .35), 0 10px 30px rgba(0, 0, 0, .35);
