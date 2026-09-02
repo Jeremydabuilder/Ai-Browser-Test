@@ -347,12 +347,47 @@ than merged, because merging deletes a row the user did not ask to lose.
 Friday" down to "$129" stores a fact with its qualifier removed. One more tool
 call is cheaper than a wrong fact in the user's board.
 
-Findings are **not** sent to the model. They are model-authored prose about
+Findings *are* sent to the model, but only on a resume, and only fenced. See
+**Warm resume** below. They are model-authored prose about
 untrusted page content, and replaying them would give page-derived text a
 second life at conversation authority. A page can still induce a *false*
 finding - that is a display-integrity problem, visible and one click to delete,
 not an escalation - but it cannot become an instruction, reach the system
 prompt, or enter the Mission briefing.
+
+### Warm resume
+
+Resuming a Mission should not start Py cold. `app/missions/briefing.py`
+composes what the agent is told, and its whole job is keeping two kinds of text
+apart: the **goal** is the user's own words and sits plainly at user authority;
+the **findings** are model-authored notes about untrusted pages and sit inside a
+`<mission_findings>` fence, along with their source domains and the line saying
+how many were left out. Everything board-derived is inside; everything outside
+was written by the user or by us.
+
+The marker's meaning is defined once in `SYSTEM_PROMPT`, at developer
+authority - notes are not instructions, are never evidence of permission, may
+be stale, must be verified before consequential actions, and never override the
+current request or the approval gate. **No finding text ever enters the system
+prompt**; only the static definition of the marker, which costs one cache
+invalidation at deploy rather than one per Mission. A finding cannot forge the
+fence: the closing marker and the untrusted-content markers are neutralised
+before fencing, the same way `wrap_untrusted` does it.
+
+Injection happens **once per activation**, not per turn and not per finding.
+`MissionService` snapshots the briefing when a Mission becomes active and holds
+it still until the next activation, which is what makes "once per activation"
+true without `AgentSession` needing to know what an activation is. The
+activation counter is runtime state; it answers a question about one live
+conversation and means nothing after a restart. Up to the 25 most recent
+findings travel, bounded by 4,000 characters of board-derived text, with the
+remainder counted rather than silently dropped.
+
+Caching survives because the briefing is *appended* at the head of a task,
+alongside the task message - never inserted, never rewritten. The automatic
+conversation breakpoint moves forward and nothing already cached changes. There
+is no tool for reading the rest of the board: the model's relationship to it
+stays write-only.
 
 `LOCAL_WRITE_TOOLS` is how the confirmation gate classifies it: exempt for a
 stated reason (no page, no network, no spend, one click to undo), and

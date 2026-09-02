@@ -12,6 +12,8 @@ Three layers, deliberately separate:
 * :mod:`app.missions.repository` - SQLite. Knows no policy.
 * :mod:`app.missions.service` - the live state and the association rules. This
   is the only part that knows about the browser.
+* :mod:`app.missions.briefing` - what the agent is told, and the fence that
+  keeps the user's goal and the model's notes at different authority levels.
 """
 
 from app.missions.model import (

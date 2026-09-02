@@ -23,6 +23,7 @@ from __future__ import annotations
 
 from PySide6.QtCore import QObject, Signal
 
+from app.missions import briefing as briefing_text
 from app.missions.model import (
     MAX_FINDING_CHARS,
     MAX_FINDINGS_PER_MISSION,
@@ -73,6 +74,17 @@ class MissionService(QObject):
         self._controller = controller
         self._tabs = tabs
         self._active: Mission | None = None
+        #: How many times a Mission has become active in this window. Runtime
+        #: only - it exists to answer "is this the same activation the agent
+        #: was already briefed on?", which is a question about one live
+        #: conversation and means nothing after a restart.
+        self._activation = 0
+        #: The briefing as it stood when the Mission became active. Held still
+        #: for the whole activation on purpose: it is what makes "brief once
+        #: per activation" true without the session having to know what an
+        #: activation is. A finding saved five minutes later does not silently
+        #: turn into a second briefing at the start of the next task.
+        self._briefing = ""
         if controller is not None:
             controller.action_completed.connect(self._on_action)
 
@@ -151,8 +163,18 @@ class MissionService(QObject):
             self.active_changed.emit(self._active)
         return True
 
+    @property
+    def activation(self) -> int:
+        """Which activation this is. See the note in __init__."""
+        return self._activation
+
     def _set_active(self, mission: Mission | None) -> None:
         self._active = mission
+        if mission is not None:
+            self._activation += 1
+            self._briefing = briefing_text.compose(mission)
+        else:
+            self._briefing = ""
         self.active_changed.emit(mission)
 
     def _refresh(self) -> None:
@@ -378,13 +400,12 @@ class MissionService(QObject):
         prompt. Two reasons: the system prompt carries a cache_control marker
         with a one-hour TTL, and rewriting it per Mission would throw the
         prompt cache away on every switch; and the authority level is right.
+
+        Findings *are* included, so a resumed Mission starts warm rather than
+        cold - but fenced, and only as they stood when the Mission became
+        active. See app/missions/briefing.py for the split between the goal
+        (the user's words, plain) and the board (notes about untrusted pages,
+        fenced). Returning a value that is stable for the whole activation is
+        what stops the board being re-sent every time it grows.
         """
-        mission = self._active
-        if mission is None:
-            return ""
-        return (f'I am working on a mission called "{mission.title}". '
-                f"My goal: {mission.goal}\n\n"
-                "Keep this goal in mind for the requests that follow. "
-                "Pages you open or read will be filed under this mission "
-                "automatically, and you can record what you learn with "
-                "mission_save_finding.")
+        return self._briefing
