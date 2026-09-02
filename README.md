@@ -58,15 +58,26 @@ nss alsa-lib`.
 ## Tests
 
 ```bash
-python -m unittest discover -s tests -v          # 486 tests
+python -m unittest discover -s tests -v          # 598 tests
 python scripts/smoke_test.py                     # headless end-to-end run
 python scripts/feature_check.py                  # 28-point feature checklist
 python scripts/agent_demo.py                     # the research demo, offline
 python scripts/smoke_test.py --url https://pypi.org   # also load a real site
 python scripts/validate.py                       # full validation incl. real sites
-python scripts/api_preflight.py                  # one real API call per model
+python scripts/api_preflight.py                  # a real conversation per model
 python scripts/real_sites.py                     # browser + agent vs. real sites
 ```
+
+Every test in the suite scripts the model, which proves the agent loop and
+proves nothing about whether the API accepts what the browser sends — that gap
+is how a `thinking` parameter went out to a model that rejects it and broke
+every AI feature. `scripts/api_preflight.py` closes it: for each model in the
+picker it walks a whole conversation through the real client — the opening
+request, a tool_use turn echoed back with a tool_result answering it, and a
+follow-up after the assistant's text turn — and prints the API's own words on
+any refusal. It needs a real credential and costs a few thousand tokens per
+model. Run it after touching anything in `app/agent/claude_client.py` or the
+model catalogue.
 
 * **`ARCHITECTURE.md`** — how the layers fit together, the permission tiers,
   and where each unbuilt AI capability would go.
@@ -210,7 +221,7 @@ app/
     config.py               model and context limits
   ui/agent_panel.py         transcript, activity, input, Allow/Deny
 tests/                      unit tests (no GUI)
-scripts/api_preflight.py    one real request per model, exactly as the browser sends it
+scripts/api_preflight.py    a real conversation per model, exactly as the browser sends it
 scripts/smoke_test.py       headless end-to-end test
 docs/                       Phase 2 design
 ```
