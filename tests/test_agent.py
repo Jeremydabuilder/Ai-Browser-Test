@@ -822,49 +822,156 @@ if __name__ == "__main__":
 
 
 class HistoryEditingTests(unittest.TestCase):
-    """The session edits the transcript. Some models forbid that.
+    """Who is allowed to rewrite the transcript, and when.
 
-    `_prune_snapshots` rewrites superseded tool results in place and
-    `_trim_history` drops the oldest exchanges. Both save real money on a long
-    browsing task, and both are safe on every model the browser offers today.
-
-    They stop being safe on a model that enforces preserved thinking, where a
-    thinking block's signature records the prefix that produced it. The failure
-    is an intermittent 400 partway through a long task - never on the first
-    prompt, which is the worst kind to receive as a bug report. So the pairing
-    is checked here instead.
+    The server does it now. The client-side trimming survives only as the
+    fallback for a platform that rejects the betas, and must never run for a
+    model that checks the transcript was not edited - there, an unbounded
+    conversation is a better failure than an intermittent 400 halfway through a
+    task.
     """
 
-    def test_no_offered_model_forbids_the_editing_this_session_does(self) -> None:
-        from app.agent.config import MODELS
-        from app.agent.session import EDITS_HISTORY_CLIENT_SIDE
+    def _session(self, transport, config=None):
+        from app.agent.config import AgentConfig
+        from app.agent.session import AgentSession
 
-        if not EDITS_HISTORY_CLIENT_SIDE:
-            self.skipTest("the session no longer edits history client-side")
-        offenders = [c.model_id for c in MODELS if c.checks_history_edits]
-        self.assertEqual(
-            offenders, [],
-            "These models check that the conversation was not edited between "
-            f"requests, but AgentSession still edits it: {offenders}. Move "
-            "_prune_snapshots to server-side context editing and _trim_history "
-            "to compaction before offering them - see EDITS_HISTORY_CLIENT_SIDE "
-            "in app/agent/session.py for the exact replacements.")
+        tabs = TabManager(_profile, "about:blank")
+        self.addCleanup(tabs.deleteLater)
+        session = AgentSession(BrowserController(tabs), transport,
+                               config or AgentConfig())
+        self.addCleanup(session.shutdown)
+        return session
 
-    def test_the_flag_defaults_to_the_safe_answer(self) -> None:
-        # A model added without thinking about this must not silently claim to
-        # be safe to edit around; False means "we do not know that it checks",
-        # which is only sound while nothing in the picker does.
-        from app.agent.config import describe_model
+    class _Managing(ScriptedClaude):
+        manages_context_server_side = True
 
-        self.assertFalse(describe_model("claude-unreleased").checks_history_edits)
+    class _NotManaging(ScriptedClaude):
+        manages_context_server_side = False
 
-    def test_pruning_still_does_its_job_on_todays_models(self) -> None:
+    def test_the_session_stands_down_when_the_server_manages_context(self) -> None:
+        session = self._session(self._Managing([]))
+        self.assertFalse(session._may_edit_history())
+
+    def test_the_client_side_trimming_returns_if_the_betas_are_refused(self) -> None:
+        # Otherwise the conversation grows without limit and every request
+        # gets more expensive until it stops fitting.
+        session = self._session(self._NotManaging([]))
+        self.assertTrue(session._may_edit_history())
+
+    def test_a_model_that_checks_for_edits_is_never_trimmed_client_side(self) -> None:
+        from app.agent.config import AgentConfig, ModelChoice
+        from app.agent import config as config_module
+
+        strict = ModelChoice("model-that-checks", "Checks", "note",
+                             checks_history_edits=True)
+        real = config_module._BY_ID.get(strict.model_id)
+        config_module._BY_ID[strict.model_id] = strict
+        try:
+            session = self._session(self._NotManaging([]),
+                                    AgentConfig(model=strict.model_id))
+            self.assertFalse(
+                session._may_edit_history(),
+                "editing would invalidate every thinking block after the edit")
+        finally:
+            if real is None:
+                config_module._BY_ID.pop(strict.model_id, None)
+            else:
+                config_module._BY_ID[strict.model_id] = real
+
+    def test_pruning_still_does_its_job_when_it_is_the_only_option(self) -> None:
         """Guard the saving as well as the constraint.
 
-        If someone reads the warning and simply deletes the pruning, long tasks
-        get quietly more expensive with nothing to show it.
+        If someone reads the warning and simply deletes the pruning, the
+        fallback path gets quietly more expensive with nothing to show it.
         """
         from app.agent.config import ContextLimits
 
         self.assertGreater(ContextLimits().prune_stale_after_chars, 0)
         self.assertGreater(ContextLimits().max_history_messages, 0)
+
+
+class ConversationMemoryTests(unittest.TestCase):
+    """The model must see its own replies.
+
+    It did not. `_on_response` appended the assistant turn only when the model
+    wanted tools, so a final answer was emitted to the UI and dropped from the
+    conversation. A second question arrived with the first question above it and
+    nothing in between - and because consecutive user turns are legal, this lost
+    context silently instead of erroring.
+    """
+
+    def _run(self, script, prompts):
+        from app.agent.config import AgentConfig
+        from app.agent.session import AgentSession
+
+        tabs = TabManager(_profile, "about:blank")
+        self.addCleanup(tabs.deleteLater)
+        browser = BrowserController(tabs)
+        browser.open_tab("about:blank").wait()
+        session = AgentSession(browser, ScriptedClaude(script), AgentConfig())
+        self.addCleanup(session.shutdown)
+        done = []
+        session.finished.connect(lambda: done.append(True))
+        for prompt in prompts:
+            before = len(done)
+            session.send(prompt)
+            self.assertTrue(pump(lambda: len(done) > before), "task never finished")
+        return session
+
+    @staticmethod
+    def _roles(session):
+        return [message["role"] for message in session.messages]
+
+    def test_an_answer_stays_in_the_conversation(self) -> None:
+        session = self._run([says("Paris."), says("In France.")],
+                            ["Capital of France?", "Where is it?"])
+        self.assertEqual(self._roles(session),
+                         ["user", "assistant", "user", "assistant"])
+
+    def test_the_second_question_can_see_the_first_answer(self) -> None:
+        session = self._run([says("Paris."), says("In France.")],
+                            ["Capital of France?", "Where is it?"])
+        transcript = json.dumps(session.messages, default=str)
+        self.assertIn("Paris.", transcript,
+                      "the model cannot refer back to what it just said")
+
+    def test_a_tool_using_turn_is_still_paired_with_its_results(self) -> None:
+        session = self._run(
+            [calls("browser_get_page_text"), says("Read it.")], ["read the page"])
+        uses = results = 0
+        for message in session.messages:
+            content = message["content"]
+            if not isinstance(content, list):
+                continue
+            for block in content:
+                kind = (block.get("type") if isinstance(block, dict)
+                        else getattr(block, "type", ""))
+                uses += kind == "tool_use"
+                results += kind == "tool_result"
+        self.assertEqual(uses, results,
+                         "a tool_use with no tool_result makes the next request invalid")
+
+    def test_a_refused_tool_round_is_not_left_dangling(self) -> None:
+        """Hitting the action limit must not strand a tool_use.
+
+        The turn asking for tools we refuse to run is deliberately not kept:
+        an assistant turn holding a tool_use with no matching tool_result is
+        rejected on the next request.
+        """
+        from app.agent.config import AgentConfig, ContextLimits
+        from app.agent.session import AgentSession
+
+        tabs = TabManager(_profile, "about:blank")
+        self.addCleanup(tabs.deleteLater)
+        browser = BrowserController(tabs)
+        browser.open_tab("about:blank").wait()
+        config = AgentConfig(limits=ContextLimits(max_tool_calls=0))
+        session = AgentSession(browser, ScriptedClaude(
+            [calls("browser_get_page_text"), says("never reached")]), config)
+        self.addCleanup(session.shutdown)
+        done = []
+        session.finished.connect(lambda: done.append(True))
+        session.send("read the page")
+        self.assertTrue(pump(lambda: done))
+        self.assertEqual(self._roles(session), ["user"],
+                         "the refused tool turn was kept and would break the next request")

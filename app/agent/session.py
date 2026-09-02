@@ -409,9 +409,26 @@ class AgentSession(QObject):
         if response.text:
             self.assistant_message.emit(response.text)
         if not response.wants_tools:
+            # Keep the answer in the conversation. Without this the model never
+            # saw its own replies: a second question arrived with the first
+            # question above it and nothing in between, so "explain that again"
+            # had nothing to refer to. Consecutive user turns are legal, which
+            # is why this lost context silently instead of erroring.
+            #
+            # It also carries the compaction block, when there is one. The
+            # server puts its summary in the assistant turn, and everything
+            # before it is ignored on the next request - drop the turn and the
+            # summary goes with it, along with the whole conversation it stood
+            # in for.
+            if response.raw_content:
+                self._messages.append(
+                    {"role": "assistant", "content": response.raw_content})
             self._finish()
             return
         if self._tool_calls_made + len(response.tool_calls) > self.config.limits.max_tool_calls:
+            # Deliberately *not* appended: this turn asks for tools we are
+            # about to refuse to run, and an assistant turn holding a tool_use
+            # with no matching tool_result makes the next request invalid.
             self.error.emit(
                 f"Stopping: the task reached its limit of "
                 f"{self.config.limits.max_tool_calls} browser actions.")
@@ -686,6 +703,8 @@ class AgentSession(QObject):
         a little every turn. Below the threshold, doing nothing is cheaper than
         tidying.
         """
+        if not self._may_edit_history():
+            return
         limit = self.config.limits.prune_stale_after_chars
         if limit <= 0:
             return
@@ -733,6 +752,8 @@ class AgentSession(QObject):
         needed to finish a multi-step task. Now only the orphaned results are
         removed, one exchange at a time.
         """
+        if not self._may_edit_history():
+            return
         limit = max(3, self.config.limits.max_history_messages)
         if len(self._messages) <= limit:
             return
@@ -755,6 +776,38 @@ class AgentSession(QObject):
                     return True
         return False
 
+    def _may_edit_history(self) -> bool:
+        """May this session rewrite or drop earlier turns?
+
+        Two reasons not to, and they are independent:
+
+        * the server is already keeping the conversation small, so doing it
+          here as well would throw away context nothing asked us to throw away;
+        * the model checks that the transcript was not edited between requests,
+          in which case editing it invalidates every thinking block after the
+          edit - and letting the conversation grow until it hits a context
+          limit is a better failure than an intermittent 400 halfway through a
+          task.
+        """
+        if self._server_manages_context():
+            return False
+        return not self.config.model_choice.checks_history_edits
+
+    def _server_manages_context(self) -> bool:
+        """Is the API keeping this conversation small, so we must not?
+
+        Asked of the transport rather than of the config, because the answer
+        changes at runtime (the read is a plain attribute on an object the
+        worker owns - no call crosses the thread boundary): a platform that rejects the parameter turns it off
+        for the rest of the session, and the client-side trimming below has to
+        come back or the context grows without limit.
+
+        A transport that has never heard of the question - the scripted one the
+        tests use - answers no, and everything behaves as it did before.
+        """
+        return bool(getattr(self._worker._transport,
+                            "manages_context_server_side", False))
+
     def _set_state(self, state: str) -> None:
         if state != self._state:
             self._state = state
@@ -771,32 +824,19 @@ class AgentSession(QObject):
         self.finished.emit()
 
 
-#: This session edits the transcript between requests: ``_prune_snapshots``
-#: rewrites superseded tool results in place, and ``_trim_history`` drops the
-#: oldest exchanges. Both are worth real money on a long browsing task, and
-#: both are fine on every model the browser currently offers.
+#: Whether this session may edit the transcript itself is now a question with
+#: two answers, asked per request by ``AgentSession._may_edit_history``:
 #:
-#: They stop being fine on a model that enforces *preserved thinking*. There, a
-#: thinking block's signature records the conversation prefix that produced it
-#: - the system prompt, the tool set, and every message before the block - and
-#: changing any of that invalidates every later block. It would surface as an
-#: intermittent 400 in the middle of a long task, never on the first prompt.
+#: * **Normally, no.** The server does it - ``clear_tool_uses_20250919``
+#:   replaces the old snapshot pruning and ``compact_20260112`` replaces
+#:   dropping the oldest exchanges. Neither counts as an edit, because the
+#:   check compares the conversation as it was *sent*.
+#: * **If a platform rejects those betas**, the old client-side trimming comes
+#:   back, because the alternative is a conversation that grows without limit.
+#:   That is safe on a model that does not check for edits, and is refused on
+#:   one that does - there, growing until the context limit is a better failure
+#:   than an intermittent 400 halfway through a task.
 #:
-#: There is no client-side way to keep the saving and the guarantee: snipping a
-#: turn out of the middle invalidates later blocks whatever shape you use. The
-#: sanctioned replacements are server-side, and neither counts as an edit
-#: because the check compares the conversation *as sent*:
-#:
-#: * selective removal -> context editing, ``context_management={"edits":
-#:   [{"type": "clear_tool_uses_20250919"}]}`` on ``client.beta.messages.*``
-#:   with beta ``context-management-2025-06-27``. This is what
-#:   ``_prune_snapshots`` is hand-rolling, and the server does it better.
-#: * bounding length -> server-side compaction (beta ``compact-2026-01-12``),
-#:   or client-side *simple* compaction: summarise into one message and replay
-#:   nothing else. Keep-tail compaction does not work - the retained turns'
-#:   thinking blocks were made with the full history present.
-#:
-#: Until one of those lands, ``ModelChoice.checks_history_edits`` must stay
-#: False for every model in the picker. ``tests/test_agent.py`` fails if it
-#: does not, so adding such a model is a red build rather than a bug report.
-EDITS_HISTORY_CLIENT_SIDE = True
+#: So a model with ``checks_history_edits`` is now safe to offer. The test in
+#: tests/test_agent.py checks the behaviour rather than this note.
+EDITS_HISTORY_CLIENT_SIDE = "see AgentSession._may_edit_history"

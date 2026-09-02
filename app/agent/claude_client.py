@@ -226,6 +226,62 @@ class ClaudeClient:
             return {}
         return {"thinking": {"type": "adaptive"}}
 
+    #: Beta flags the two context-management features need. Sent only when the
+    #: features are, so an ordinary request stays on the stable endpoint.
+    _CLEARING_BETA = "context-management-2025-06-27"
+    _COMPACTION_BETA = "compact-2026-01-12"
+
+    def _context_management(self) -> dict[str, Any]:
+        """The server-side replacement for editing our own transcript.
+
+        Order matters when both strategies are present, and only in one
+        direction: thinking-clearing would have to come first. We do not clear
+        thinking - the models we support bind it to the conversation, and the
+        API drops what a model cannot read anyway - so the list is at most
+        clearing followed by compaction.
+        """
+        context = self.config.context
+        if "context_management" in self._unsupported or not context.enabled:
+            return {}
+        edits: list[dict[str, Any]] = []
+        if context.clear_tool_results:
+            edits.append({
+                "type": "clear_tool_uses_20250919",
+                "trigger": {"type": "input_tokens",
+                            "value": context.clear_after_tokens},
+                "keep": {"type": "tool_uses",
+                         "value": context.keep_recent_tool_uses},
+                "clear_tool_inputs": context.clear_tool_inputs,
+            })
+        if context.compact:
+            edits.append({
+                "type": "compact_20260112",
+                "trigger": {"type": "input_tokens",
+                            "value": context.compact_after_tokens},
+            })
+        return {"context_management": {"edits": edits}} if edits else {}
+
+    def _betas(self, managing: bool) -> list[str]:
+        if not managing:
+            return []
+        context = self.config.context
+        flags = []
+        if context.clear_tool_results:
+            flags.append(self._CLEARING_BETA)
+        if context.compact:
+            flags.append(self._COMPACTION_BETA)
+        return flags
+
+    @property
+    def manages_context_server_side(self) -> bool:
+        """True when the server is keeping the conversation small for us.
+
+        The session asks, because the answer decides whether it may still trim
+        the transcript itself. It goes False if a platform rejects the
+        parameter, and the old client-side trimming resumes.
+        """
+        return bool(self._context_management())
+
     def _extra_params(self) -> dict[str, Any]:
         """Optional top-level parameters, omitted where unsupported."""
         params: dict[str, Any] = {}
@@ -257,6 +313,7 @@ class ClaudeClient:
         then costs more and works, instead of failing.
         """
         while True:
+            managing = self._context_management()
             kwargs = dict(
                 model=self._model,
                 max_tokens=self.config.max_tokens,
@@ -265,15 +322,23 @@ class ClaudeClient:
                 tools=tools,
                 **self._thinking_param(),
                 **self._extra_params(),
+                **managing,
             )
+            # Context management lives on the beta endpoint. Everything else is
+            # identical, so the stable path stays the default and we only move
+            # across when there is something to move across for.
+            betas = self._betas(bool(managing))
+            api = self._client.beta.messages if betas else self._client.messages
+            if betas:
+                kwargs["betas"] = betas
             try:
                 if on_text is None:
-                    return self._client.messages.create(**kwargs)
+                    return api.create(**kwargs)
                 # Streaming: hand each fragment over as it arrives, then take
                 # the assembled message. The loop needs the whole message
                 # regardless - tool_use blocks only make sense complete - so
                 # streaming changes what the user sees, not what the loop gets.
-                with self._client.messages.stream(**kwargs) as stream:
+                with api.stream(**kwargs) as stream:
                     for fragment in stream.text_stream:
                         if fragment:
                             on_text(fragment)
@@ -298,6 +363,12 @@ class ClaudeClient:
             # environment, or added by a later release - can refuse adaptive
             # thinking too. Dropping it costs quality, not correctness.
             ("thinking", ("thinking",)),
+            # A platform without the betas, or with them behind a flag this
+            # account does not have. Giving up costs money, not correctness:
+            # the session goes back to trimming the transcript itself.
+            ("context_management", ("context_management", "context management",
+                                    "compact", "clear_tool_uses",
+                                    "context-management")),
         ):
             if name in self._unsupported:
                 continue
@@ -386,14 +457,51 @@ class ClaudeClient:
                 # Inputs arrive already parsed by the SDK; never string-match them.
                 arguments = block.input if isinstance(block.input, dict) else {}
                 calls.append(ToolCall(id=block.id, name=block.name, arguments=arguments))
-        usage = getattr(response, "usage", None)
+        meters = ClaudeClient._meters(getattr(response, "usage", None))
         return AgentResponse(
             text="\n".join(t for t in texts if t).strip(),
             tool_calls=calls,
             stop_reason=getattr(response, "stop_reason", "") or "",
             raw_content=response.content,
-            input_tokens=getattr(usage, "input_tokens", 0) or 0,
-            output_tokens=getattr(usage, "output_tokens", 0) or 0,
-            cache_read_tokens=getattr(usage, "cache_read_input_tokens", 0) or 0,
-            cache_write_tokens=getattr(usage, "cache_creation_input_tokens", 0) or 0,
+            **meters,
         )
+
+    @staticmethod
+    def _meters(usage: Any) -> dict[str, int]:
+        """What this turn actually cost.
+
+        A compacted turn bills for two passes - summarising the old
+        conversation, then answering with the summary - and the API reports the
+        first one only in ``usage.iterations``. The top-level counters exclude
+        it, so reading them alone under-reports a compaction by the size of the
+        whole conversation it just condensed, which is the most expensive
+        request the browser ever makes.
+
+        The cache meters stay top-level unless an iteration carries its own:
+        summing zeroes over iterations that do not report them would throw away
+        numbers the top level had.
+        """
+        def meter(source: Any, name: str) -> int:
+            return getattr(source, name, 0) or 0
+
+        top = {
+            "input_tokens": meter(usage, "input_tokens"),
+            "output_tokens": meter(usage, "output_tokens"),
+            "cache_read_tokens": meter(usage, "cache_read_input_tokens"),
+            "cache_write_tokens": meter(usage, "cache_creation_input_tokens"),
+        }
+        iterations = getattr(usage, "iterations", None) or []
+        if not iterations:
+            return top
+        totals = {
+            "input_tokens": sum(meter(i, "input_tokens") for i in iterations),
+            "output_tokens": sum(meter(i, "output_tokens") for i in iterations),
+            "cache_read_tokens": sum(
+                meter(i, "cache_read_input_tokens") for i in iterations),
+            "cache_write_tokens": sum(
+                meter(i, "cache_creation_input_tokens") for i in iterations),
+        }
+        for name in ("cache_read_tokens", "cache_write_tokens"):
+            if not totals[name]:
+                totals[name] = top[name]
+        return totals

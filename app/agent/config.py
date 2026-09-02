@@ -145,6 +145,59 @@ _EFFORT_IDS = {level for level, _ in EFFORT_LEVELS}
 
 
 @dataclass(frozen=True)
+class ContextManagement:
+    """Letting the server keep the conversation small, instead of doing it here.
+
+    A browsing task accumulates one page snapshot per step and resends every one
+    of them on every turn. The old snapshots are dead weight - element
+    references are scoped to the snapshot that produced them, so once a newer
+    capture exists the older ones cannot be used for anything.
+
+    This browser used to trim them itself: rewriting superseded tool results in
+    place and dropping the oldest exchanges. Both work, and both *edit the
+    transcript*, which the newest models reject - a thinking block's signature
+    records the conversation prefix that produced it, so changing an earlier
+    turn invalidates every block after it. There is no client-side shape that
+    keeps the saving and the guarantee.
+
+    The server-side equivalents do not count as edits, because the check
+    compares the conversation as it was *sent*, not the copy the server works
+    from. So the same two jobs move across the wire:
+
+    * **clearing** removes old tool results outright - the direct replacement
+      for the old snapshot pruning.
+    * **compaction** summarises the conversation when it gets long - the
+      replacement for dropping the oldest exchanges, and much better at it,
+      because a summary keeps what a truncation throws away.
+
+    Both are beta, and both degrade to the old client-side behaviour if a
+    platform rejects them - see ClaudeClient._rejected_parameter.
+    """
+
+    #: Clear superseded tool results. The snapshots are the whole point.
+    clear_tool_results: bool = True
+    #: Input tokens at which clearing starts. Lower than the API's 100k default
+    #: because a page snapshot is large and the browser accumulates them fast.
+    clear_after_tokens: int = 60_000
+    #: How many recent tool exchanges survive untouched. Three covers "look,
+    #: act, verify", which is the shape the system prompt asks for.
+    keep_recent_tool_uses: int = 3
+    #: Do not clear the tool *inputs*, only the results. The inputs are small
+    #: and they are what makes the transcript readable when something is wrong.
+    clear_tool_inputs: bool = False
+
+    #: Summarise the conversation when it gets long.
+    compact: bool = True
+    #: Input tokens at which compaction runs. The API's own default; its floor
+    #: is 50k and it rejects anything lower.
+    compact_after_tokens: int = 150_000
+
+    @property
+    def enabled(self) -> bool:
+        return self.clear_tool_results or self.compact
+
+
+@dataclass(frozen=True)
 class CacheSettings:
     """Prompt caching, which is the single biggest lever and costs nothing.
 
@@ -230,6 +283,7 @@ class AgentConfig:
     #: mid-conversation invalidates the message cache.
     effort: str = DEFAULT_EFFORT
     cache: CacheSettings = field(default_factory=CacheSettings)
+    context: ContextManagement = field(default_factory=ContextManagement)
     #: Wall-clock cap on a single Claude request.
     request_timeout_s: float = 120.0
     #: SDK-level retries for 429/5xx/connection errors.

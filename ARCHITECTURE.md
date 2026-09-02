@@ -131,6 +131,24 @@ delete.
 
 ### 5. Multi-step tasks — **built**
 
+Context is kept small by the **server**, not by us. `clear_tool_uses_20250919`
+drops superseded tool results and `compact_20260112` summarises the conversation
+when it gets long. Both are beta, both are requested on every call, and both
+degrade: a platform that rejects them makes the client fall back to trimming the
+transcript itself, which is cheaper than nothing — and is refused outright for a
+model that checks the transcript was not edited.
+
+That last rule is why this moved. The client-side versions rewrote superseded
+tool results in place and dropped the oldest exchanges — both *edit the
+transcript*, and on a model that binds a thinking block's signature to the
+conversation prefix, editing an earlier turn invalidates every block after it.
+No client-side shape avoids it. The server-side strategies do not count as
+edits, because the check compares the conversation as it was *sent*.
+
+A compacted turn bills for two passes and the top-level token counters report
+only one; `ClaudeClient._meters` sums `usage.iterations`, or the browser would
+under-report its single most expensive request.
+
 The loop runs until the model stops calling tools or hits a limit. Element
 references are snapshot-scoped, so a stale one is reported as `STALE_SNAPSHOT`
 rather than clicking the wrong thing; the agent re-inspects and continues.

@@ -31,6 +31,7 @@ from app.agent.config import (  # noqa: E402
     AgentConfig,
     CacheSettings,
     ContextLimits,
+    ContextManagement,
     describe_model,
 )
 from app.agent.credentials import Credential, Mode  # noqa: E402
@@ -65,6 +66,10 @@ class _Recorder:
         self.calls: list[dict] = []
         self._errors = list(errors or [])
         self.messages = self
+        # The real SDK client exposes both surfaces, and the request goes to
+        # `beta.messages` whenever context management is on. Recording both
+        # through one object keeps `calls` a single ordered list.
+        self.beta = self
 
     def create(self, **kwargs):
         self.calls.append(kwargs)
@@ -627,3 +632,120 @@ class ErrorDetailTests(unittest.TestCase):
                             api_message="max_tokens: must be at least 1")
         self.assertNotIn("sk-secret", error.api_message)
         self.assertEqual(error.detail, "x-api-key: sk-secret")
+
+
+class ContextManagementTests(unittest.TestCase):
+    """The server keeps the conversation small, and we let it.
+
+    Replaces the client-side trimming that used to rewrite superseded tool
+    results in place and drop the oldest exchanges. Both edited the transcript,
+    which the newest models reject; neither server-side strategy counts as an
+    edit, because the check compares the conversation as it was sent.
+    """
+
+    def test_clearing_and_compaction_are_both_requested(self) -> None:
+        client = _client(AgentConfig())
+        client.send(system="P", messages=[], tools=[])
+        edits = _sent(client)["context_management"]["edits"]
+        self.assertEqual([e["type"] for e in edits],
+                         ["clear_tool_uses_20250919", "compact_20260112"])
+
+    def test_the_betas_that_each_feature_needs_are_sent(self) -> None:
+        client = _client(AgentConfig())
+        client.send(system="P", messages=[], tools=[])
+        self.assertEqual(_sent(client)["betas"],
+                         ["context-management-2025-06-27", "compact-2026-01-12"])
+
+    def test_clearing_keeps_the_recent_exchanges(self) -> None:
+        # "look, act, verify" is the loop the system prompt asks for, so the
+        # three most recent exchanges must survive or the agent loses the page
+        # it is working on.
+        client = _client(AgentConfig())
+        client.send(system="P", messages=[], tools=[])
+        clearing = _sent(client)["context_management"]["edits"][0]
+        self.assertEqual(clearing["keep"], {"type": "tool_uses", "value": 3})
+        self.assertEqual(clearing["trigger"]["type"], "input_tokens")
+        self.assertFalse(clearing["clear_tool_inputs"])
+
+    def test_the_compaction_trigger_respects_the_api_floor(self) -> None:
+        # The API rejects a trigger below 50k.
+        self.assertGreaterEqual(ContextManagement().compact_after_tokens, 50_000)
+
+    def test_turning_it_off_returns_to_the_stable_endpoint(self) -> None:
+        config = AgentConfig(context=ContextManagement(clear_tool_results=False,
+                                                       compact=False))
+        client = _client(config)
+        client.send(system="P", messages=[], tools=[])
+        self.assertNotIn("context_management", _sent(client))
+        self.assertNotIn("betas", _sent(client))
+        self.assertFalse(client.manages_context_server_side)
+
+    def test_only_the_requested_feature_brings_its_beta(self) -> None:
+        config = AgentConfig(context=ContextManagement(compact=False))
+        client = _client(config)
+        client.send(system="P", messages=[], tools=[])
+        self.assertEqual(_sent(client)["betas"], ["context-management-2025-06-27"])
+        self.assertEqual([e["type"] for e in
+                          _sent(client)["context_management"]["edits"]],
+                         ["clear_tool_uses_20250919"])
+
+    def test_a_platform_rejecting_it_falls_back_and_says_so(self) -> None:
+        import anthropic
+
+        client = _client(AgentConfig(), errors=[anthropic.BadRequestError(
+            "context_management is not supported on this platform",
+            response=_FakeHttpResponse(), body=None)])
+        self.assertTrue(client.manages_context_server_side)
+        client.send(system="P", messages=[], tools=[])
+        self.assertNotIn("context_management", client._client.calls[-1])
+        # And the session is told, so its own trimming can come back.
+        self.assertFalse(client.manages_context_server_side)
+        # Only the rejected parameter is given up.
+        self.assertIn("cache_control", client._client.calls[-1])
+
+
+class CompactionUsageTests(unittest.TestCase):
+    """A compacted turn bills for two passes; the top-level counters show one."""
+
+    class _Meter:
+        def __init__(self, **kw):
+            for key, value in kw.items():
+                setattr(self, key, value)
+
+    def test_iterations_are_summed(self) -> None:
+        usage = self._Meter(
+            input_tokens=23_000, output_tokens=1_000,
+            cache_read_input_tokens=900, cache_creation_input_tokens=90,
+            iterations=[
+                self._Meter(type="compaction", input_tokens=180_000,
+                            output_tokens=3_500),
+                self._Meter(type="message", input_tokens=23_000,
+                            output_tokens=1_000),
+            ])
+        meters = ClaudeClient._meters(usage)
+        self.assertEqual(meters["input_tokens"], 203_000)
+        self.assertEqual(meters["output_tokens"], 4_500)
+
+    def test_the_cache_meters_survive_iterations_that_omit_them(self) -> None:
+        # Summing zeroes over iterations that do not report cache figures would
+        # throw away numbers the top level had.
+        usage = self._Meter(
+            input_tokens=10, output_tokens=5,
+            cache_read_input_tokens=900, cache_creation_input_tokens=90,
+            iterations=[self._Meter(input_tokens=10, output_tokens=5)])
+        meters = ClaudeClient._meters(usage)
+        self.assertEqual(meters["cache_read_tokens"], 900)
+        self.assertEqual(meters["cache_write_tokens"], 90)
+
+    def test_an_ordinary_turn_reads_the_top_level(self) -> None:
+        usage = self._Meter(input_tokens=10, output_tokens=5,
+                            cache_read_input_tokens=900,
+                            cache_creation_input_tokens=90)
+        self.assertEqual(ClaudeClient._meters(usage),
+                         {"input_tokens": 10, "output_tokens": 5,
+                          "cache_read_tokens": 900, "cache_write_tokens": 90})
+
+    def test_a_response_with_no_usage_at_all_is_zero(self) -> None:
+        self.assertEqual(ClaudeClient._meters(None),
+                         {"input_tokens": 0, "output_tokens": 0,
+                          "cache_read_tokens": 0, "cache_write_tokens": 0})

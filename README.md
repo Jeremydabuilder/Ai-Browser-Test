@@ -64,6 +64,7 @@ python scripts/feature_check.py                  # 28-point feature checklist
 python scripts/agent_demo.py                     # the research demo, offline
 python scripts/smoke_test.py --url https://pypi.org   # also load a real site
 python scripts/validate.py                       # full validation incl. real sites
+python scripts/api_preflight.py                  # one real API call per model
 python scripts/real_sites.py                     # browser + agent vs. real sites
 ```
 
@@ -209,6 +210,7 @@ app/
     config.py               model and context limits
   ui/agent_panel.py         transcript, activity, input, Allow/Deny
 tests/                      unit tests (no GUI)
+scripts/api_preflight.py    one real request per model, exactly as the browser sends it
 scripts/smoke_test.py       headless end-to-end test
 docs/                       Phase 2 design
 ```
