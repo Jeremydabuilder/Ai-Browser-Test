@@ -236,6 +236,14 @@ class AgentSession(QObject):
         self._confirmation: ConfirmationRequest | None = None
         self._confirming_call: ToolCall | None = None
 
+        #: Optional callable returning one line of context about what the user
+        #: is working on - see `briefing_provider` below. The session knows
+        #: nothing about what produces it.
+        self.briefing_provider = None
+        #: The briefing already in this conversation, so it goes in once
+        #: rather than in front of every task.
+        self._briefing_sent = ""
+
         # -- what this is costing ----------------------------------------
         #: Tokens for the task in progress, reset on every `send()`.
         self.task_usage = Usage()
@@ -295,10 +303,42 @@ class AgentSession(QObject):
         self._steps = []
         self.trace.start()
         self.trace.record(tracing.TASK_STARTED, chars=len(message))
+        briefing = self._briefing()
+        if briefing:
+            self._messages.append({"role": "user", "content": briefing})
         self._messages.append({"role": "user", "content": message})
         self._trim_history()
         self._request()
         return True
+
+    def _briefing(self) -> str:
+        """Context to put in front of the next task, or "".
+
+        ``briefing_provider`` is a plain callable set by whoever built the
+        session - today, the Mission system saying what the user is trying to
+        accomplish. Three deliberate properties:
+
+        * It is a **user message**, not an addition to the system prompt. The
+          system prompt carries a cache_control marker with a one-hour TTL, so
+          rewriting it per context would throw the prompt cache away; and the
+          authority level is right, because the text is the user's own words.
+        * It goes in **once per conversation**, not in front of every task.
+          Repeating it would grow the history for nothing and would keep
+          invalidating the cached message prefix.
+        * A provider that raises is ignored. Nothing about extra context is
+          worth failing a task over.
+        """
+        provider = self.briefing_provider
+        if provider is None:
+            return ""
+        try:
+            text = (provider() or "").strip()
+        except Exception:                        # noqa: BLE001 - never fatal
+            return ""
+        if not text or text == self._briefing_sent:
+            return ""
+        self._briefing_sent = text
+        return text
 
     @Slot(str)
     def _on_text_delta(self, fragment: str) -> None:
@@ -323,6 +363,7 @@ class AgentSession(QObject):
         self._messages.clear()
         self._result_tools.clear()
         self._pruned.clear()
+        self._briefing_sent = ""
         self.task_usage.reset()
         self._task = ""
         self.usage_updated.emit(self.task_usage)

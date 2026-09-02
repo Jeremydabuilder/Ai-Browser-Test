@@ -24,6 +24,7 @@ from PySide6.QtWidgets import (
 
 from app.ui import icons, theme
 from app.ui.mascot import Mascot, MascotState, state_for_agent
+from app.ui.missions import MissionCard, MissionPicker
 
 from app.agent.tools import READ_ONLY_TOOLS
 from app.agent.session import (
@@ -193,13 +194,18 @@ class ConfirmationBar(QFrame):
 class AgentPanel(QWidget):
     """The right-hand panel. Install it with MainWindow.set_side_panel()."""
 
-    def __init__(self, session: AgentSession | None, parent: QWidget | None = None) -> None:
+    def __init__(self, session: AgentSession | None, parent: QWidget | None = None,
+                 missions=None) -> None:
         super().__init__(parent)
         m = theme.METRICS
         self._colours = theme.palette_for(QApplication.instance())
         c = self._colours
         self.setMinimumWidth(m.panel_min)
         self._session = session
+        #: The Mission system, owned by the window. This panel is rebuilt
+        #: every time it is toggled; the service is not, which is the whole
+        #: reason it lives out there rather than in here.
+        self._missions = missions
         #: True while an answer is being written into the transcript piece by
         #: piece, so the finished message is not appended a second time.
         self._streaming = False
@@ -257,6 +263,25 @@ class AgentPanel(QWidget):
         self.clear_button.clicked.connect(self._clear)
         top.addWidget(self.clear_button)
         layout.addLayout(top)
+
+        # -- Missions ------------------------------------------------------
+        # Two states of one slot: the invitation when nothing is active, the
+        # card when something is. Both are built even when Missions are
+        # unavailable, and simply stay hidden - a widget that exists and is
+        # hidden is far easier to reason about than one that conditionally
+        # does not exist.
+        self.mission_card = MissionCard(missions, self) if missions else None
+        self.mission_picker = MissionPicker(missions, self) if missions else None
+        if self.mission_card is not None:
+            layout.addWidget(self.mission_card)
+            self.mission_card.changed.connect(self._on_mission_left)
+        if self.mission_picker is not None:
+            layout.addWidget(self.mission_picker)
+            self.mission_picker.started.connect(self._on_mission_started)
+        if missions is not None:
+            missions.active_changed.connect(self._on_active_mission)
+            missions.pages_changed.connect(self._on_mission_pages)
+            missions.missions_changed.connect(lambda _m=None: self._refresh_picker())
 
         # Quick actions. These are not a separate system: each one sends an
         # ordinary message through the same session, so whatever the agent can
@@ -346,6 +371,8 @@ class AgentPanel(QWidget):
         self.send_button.clicked.connect(self._send)
         self.stop_button.clicked.connect(self._stop)
         self.confirmation.answered.connect(self._answer_confirmation)
+
+        self._show_mission_state()
 
         if session is None:
             self._show_unconfigured()
@@ -460,6 +487,52 @@ class AgentPanel(QWidget):
         self.confirmation.hide()
         if self._session is not None:
             self._session.resolve_confirmation(allowed)
+
+    # -- missions --------------------------------------------------------
+    #
+    # The panel renders Missions and nothing more. Every decision - what is
+    # active, which pages belong to it, what the agent is told - is
+    # MissionService's, so that reopening this panel shows the same Mission
+    # rather than a different opinion about it.
+
+    def _show_mission_state(self) -> None:
+        """Show the card or the invitation, according to the service."""
+        if self._missions is None:
+            return
+        active = self._missions.active
+        if self.mission_card is not None:
+            self.mission_card.show_mission(active)
+        if self.mission_picker is not None:
+            self.mission_picker.setVisible(active is None)
+            if active is None:
+                self.mission_picker.refresh()
+        self._apply_mission_placeholder(active)
+
+    def _apply_mission_placeholder(self, mission) -> None:
+        self.input.setPlaceholderText(
+            f"Ask Py about {mission.title}…" if mission is not None
+            else "Ask Py about this page…")
+
+    def _on_active_mission(self, mission) -> None:
+        self._show_mission_state()
+
+    def _on_mission_pages(self, mission) -> None:
+        if self.mission_card is not None:
+            self.mission_card.show_mission(mission)
+
+    def _refresh_picker(self) -> None:
+        if self.mission_picker is not None and self.mission_picker.isVisible():
+            self.mission_picker.refresh()
+
+    def _on_mission_started(self, mission) -> None:
+        self._show_mission_state()
+        self._begin_conversation()
+        self._append("system", f"Mission started · {mission.title}")
+        self.input.setFocus()
+
+    def _on_mission_left(self) -> None:
+        self._show_mission_state()
+        self._append("system", "Mission closed. Browsing carries on as normal.")
 
     # -- session events --------------------------------------------------
     def _on_assistant(self, text: str) -> None:

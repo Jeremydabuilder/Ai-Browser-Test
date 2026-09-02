@@ -265,3 +265,61 @@ it is in the wrong place.
 * **No sandboxing of the agent's own reasoning** — cost and turn limits bound
   it, but a wrong plan executed within those limits is still a wrong plan. This
   is why consequential actions need a human.
+
+## Missions
+
+A Mission is a goal the user is working on, and the pages that served it. It is
+the one part of the browser organised around *why* pages exist rather than
+around tabs.
+
+    app/missions/model.py       the data, plus the two judgements that must not
+                                be scattered: page identity (`page_key`) and
+                                what a goal is called (`title_from_goal`)
+    app/missions/repository.py  SQLite. Knows no policy.
+    app/missions/service.py     the active Mission and the association rules.
+                                The only part that knows a browser exists.
+    app/ui/missions/            two states of one slot in Py's panel
+
+Four decisions carry most of the weight:
+
+**The service is owned by MainWindow.** The agent panel is destroyed and
+rebuilt on every toggle, and the whole `AgentSession` is discarded when the
+model or credential changes. A Mission held by either would not survive an
+ordinary afternoon.
+
+**Missions store URLs, never tab ids.** A `tab_id` is an in-memory counter
+belonging to `BrowserController`; it means nothing after a restart. Because a
+Mission holds no reference to a widget, closing a tab - or all of them, or the
+browser - cannot corrupt one. "Is this page open?" is answered by looking at
+the tabs that exist right now.
+
+**Association observes the controller; it never drives it.** `MissionService`
+listens to `BrowserController.action_completed`, which already reports the URL,
+the tab and what the action caused. Nothing in `controller.py`, `tab_manager.py`
+or `tools.py` changed. The rules: a page Py opened or navigated to joins the
+Mission; a page Py *read* joins only when it is the tab the user is looking at;
+a tab the user opened by hand never joins on its own.
+
+**The agent is told the goal as a user message.** `AgentSession.briefing_provider`
+is an optional callable; the Mission system supplies one sentence naming the
+title and the goal. It is not appended to `SYSTEM_PROMPT`, for two reasons: the
+system prompt carries a `cache_control` marker with a one-hour TTL and
+rewriting it per Mission would discard the prompt cache on every switch, and
+the goal is the user's own words, so user authority is the correct level.
+**Page titles are never included** - they come from web pages, and putting one
+in the briefing would smuggle untrusted text in at user authority, which is
+exactly what the trust boundary in `app/agent/prompt.py` exists to prevent.
+
+Mission status (`active`/`paused`/`completed`) and Py's mascot state
+(`IDLE`/`READING`/.../`STUCK`) are different concepts and are never wired
+together: one says what the user is working on, the other what the assistant is
+doing this second.
+
+### Database migrations
+
+`app/storage/database.py` keeps `_SCHEMA` (what a new profile gets) and
+`_MIGRATIONS` (how an existing one catches up), applied by `user_version`.
+Missions were the first step, v1 -> v2. Each step is idempotent, runs in one
+transaction, and is never edited once shipped - a mistake is fixed by adding
+the next step, because someone's profile has already run the old one. A profile
+stamped *newer* than this build is left alone rather than downgraded.

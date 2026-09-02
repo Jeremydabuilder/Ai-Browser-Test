@@ -12,8 +12,9 @@ Design notes
   the UI reads them back immediately and must see its own change.
 * Reads call ``flush()`` first, so "queued in the background" is never visible
   as missing data.
-* Schema creation is idempotent and versioned via ``PRAGMA user_version`` so
-  migrations can be added later without breaking existing profiles.
+* Schema creation is idempotent and versioned via ``PRAGMA user_version``.
+  ``_SCHEMA`` is what a brand-new profile gets; ``_MIGRATIONS`` is how an
+  existing one catches up. See ``_apply_schema``.
 """
 
 from __future__ import annotations
@@ -24,7 +25,7 @@ import threading
 from pathlib import Path
 from typing import Any, Iterable, Sequence
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS history (
@@ -47,7 +48,77 @@ CREATE TABLE IF NOT EXISTS settings (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
 );
+
+-- Missions: a goal the user is working on, and the pages that served it.
+-- Pages are addressed by URL, never by tab id: a tab id is an in-memory
+-- counter that means nothing after a restart, and holding one would make a
+-- mission corruptible by closing a tab.
+CREATE TABLE IF NOT EXISTS missions (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    title      TEXT NOT NULL,
+    goal       TEXT NOT NULL,
+    status     TEXT NOT NULL DEFAULT 'active',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_missions_updated ON missions(updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS mission_pages (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    mission_id INTEGER NOT NULL REFERENCES missions(id) ON DELETE CASCADE,
+    url        TEXT NOT NULL,
+    title      TEXT NOT NULL DEFAULT '',
+    source     TEXT NOT NULL DEFAULT 'agent',
+    note       TEXT NOT NULL DEFAULT '',
+    first_seen TEXT NOT NULL,
+    last_seen  TEXT NOT NULL,
+    UNIQUE(mission_id, url)
+);
+CREATE INDEX IF NOT EXISTS idx_mission_pages_mission
+    ON mission_pages(mission_id, last_seen DESC);
 """
+
+#: How a profile at version N becomes a profile at version N+1.
+#:
+#: Adding tables to ``_SCHEMA`` alone would appear to work - every statement
+#: there is IF NOT EXISTS, so an old profile picks new tables up on the next
+#: launch - but only for pure additions. The first time a column has to change
+#: there would be nowhere to put the ALTER, and the version stamp would have
+#: been lying about what the file contains. So the ladder exists from the
+#: first migration rather than from the first awkward one.
+#:
+#: Rules: each step is idempotent, each runs inside one transaction, and a step
+#: is never edited once it has shipped - a mistake is fixed by adding the next
+#: step, because someone's profile has already run the old one.
+_MIGRATIONS: dict[int, str] = {
+    # v1 -> v2: Missions. Identical to the block in _SCHEMA above, which is
+    # what makes it safe to run on a profile that somehow already has them.
+    1: """
+    CREATE TABLE IF NOT EXISTS missions (
+        id         INTEGER PRIMARY KEY AUTOINCREMENT,
+        title      TEXT NOT NULL,
+        goal       TEXT NOT NULL,
+        status     TEXT NOT NULL DEFAULT 'active',
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_missions_updated ON missions(updated_at DESC);
+
+    CREATE TABLE IF NOT EXISTS mission_pages (
+        id         INTEGER PRIMARY KEY AUTOINCREMENT,
+        mission_id INTEGER NOT NULL REFERENCES missions(id) ON DELETE CASCADE,
+        url        TEXT NOT NULL,
+        title      TEXT NOT NULL DEFAULT '',
+        source     TEXT NOT NULL DEFAULT 'agent',
+        note       TEXT NOT NULL DEFAULT '',
+        first_seen TEXT NOT NULL,
+        last_seen  TEXT NOT NULL,
+        UNIQUE(mission_id, url)
+    );
+    CREATE INDEX IF NOT EXISTS idx_mission_pages_mission
+        ON mission_pages(mission_id, last_seen DESC);
+    """,
+}
 
 _STOP = object()
 
@@ -147,8 +218,29 @@ class Database:
         return conn
 
     def _apply_schema(self, conn: sqlite3.Connection) -> None:
+        """Bring the file up to ``SCHEMA_VERSION``, whatever it is now.
+
+        A fresh file reports user_version 0 and gets ``_SCHEMA`` outright. An
+        existing one climbs the ladder one step at a time. Both end stamped
+        with the same number, and both are safe to run repeatedly.
+
+        This also runs on the corrupt-recovery path, where the file has just
+        been recreated empty - so it must work from zero as well as from any
+        shipped version.
+        """
         with self._lock:
-            conn.executescript(_SCHEMA)
+            version = conn.execute("PRAGMA user_version").fetchone()[0]
+            if version == 0:
+                conn.executescript(_SCHEMA)
+            elif version > SCHEMA_VERSION:
+                # A newer PyBrowser wrote this profile. Its tables are a
+                # superset of ours, so leave the stamp alone and carry on
+                # rather than downgrading a file we do not understand.
+                conn.commit()
+                return
+            else:
+                for step in range(version, SCHEMA_VERSION):
+                    conn.executescript(_MIGRATIONS[step])
             conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
             conn.commit()
 

@@ -26,6 +26,7 @@ from PySide6.QtWidgets import (
 
 from app import APP_NAME
 from app.browser.controller import BrowserController
+from app.missions import MissionService, MissionStore
 from app.browser.load_error import ErrorCategory, LoadError
 from app.browser.profile import BrowserProfile
 from app.browser.tab_manager import TabManager
@@ -66,6 +67,15 @@ class MainWindow(QMainWindow):
         # need it, but keeping one audited control surface (rather than letting
         # callers poke at widgets) is what Phase 2 will build on.
         self.controller = BrowserController(self.tabs, self)
+
+        # Missions: what the user is trying to accomplish, and which pages
+        # served it. Owned here rather than by the agent panel because the
+        # panel is destroyed and rebuilt on every toggle, and the whole agent
+        # session is rebuilt when the model or credential changes - a Mission
+        # outlives both. It observes the controller's action stream and never
+        # drives it; see app/missions/service.py.
+        self.missions = MissionService(
+            MissionStore(database), self.controller, self.tabs, self)
 
         # A dismissible strip above the tabs for things the status bar is too
         # quiet for: blocked certificates, failed loads, crashed renderers.
@@ -587,9 +597,10 @@ class MainWindow(QMainWindow):
                 self._show_status(f"AI agent unavailable: {reason}")
             else:
                 self._agent_unavailable = False
+                self._agent_session.briefing_provider = self.missions.briefing
                 credential = self._current_credential()
                 self._credential_id = credential.fingerprint if credential else ""
-        self.set_side_panel(AgentPanel(self._agent_session, self))
+        self.set_side_panel(AgentPanel(self._agent_session, self, self.missions))
         self._agent_action.setChecked(True)
 
     def _configure_agent(self) -> None:

@@ -58,7 +58,7 @@ nss alsa-lib`.
 ## Tests
 
 ```bash
-python -m unittest discover -s tests -v          # 598 tests
+python -m unittest discover -s tests -v          # 651 tests
 python scripts/smoke_test.py                     # headless end-to-end run
 python scripts/feature_check.py                  # 28-point feature checklist
 python scripts/agent_demo.py                     # the research demo, offline
@@ -219,7 +219,9 @@ app/
     prompt.py               system prompt and the trust boundary
     keys.py                 API key from the OS keyring
     config.py               model and context limits
+  missions/                 goal-based workspaces: model, store, live service
   ui/agent_panel.py         transcript, activity, input, Allow/Deny
+  ui/missions/              the mission card and the "start a mission" state
 tests/                      unit tests (no GUI)
 scripts/api_preflight.py    a real conversation per model, exactly as the browser sends it
 scripts/smoke_test.py       headless end-to-end test
