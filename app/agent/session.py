@@ -668,6 +668,10 @@ class AgentSession(QObject):
     def _prune_snapshots(self) -> None:
         """Collapse superseded page snapshots once they add up to real weight.
 
+        .. warning::
+           This rewrites earlier turns, which the newest models forbid - see
+           ``EDITS_HISTORY_CLIENT_SIDE`` at the bottom of this module.
+
         A browsing task accumulates one page capture per step, and every one of
         them is resent on every subsequent turn. The older ones are not merely
         bulky, they are *dead*: element references are scoped to the snapshot
@@ -713,6 +717,10 @@ class AgentSession(QObject):
 
     def _trim_history(self) -> None:
         """Keep the conversation bounded without destroying it.
+
+        .. warning::
+           This drops earlier turns, which the newest models forbid - see
+           ``EDITS_HISTORY_CLIENT_SIDE`` at the bottom of this module.
 
         Drops the oldest exchanges, and never the first user message - losing
         that would leave the agent working on nothing.
@@ -761,3 +769,34 @@ class AgentSession(QObject):
         self._assistant_content = None
         self._set_state(AgentState.IDLE)
         self.finished.emit()
+
+
+#: This session edits the transcript between requests: ``_prune_snapshots``
+#: rewrites superseded tool results in place, and ``_trim_history`` drops the
+#: oldest exchanges. Both are worth real money on a long browsing task, and
+#: both are fine on every model the browser currently offers.
+#:
+#: They stop being fine on a model that enforces *preserved thinking*. There, a
+#: thinking block's signature records the conversation prefix that produced it
+#: - the system prompt, the tool set, and every message before the block - and
+#: changing any of that invalidates every later block. It would surface as an
+#: intermittent 400 in the middle of a long task, never on the first prompt.
+#:
+#: There is no client-side way to keep the saving and the guarantee: snipping a
+#: turn out of the middle invalidates later blocks whatever shape you use. The
+#: sanctioned replacements are server-side, and neither counts as an edit
+#: because the check compares the conversation *as sent*:
+#:
+#: * selective removal -> context editing, ``context_management={"edits":
+#:   [{"type": "clear_tool_uses_20250919"}]}`` on ``client.beta.messages.*``
+#:   with beta ``context-management-2025-06-27``. This is what
+#:   ``_prune_snapshots`` is hand-rolling, and the server does it better.
+#: * bounding length -> server-side compaction (beta ``compact-2026-01-12``),
+#:   or client-side *simple* compaction: summarise into one message and replay
+#:   nothing else. Keep-tail compaction does not work - the retained turns'
+#:   thinking blocks were made with the full history present.
+#:
+#: Until one of those lands, ``ModelChoice.checks_history_edits`` must stay
+#: False for every model in the picker. ``tests/test_agent.py`` fails if it
+#: does not, so adding such a model is a red build rather than a bug report.
+EDITS_HISTORY_CLIENT_SIDE = True

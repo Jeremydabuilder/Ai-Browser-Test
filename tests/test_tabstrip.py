@@ -39,6 +39,21 @@ def setUpModule() -> None:
 
 
 def pump(times: int = 8) -> None:
+    """Let Qt catch up, including timers scheduled for "now".
+
+    processEvents() on its own is not enough. The tab strip defers moving the
+    "+" with QTimer.singleShot(0, ...) - it has to, because tabInserted() runs
+    before the bar is laid out - and a zero timer fires only once the event
+    dispatcher considers it due, which is a question about the clock rather
+    than about how many times the loop is spun. Spinning without letting any
+    real time pass failed about one full run in four, in a different test of
+    this class each time.
+    """
+    from PySide6.QtTest import QTest
+
+    for _ in range(times):
+        _app.processEvents()
+    QTest.qWait(1)          # real time, so a due-now timer actually fires
     for _ in range(times):
         _app.processEvents()
 

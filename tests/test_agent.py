@@ -819,3 +819,52 @@ class ToolSurfaceTests(AgentTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class HistoryEditingTests(unittest.TestCase):
+    """The session edits the transcript. Some models forbid that.
+
+    `_prune_snapshots` rewrites superseded tool results in place and
+    `_trim_history` drops the oldest exchanges. Both save real money on a long
+    browsing task, and both are safe on every model the browser offers today.
+
+    They stop being safe on a model that enforces preserved thinking, where a
+    thinking block's signature records the prefix that produced it. The failure
+    is an intermittent 400 partway through a long task - never on the first
+    prompt, which is the worst kind to receive as a bug report. So the pairing
+    is checked here instead.
+    """
+
+    def test_no_offered_model_forbids_the_editing_this_session_does(self) -> None:
+        from app.agent.config import MODELS
+        from app.agent.session import EDITS_HISTORY_CLIENT_SIDE
+
+        if not EDITS_HISTORY_CLIENT_SIDE:
+            self.skipTest("the session no longer edits history client-side")
+        offenders = [c.model_id for c in MODELS if c.checks_history_edits]
+        self.assertEqual(
+            offenders, [],
+            "These models check that the conversation was not edited between "
+            f"requests, but AgentSession still edits it: {offenders}. Move "
+            "_prune_snapshots to server-side context editing and _trim_history "
+            "to compaction before offering them - see EDITS_HISTORY_CLIENT_SIDE "
+            "in app/agent/session.py for the exact replacements.")
+
+    def test_the_flag_defaults_to_the_safe_answer(self) -> None:
+        # A model added without thinking about this must not silently claim to
+        # be safe to edit around; False means "we do not know that it checks",
+        # which is only sound while nothing in the picker does.
+        from app.agent.config import describe_model
+
+        self.assertFalse(describe_model("claude-unreleased").checks_history_edits)
+
+    def test_pruning_still_does_its_job_on_todays_models(self) -> None:
+        """Guard the saving as well as the constraint.
+
+        If someone reads the warning and simply deletes the pruning, long tasks
+        get quietly more expensive with nothing to show it.
+        """
+        from app.agent.config import ContextLimits
+
+        self.assertGreater(ContextLimits().prune_stale_after_chars, 0)
+        self.assertGreater(ContextLimits().max_history_messages, 0)

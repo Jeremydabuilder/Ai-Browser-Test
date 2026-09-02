@@ -53,6 +53,17 @@ class ModelChoice:
     #: ``thinking={"type": "adaptive"}`` with a 400, so the loop omits the
     #: parameter entirely rather than sending a configuration they refuse.
     supports_adaptive_thinking: bool = True
+    #: True on models that check the conversation was not edited between
+    #: requests ("preserved thinking"): a thinking block's signature records
+    #: the prefix that produced it, and rewriting or dropping an earlier turn
+    #: invalidates every block after it.
+    #:
+    #: ``AgentSession`` does both - see ``EDITS_HISTORY_CLIENT_SIDE`` there -
+    #: so no model with this set can be offered until that changes. A test
+    #: enforces the pairing, because the failure it prevents is an
+    #: intermittent 400 partway through a long task, which is a miserable
+    #: thing to debug from a bug report.
+    checks_history_edits: bool = False
 
 
 #: The models this browser offers. Ordered most-capable first, because that is
