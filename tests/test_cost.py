@@ -431,3 +431,199 @@ class SessionAccountingTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RequestValidityTests(unittest.TestCase):
+    """Every model in the picker must get a request it can actually accept.
+
+    This is the test that was missing. The whole suite drives a scripted
+    transport, so it proved the agent *loop* correct while nothing ever checked
+    that the request being assembled was valid - and `thinking: adaptive` went
+    out to a model that rejects it, which broke every AI feature for anyone who
+    chose the cheapest model in the list.
+    """
+
+    #: What each offered model actually accepts, written down independently of
+    #: the catalogue. Asserting the request matches `choice.supports_*` would
+    #: only prove the code agrees with itself - and the bug *was* a wrong flag,
+    #: which such a test would have happily confirmed. Adding a model to the
+    #: picker without adding it here fails, which is the point.
+    SUPPORT = {
+        #  model id             adaptive thinking, effort
+        "claude-opus-5":        (True, True),
+        "claude-sonnet-5":      (True, True),
+        "claude-fable-5":       (True, True),
+        "claude-haiku-4-5":     (False, False),   # predates both
+    }
+
+    def _payload(self, model_id: str) -> dict:
+        client = _client(AgentConfig(model=model_id))
+        client.send(system="PROMPT", messages=[{"role": "user", "content": "hi"}],
+                    tools=[])
+        return _sent(client)
+
+    def test_every_offered_model_has_its_capabilities_written_down(self) -> None:
+        self.assertEqual(
+            sorted(choice.model_id for choice in MODELS), sorted(self.SUPPORT),
+            "a model was added to the picker without stating what it accepts")
+
+    def test_adaptive_thinking_only_goes_to_models_that_have_it(self) -> None:
+        for model_id, (adaptive, _) in self.SUPPORT.items():
+            with self.subTest(model=model_id):
+                thinking = self._payload(model_id).get("thinking")
+                if adaptive:
+                    self.assertEqual(thinking, {"type": "adaptive"})
+                else:
+                    self.assertIsNone(
+                        thinking, f"{model_id} rejects adaptive thinking")
+
+    def test_effort_only_goes_to_models_that_have_it(self) -> None:
+        for model_id, (_, effort) in self.SUPPORT.items():
+            with self.subTest(model=model_id):
+                payload = self._payload(model_id)
+                if effort:
+                    self.assertIn("output_config", payload)
+                else:
+                    self.assertNotIn("output_config", payload,
+                                     f"{model_id} has no effort control")
+
+    def test_the_catalogue_flags_match_the_facts(self) -> None:
+        for model_id, (adaptive, effort) in self.SUPPORT.items():
+            with self.subTest(model=model_id):
+                choice = describe_model(model_id)
+                self.assertEqual(choice.supports_adaptive_thinking, adaptive)
+                self.assertEqual(choice.supports_effort, effort)
+
+    def test_budget_tokens_is_never_sent(self) -> None:
+        # Removed on every model this browser offers, and a 400 where it is.
+        for choice in MODELS:
+            with self.subTest(model=choice.model_id):
+                thinking = self._payload(choice.model_id).get("thinking") or {}
+                self.assertNotIn("budget_tokens", thinking)
+
+    def test_sampling_parameters_are_never_sent(self) -> None:
+        # temperature / top_p / top_k are rejected on the current models.
+        for choice in MODELS:
+            with self.subTest(model=choice.model_id):
+                payload = self._payload(choice.model_id)
+                for name in ("temperature", "top_p", "top_k"):
+                    self.assertNotIn(name, payload)
+
+    def test_haiku_is_the_model_without_thinking_or_effort(self) -> None:
+        """Pins the specific regression rather than only the general rule.
+
+        If a later release gives Haiku adaptive thinking, this test should be
+        deleted deliberately - not discovered by a user whose agent stopped
+        working.
+        """
+        haiku = describe_model("claude-haiku-4-5")
+        self.assertFalse(haiku.supports_adaptive_thinking)
+        self.assertFalse(haiku.supports_effort)
+        payload = self._payload("claude-haiku-4-5")
+        self.assertNotIn("thinking", payload)
+        self.assertNotIn("output_config", payload)
+        # Caching is orthogonal and must survive.
+        self.assertIn("cache_control", payload)
+
+    def test_an_unknown_model_still_gets_a_sendable_request(self) -> None:
+        payload = self._payload("claude-something-unreleased")
+        self.assertEqual(payload["model"], "claude-something-unreleased")
+        self.assertEqual(payload.get("thinking"), {"type": "adaptive"})
+
+
+class ThinkingDegradationTests(unittest.TestCase):
+    """A 400 about `thinking` must be survivable, like the other two."""
+
+    def _bad_request(self, message: str):
+        import anthropic
+
+        return anthropic.BadRequestError(
+            message, response=_FakeHttpResponse(), body=None)
+
+    def test_a_model_rejecting_adaptive_thinking_falls_back(self) -> None:
+        # Before the fix this raised: `thinking` was not in the retry table, so
+        # unlike effort and cache_control there was nothing to drop and the
+        # task died on a 400 it could have recovered from.
+        client = _client(
+            AgentConfig(),
+            errors=[self._bad_request(
+                "thinking.type: 'adaptive' is not supported for this model")])
+        client.send(system="PROMPT", messages=[], tools=[])
+        first, second = client._client.calls
+        self.assertIn("thinking", first)
+        self.assertNotIn("thinking", second)
+        # Only the rejected parameter is given up.
+        self.assertIn("cache_control", second)
+
+    def test_the_fallback_is_remembered(self) -> None:
+        client = _client(
+            AgentConfig(),
+            errors=[self._bad_request("thinking is not supported")])
+        client.send(system="PROMPT", messages=[], tools=[])
+        client.send(system="PROMPT", messages=[], tools=[])
+        self.assertNotIn("thinking", client._client.calls[-1])
+
+
+class ErrorDetailTests(unittest.TestCase):
+    """The API's explanation must reach the user; the exception must not."""
+
+    def _status_error(self, body):
+        import anthropic
+
+        return anthropic.BadRequestError(
+            "Error code: 400", response=_FakeHttpResponse(), body=body)
+
+    def test_the_api_message_is_lifted_out_of_the_body(self) -> None:
+        from app.agent.claude_client import api_message_of
+
+        exc = self._status_error(
+            {"type": "error",
+             "error": {"type": "invalid_request_error",
+                       "message": "thinking.type: 'adaptive' is unsupported"}})
+        self.assertEqual(api_message_of(exc),
+                         "thinking.type: 'adaptive' is unsupported")
+
+    def test_a_body_without_a_message_yields_nothing(self) -> None:
+        from app.agent.claude_client import api_message_of
+
+        self.assertEqual(api_message_of(self._status_error(None)), "")
+        self.assertEqual(api_message_of(self._status_error({"error": {}})), "")
+        self.assertEqual(api_message_of(object()), "")
+
+    def test_the_api_message_is_bounded(self) -> None:
+        from app.agent.claude_client import api_message_of
+
+        exc = self._status_error({"error": {"message": "x" * 5000}})
+        self.assertLessEqual(len(api_message_of(exc)), 400)
+
+    def test_a_rejected_request_carries_the_reason(self) -> None:
+        import anthropic
+
+        from app.agent.claude_client import ClaudeError
+
+        body = {"error": {"message": "max_tokens: must be at least 1"}}
+        client = _client(AgentConfig())
+        client._client = _Recorder([
+            anthropic.BadRequestError("Error code: 400",
+                                      response=_FakeHttpResponse(), body=body),
+            anthropic.BadRequestError("Error code: 400",
+                                      response=_FakeHttpResponse(), body=body),
+        ])
+        with self.assertRaises(ClaudeError) as caught:
+            client.send(system="P", messages=[], tools=[])
+        self.assertEqual(caught.exception.api_message,
+                         "max_tokens: must be at least 1")
+        # The generic sentence still leads; the detail is the second line.
+        self.assertIn("400", caught.exception.message)
+
+    def test_the_raw_exception_is_never_the_api_message(self) -> None:
+        """`detail` can quote a request header, and a header can carry a key.
+
+        It stays available for a developer and must never be what the UI shows.
+        """
+        from app.agent.claude_client import ClaudeError
+
+        error = ClaudeError("nope", detail="x-api-key: sk-secret",
+                            api_message="max_tokens: must be at least 1")
+        self.assertNotIn("sk-secret", error.api_message)
+        self.assertEqual(error.detail, "x-api-key: sk-secret")

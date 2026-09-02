@@ -49,6 +49,10 @@ class ModelChoice:
     note: str
     #: False when the model has no `effort` control, so the loop omits it.
     supports_effort: bool = True
+    #: False on models predating adaptive thinking. They reject
+    #: ``thinking={"type": "adaptive"}`` with a 400, so the loop omits the
+    #: parameter entirely rather than sending a configuration they refuse.
+    supports_adaptive_thinking: bool = True
 
 
 #: The models this browser offers. Ordered most-capable first, because that is
@@ -65,11 +69,16 @@ MODELS: tuple[ModelChoice, ...] = (
         "thing to try if Opus 5 is costing more than you want to spend.",
     ),
     ModelChoice(
+        # Predates both adaptive thinking and the effort control. Sending
+        # either is a 400, which is what made every AI feature fail for anyone
+        # who picked the cheapest model in the list.
         "claude-haiku-4-5", "Claude Haiku 4.5 (cheapest)",
         "Roughly a tenth of Opus 5's cost per question, and markedly less "
         "accurate: 63% against 92% on Anthropic's knowledge benchmark. Suits "
         "short, checkable tasks - not long browsing sessions where an early "
         "mistake compounds. 200K context, smaller than the others' 1M.",
+        supports_effort=False,
+        supports_adaptive_thinking=False,
     ),
     ModelChoice(
         "claude-fable-5", "Claude Fable 5 (most capable, most expensive)",

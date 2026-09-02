@@ -358,6 +358,7 @@ class AgentPanel(QWidget):
         session.assistant_message.connect(self._on_assistant)
         session.activity.connect(self._on_activity)
         session.error.connect(self._on_error)
+        session.error_detail.connect(self._on_error_detail)
         session.state_changed.connect(self._on_state)
         session.confirmation_required.connect(self.confirmation.ask)
         session.finished.connect(self._on_finished)
@@ -577,6 +578,15 @@ class AgentPanel(QWidget):
     def _on_error(self, text: str) -> None:
         self._failed = True
         self._append("error", text)
+
+    def _on_error_detail(self, text: str) -> None:
+        """What the API said, under what we said about it.
+
+        Quieter than the error itself because it is for the person who wants to
+        fix it rather than the person who just wants to know it broke - but it
+        is the half that names the parameter, and it used to be thrown away.
+        """
+        self._append("system", text)
 
     def _on_state(self, state: str) -> None:
         # A finished task shows the "complete" face only if it actually

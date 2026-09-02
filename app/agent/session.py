@@ -198,6 +198,9 @@ class AgentSession(QObject):
     #: A step appeared or changed state - the panel's checklist.
     step_changed = Signal(object)                # Step
     error = Signal(str)                          # something went wrong
+    #: The API's own sentence about a refused request, when there is one.
+    #: Separate from `error` so existing listeners keep their signature.
+    error_detail = Signal(str)
     finished = Signal()                          # task over (done or stopped)
     confirmation_required = Signal(object)       # ConfirmationRequest
     usage_updated = Signal(object)               # Usage for the current task
@@ -428,11 +431,16 @@ class AgentSession(QObject):
     def _on_failure(self, error: ClaudeError) -> None:
         if self._cancelled:
             return
-        # The message, never the detail: an SDK exception can quote a request
-        # header, and a header can carry a credential.
+        # Never `detail`: an SDK exception can quote a request header, and a
+        # header can carry a credential. `api_message` is the other thing - the
+        # server's own description of the request it refused, lifted out of the
+        # parsed body - and withholding that just leaves the user staring at a
+        # status code with no way to act on it.
         self.trace.record(tracing.TASK_ERROR, kind="model",
                           retryable=error.retryable)
         self.error.emit(error.message)
+        if error.api_message:
+            self.error_detail.emit(error.api_message)
         self._finish()
 
     def _next_tool(self) -> None:

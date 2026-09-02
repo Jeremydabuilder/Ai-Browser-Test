@@ -417,3 +417,43 @@ class ThemeTests(unittest.TestCase):
             self.assertIn("Py<span>Browser</span>", render(NewTabData()))
         finally:
             theme.palette_for = original
+
+
+class RefusedNavigationTests(unittest.TestCase):
+    """Refusing our own action URL is not a page-load failure.
+
+    The new-tab page states an intention by navigating to
+    `pybrowser://newtab/action/...`; the page object declines the navigation and
+    acts on it in Python instead. Chromium reports that decline as
+    loadFinished(False), which the window used to translate into "Page failed to
+    load" - so every quick action that worked correctly also announced that it
+    had failed.
+    """
+
+    def _page(self):
+        from PySide6.QtWidgets import QApplication
+
+        from app.browser.web_page import BrowserPage
+        from tests.qt_profile import shared_profile
+
+        QApplication.instance() or QApplication(sys.argv[:1])
+        return BrowserPage(shared_profile())
+
+    def test_refusing_an_action_is_remembered_once(self) -> None:
+        from PySide6.QtCore import QUrl
+
+        page = self._page()
+        self.assertFalse(page.take_refused_action())
+        accepted = page.acceptNavigationRequest(
+            QUrl("pybrowser://newtab/action/history"),
+            page.NavigationType.NavigationTypeLinkClicked, True)
+        self.assertFalse(accepted, "the action URL was allowed to navigate")
+        self.assertTrue(page.take_refused_action())
+        # Read-and-clear: it answers for one load, not for every load after it.
+        self.assertFalse(page.take_refused_action())
+        page.deleteLater()
+
+    def test_an_ordinary_failed_load_is_not_marked_refused(self) -> None:
+        page = self._page()
+        self.assertFalse(page.take_refused_action())
+        page.deleteLater()

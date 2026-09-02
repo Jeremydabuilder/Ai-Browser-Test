@@ -69,11 +69,38 @@ class ClaudeError(RuntimeError):
     key is wrong", which is the only distinction the UI needs to make.
     """
 
-    def __init__(self, message: str, *, retryable: bool = False, detail: str = "") -> None:
+    def __init__(self, message: str, *, retryable: bool = False, detail: str = "",
+                 api_message: str = "") -> None:
         super().__init__(message)
         self.message = message
         self.retryable = retryable
+        #: The whole exception, for a developer. Never shown: an SDK exception
+        #: can quote a request header, and a header can carry a credential.
         self.detail = detail
+        #: Just the API's own sentence about the request, lifted out of the
+        #: parsed error body - no headers, no request echo, nothing from the
+        #: credential. Safe to put in front of a person, and the difference
+        #: between "Claude rejected the request (400)" and knowing which
+        #: parameter it objected to.
+        self.api_message = api_message
+
+
+def api_message_of(exc: Any) -> str:
+    """The API's own explanation, from the parsed error body.
+
+    Deliberately not ``str(exc)``: that carries whatever the SDK chose to put
+    in the exception, which can include request metadata. The body's
+    ``error.message`` is the server describing the request it refused, and
+    nothing else.
+    """
+    body = getattr(exc, "body", None)
+    if isinstance(body, dict):
+        error = body.get("error")
+        if isinstance(error, dict):
+            message = error.get("message")
+            if isinstance(message, str) and message.strip():
+                return message.strip()[:400]
+    return ""
 
 
 class ClaudeTransport(Protocol):
@@ -181,6 +208,24 @@ class ClaudeClient:
             control["ttl"] = "1h"
         return [{"type": "text", "text": system, "cache_control": control}]
 
+    def _thinking_param(self) -> dict[str, Any]:
+        """``thinking``, on the models that have it.
+
+        Adaptive thinking arrived with the 4.6 generation: it is the whole
+        configuration there, and `budget_tokens` is rejected. On anything older
+        the reverse holds - adaptive is rejected - so the parameter is omitted
+        and the model simply answers without extended thinking.
+
+        Sending it unconditionally is what broke every AI feature for anyone
+        who selected Haiku 4.5: the request 400d, and unlike `effort` and
+        `cache_control` there was nothing in the retry table to drop, so it
+        failed for good.
+        """
+        if ("thinking" in self._unsupported
+                or not self.model_choice.supports_adaptive_thinking):
+            return {}
+        return {"thinking": {"type": "adaptive"}}
+
     def _extra_params(self) -> dict[str, Any]:
         """Optional top-level parameters, omitted where unsupported."""
         params: dict[str, Any] = {}
@@ -218,9 +263,7 @@ class ClaudeClient:
                 system=self._system_param(system),
                 messages=messages,
                 tools=tools,
-                # Claude Opus 5 thinks by default and rejects budget_tokens;
-                # adaptive is the whole configuration.
-                thinking={"type": "adaptive"},
+                **self._thinking_param(),
                 **self._extra_params(),
             )
             try:
@@ -251,6 +294,10 @@ class ClaudeClient:
         for name, needles in (
             ("cache_control", ("cache_control", "cache control", "prompt caching")),
             ("output_config", ("output_config", "effort")),
+            # A model the catalogue does not know about - one set through the
+            # environment, or added by a later release - can refuse adaptive
+            # thinking too. Dropping it costs quality, not correctness.
+            ("thinking", ("thinking",)),
         ):
             if name in self._unsupported:
                 continue
@@ -315,6 +362,7 @@ class ClaudeClient:
                 "Claude returned a server error." if retryable
                 else f"Claude rejected the request ({exc.status_code}).",
                 retryable=retryable, detail=str(exc),
+                api_message=api_message_of(exc),
             ) from exc
 
         return self._normalise(response)

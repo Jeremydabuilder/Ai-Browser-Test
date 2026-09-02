@@ -30,6 +30,7 @@ from app.agent.session import AgentSession  # noqa: E402
 from app.browser.controller import BrowserController  # noqa: E402
 from app.browser.tab_manager import TabManager  # noqa: E402
 from app.ui.agent_panel import QUICK_ACTIONS, AgentPanel  # noqa: E402
+from app.ui.mascot import MascotState  # noqa: E402
 from tests.fake_claude import ScriptedClaude, says  # noqa: E402
 from tests.qt_profile import shared_profile  # noqa: E402
 
@@ -274,3 +275,44 @@ class PyCompanionTests(PanelTests):
         self.assertIn(panel.companion.text(), COMPANION_TEXT.values())
         self.assertNotIn("IGNORE", panel.companion.text())
         self.assertNotIn("IGNORE", panel.mascot.toolTip())
+
+
+class ErrorReportingTests(unittest.TestCase):
+    """A 400 must arrive with the reason attached, not just a status code."""
+
+    def setUp(self) -> None:
+        self.tabs = TabManager(_profile, "about:blank")
+        self.browser = BrowserController(self.tabs)
+        self.session = AgentSession(self.browser, ScriptedClaude([]), AgentConfig())
+        self.panel = AgentPanel(self.session)
+
+    def tearDown(self) -> None:
+        self.session.shutdown()
+        self.panel.deleteLater()
+        for tab in self.tabs.tabs():
+            tab.page.deleteLater()
+        self.tabs.deleteLater()
+        _app.processEvents()
+
+    def _transcript(self) -> str:
+        return self.panel.transcript.toPlainText()
+
+    def test_the_api_explanation_is_shown_under_the_error(self) -> None:
+        # Before this, the panel said "Claude rejected the request (400)." and
+        # the half naming the offending parameter was thrown away.
+        self.session.error.emit("Claude rejected the request (400).")
+        self.session.error_detail.emit("thinking.type: 'adaptive' is unsupported")
+        text = self._transcript()
+        self.assertIn("Claude rejected the request (400).", text)
+        self.assertIn("thinking.type", text)
+
+    def test_an_error_with_no_detail_shows_only_the_message(self) -> None:
+        self.session.error.emit("Stopping: the task reached its limit.")
+        self.assertIn("Stopping:", self._transcript())
+
+    def test_an_error_still_marks_the_task_failed(self) -> None:
+        self.session.error.emit("Claude rejected the request (400).")
+        self.session.error_detail.emit("max_tokens: must be at least 1")
+        self.assertTrue(self.panel._failed)
+        # And a failed task must never wear the success face.
+        self.assertNotEqual(self.panel.mascot.state(), MascotState.COMPLETE)

@@ -305,3 +305,48 @@ class QuickActionTests(LiveReconfigurationTests):
         _app.processEvents()
         self.assertEqual(self.window._side_panel.mascot.width(),
                          theme.METRICS.mascot_panel_small)
+
+
+class RefusedNavigationStatusTests(unittest.TestCase):
+    """The status bar must not call a working quick action a failure.
+
+    Driven through the real window rather than a copy of its logic: the bug was
+    one line in `_on_load_finished`, and a test that reimplements that line
+    would have passed while the browser was still wrong.
+    """
+
+    def setUp(self) -> None:
+        self.database = Database(database_path())
+        self.window = MainWindow(_profile, self.database)
+        self.window.resize(1000, 700)
+
+    def tearDown(self) -> None:
+        for tab in self.window.tabs.tabs():
+            tab.page.deleteLater()
+        self.window.close()
+        self.window.deleteLater()
+        self.database.close()
+        _app.processEvents()
+
+    def _status(self) -> str:
+        return self.window._status_label.text()
+
+    def test_a_refused_action_leaves_the_status_bar_empty(self) -> None:
+        tab = self.window.tabs.current_tab()
+        # Stand where Chromium stands: the page refused one of our action URLs,
+        # so the load "failed" and the tab knows why.
+        tab._refused_action = True
+        self.window._on_load_finished(False)
+        self.assertEqual(self._status(), "")
+
+    def test_a_genuinely_failed_load_still_says_so(self) -> None:
+        tab = self.window.tabs.current_tab()
+        tab._refused_action = False
+        self.window._on_load_finished(False)
+        self.assertEqual(self._status(), "Page failed to load")
+
+    def test_a_successful_load_clears_the_status(self) -> None:
+        tab = self.window.tabs.current_tab()
+        tab._refused_action = False
+        self.window._on_load_finished(True)
+        self.assertEqual(self._status(), "")

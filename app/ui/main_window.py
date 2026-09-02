@@ -451,7 +451,10 @@ class MainWindow(QMainWindow):
             self.nav_bar.set_url_text(url_utils.display_text(tab.url()))
             self.nav_bar.set_bookmarked(self.bookmarks.contains(tab.url().toString()))
             self._on_title_changed(tab.title())
-        self._show_status("" if ok else "Page failed to load")
+        # A refused action URL is not a failed page: the new-tab page asks for
+        # things by navigating, and we decline the navigation on purpose.
+        refused = tab is not None and tab.load_was_refused_action
+        self._show_status("" if ok or refused else "Page failed to load")
         # Feed the address bar's autocomplete from recent history.
         self.nav_bar.set_completions([entry.url for entry in self.history.recent(50)])
 

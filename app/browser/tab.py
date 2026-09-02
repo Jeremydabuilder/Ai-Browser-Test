@@ -49,6 +49,7 @@ class BrowserTab(QWidget):
         self._profile = profile
         self._loading = False
         self._load_ok = True
+        self._refused_action = False
         self._last_error: LoadError | None = None
 
         self._view = QWebEngineView(self)
@@ -85,7 +86,22 @@ class BrowserTab(QWidget):
     def _on_load_finished(self, ok: bool) -> None:
         self._loading = False
         self._load_ok = ok
+        # Asked here rather than by the window, because the flag belongs to
+        # this load and the next one must not see it.
+        self._refused_action = self._page.take_refused_action()
         self.load_finished.emit(ok)
+
+    @property
+    def load_was_refused_action(self) -> bool:
+        """The last load ended because we refused one of our own action URLs.
+
+        Not a failure: the new-tab page states an intention by navigating to
+        `pybrowser://newtab/action/...`, we decline the navigation and act on
+        it in Python. Chromium reports the decline as loadFinished(False), and
+        the window used to put "Page failed to load" in the status bar every
+        time a quick action worked correctly.
+        """
+        return self._refused_action
 
     def _on_load_error(self, error: LoadError) -> None:
         """Chromium renders its own error page; we add a readable explanation."""

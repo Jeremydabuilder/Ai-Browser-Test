@@ -44,6 +44,10 @@ class BrowserPage(QWebEnginePage):
         # page, tab and tab manager.
         self.new_page_factory = None
         self._last_error: LoadError | None = None
+        #: Set when we refuse one of our own action URLs. Chromium reports a
+        #: refused navigation as loadFinished(False), which is indistinguishable
+        #: from a real failure unless we remember that we caused it.
+        self._refused_action = False
 
         self.linkHovered.connect(self.link_hovered_changed)
         # loadingChanged carries QWebEngineLoadingInfo, which is the only place
@@ -60,6 +64,15 @@ class BrowserPage(QWebEnginePage):
     @property
     def last_error(self) -> LoadError | None:
         return self._last_error
+
+    def take_refused_action(self) -> bool:
+        """True once, if the load that just ended was an action we refused.
+
+        Read-and-clear, because it answers a question about one specific
+        loadFinished and must not colour the next one.
+        """
+        refused, self._refused_action = self._refused_action, False
+        return refused
 
     def _on_loading_changed(self, info: QWebEngineLoadingInfo) -> None:
         status = info.status()
@@ -102,6 +115,7 @@ class BrowserPage(QWebEnginePage):
             # outright (SIGTRAP), not merely misbehaves. Deferring by one tick
             # lets the engine finish rejecting this navigation first.
             QTimer.singleShot(0, lambda: self.internal_action.emit(name, params))
+            self._refused_action = True
             return False
         return super().acceptNavigationRequest(url, nav_type, is_main_frame)
 
