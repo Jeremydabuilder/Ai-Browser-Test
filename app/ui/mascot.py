@@ -270,6 +270,16 @@ _MOTION: dict[str, _Motion] = {
 
 _FRAME_MS = 50          # 20fps: smooth enough for motion this small
 
+#: How much Py swells under the cursor. Small enough to be felt rather than
+#: seen - the point is that he noticed, not that he reacted.
+_HOVER_SWELL = 0.03
+
+#: How long one state dissolves into the next. Long enough to read as a change
+#: of mind rather than a flicker, short enough that a run through
+#: thinking -> reading -> working never feels like it is waiting for the
+#: animation. Four frames.
+_FADE_MS = 200
+
 
 class Mascot(QLabel):
     """Py, at one size, in one state.
@@ -298,6 +308,10 @@ class Mascot(QLabel):
         self._blinking = 0
         self._movie: QMovie | None = None
         self._still: QPixmap | None = None
+        #: The previous state's artwork, held only while it dissolves out.
+        self._fade_from: QPixmap | None = None
+        self._fade_left = 0
+        self._hovered = False
 
         self.setFixedSize(QSize(self._size, self._height))
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -338,6 +352,17 @@ class Mascot(QLabel):
         self._settle.stop()
         if state in (MascotState.COMPLETE, MascotState.STUCK):
             self._settle.start(REACTION_MS)
+
+        # Hold the outgoing artwork so the two can be dissolved rather than
+        # swapped. Captured here because _load() is about to replace _still,
+        # and skipped when a movie was playing - QMovie owns its own painting,
+        # and there is no still frame to hold.
+        if self._movie is None and self._still is not None and not reduced_motion():
+            self._fade_from = self._still
+            self._fade_left = _FADE_MS
+        else:
+            self._fade_from = None
+            self._fade_left = 0
 
         self._load()
         self._render()
@@ -440,7 +465,7 @@ class Mascot(QLabel):
             self._frames.stop()
             return
         motion = _MOTION.get(self._state, _Motion())
-        if motion.period_ms or motion.blinks:
+        if motion.period_ms or motion.blinks or self._fade_left:
             if not self._frames.isActive():
                 self._frames.start()
         else:
@@ -448,6 +473,11 @@ class Mascot(QLabel):
 
     def _advance(self) -> None:
         self._elapsed += _FRAME_MS
+        if self._fade_left:
+            self._fade_left = max(0, self._fade_left - _FRAME_MS)
+            if not self._fade_left:
+                self._fade_from = None
+                self._sync_motion()     # a motionless state can stop again
         motion = _MOTION.get(self._state, _Motion())
         if motion.blinks:
             if self._blinking:
@@ -474,7 +504,60 @@ class Mascot(QLabel):
         base = self._still
         if base is None:
             return
-        self.setPixmap(self._animated_frame(base))
+        frame = self._animated_frame(base)
+        if self._fade_from is not None:
+            frame = self._dissolve(self._fade_from, frame)
+        self.setPixmap(frame)
+
+    def enterEvent(self, event) -> None:  # noqa: N802
+        """Py notices the cursor. A whisper of scale, nothing more.
+
+        Deliberately not a head turn or a look-at-the-mouse: those need
+        artwork, and a mascot that tracks the pointer stops being a status
+        indicator and starts being a distraction.
+        """
+        super().enterEvent(event)
+        self._set_hovered(True)
+
+    def leaveEvent(self, event) -> None:  # noqa: N802
+        super().leaveEvent(event)
+        self._set_hovered(False)
+
+    def _set_hovered(self, hovered: bool) -> None:
+        if hovered == self._hovered:
+            return
+        self._hovered = hovered
+        if not reduced_motion():
+            self._render()
+
+    def _dissolve(self, outgoing: QPixmap, incoming: QPixmap) -> QPixmap:
+        """Cross-fade one state's artwork into the next.
+
+        Composed onto a canvas the size of the whole widget, with both frames
+        centred, because the two states are not the same shape: a figure with
+        both arms up is wider than one standing still, and blending them at
+        their own sizes would slide Py sideways as they swap.
+
+        The incoming frame is the fully animated one, so a dissolve into
+        COMPLETE fades in while the celebration is already rising.
+        """
+        ratio = incoming.devicePixelRatio() or 1.0
+        canvas = QPixmap(int(self._size * ratio), int(self._height * ratio))
+        canvas.setDevicePixelRatio(ratio)
+        canvas.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(canvas)
+        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+        share = 1.0 - self._fade_left / _FADE_MS
+        for pixmap, opacity in ((outgoing, 1.0 - share), (incoming, share)):
+            if opacity <= 0.0:
+                continue
+            painter.setOpacity(min(1.0, opacity))
+            width = pixmap.width() / (pixmap.devicePixelRatio() or 1.0)
+            height = pixmap.height() / (pixmap.devicePixelRatio() or 1.0)
+            painter.drawPixmap(int((self._size - width) / 2),
+                               int((self._height - height) / 2), pixmap)
+        painter.end()
+        return canvas
 
     def _animated_frame(self, base: QPixmap) -> QPixmap:
         """Apply this frame's motion to a still Py.
@@ -499,7 +582,7 @@ class Mascot(QLabel):
         """
         motion = _MOTION.get(self._state, _Motion())
         if reduced_motion() or not (motion.period_ms or motion.entry_ms
-                                    or self._blinking):
+                                    or self._blinking or self._hovered):
             return base
 
         import math
@@ -511,7 +594,8 @@ class Mascot(QLabel):
 
         offset = motion.bob * wave - motion.entry_rise * arrival
         lean = motion.lean * wave
-        scale = 1.0 + motion.pulse * (wave + 1) / 2 + motion.entry_pop * arrival
+        scale = (1.0 + motion.pulse * (wave + 1) / 2 + motion.entry_pop * arrival
+                 + (_HOVER_SWELL if self._hovered else 0.0))
 
         canvas = QPixmap(base.size())
         canvas.setDevicePixelRatio(base.devicePixelRatio())

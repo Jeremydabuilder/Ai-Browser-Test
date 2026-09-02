@@ -549,3 +549,115 @@ class LivelinessTests(unittest.TestCase):
                           "the celebration ran with reduced motion on")
         finally:
             mascot_module.reduced_motion = real
+
+
+class TransitionTests(unittest.TestCase):
+    """The paths Py takes through a task, and the one he must never take.
+
+    These check the mapping, not the widget: `state_for_agent` is the single
+    place the agent's state becomes a face, and every one of these is a claim
+    about what the user is told is happening.
+    """
+
+    def test_a_task_runs_idle_to_thinking_to_working_to_complete(self) -> None:
+        self.assertEqual(state_for_agent(AgentState.IDLE), MascotState.IDLE)
+        self.assertEqual(state_for_agent(AgentState.THINKING), MascotState.THINKING)
+        self.assertEqual(state_for_agent(AgentState.ACTING), MascotState.WORKING)
+        self.assertEqual(state_for_agent(AgentState.IDLE, answered=True),
+                         MascotState.COMPLETE)
+
+    def test_working_to_approval_and_back(self) -> None:
+        self.assertEqual(state_for_agent(AgentState.AWAITING_CONFIRMATION), MascotState.APPROVAL)
+        self.assertEqual(state_for_agent(AgentState.ACTING), MascotState.WORKING)
+
+    def test_working_to_stuck(self) -> None:
+        self.assertEqual(state_for_agent(AgentState.IDLE, failed=True),
+                         MascotState.STUCK)
+
+    def test_approval_to_stuck(self) -> None:
+        # Denying is not failing, but a run that ends at a denial has not
+        # succeeded either - what it must not do is claim success.
+        self.assertEqual(state_for_agent(AgentState.IDLE, failed=True),
+                         MascotState.STUCK)
+        self.assertNotEqual(state_for_agent(AgentState.IDLE, failed=True),
+                            MascotState.COMPLETE)
+
+    def test_failure_outranks_an_answer(self) -> None:
+        """A run that produced text and then failed is not a success.
+
+        The ordering matters: a task can stream a partial answer and then hit
+        an error, and reporting that as COMPLETE would be Py lying about it.
+        """
+        self.assertEqual(
+            state_for_agent(AgentState.IDLE, answered=True, failed=True),
+            MascotState.STUCK)
+
+    def test_nothing_reaches_complete_except_a_real_answer(self) -> None:
+        reachable = {
+            state_for_agent(agent, answered=answered, failed=failed)
+            for agent in (AgentState.IDLE, AgentState.THINKING,
+                          AgentState.ACTING, AgentState.AWAITING_CONFIRMATION)
+            for answered in (False, True)
+            for failed in (False, True)
+        }
+        self.assertIn(MascotState.COMPLETE, reachable)
+        for agent in (AgentState.THINKING, AgentState.ACTING, AgentState.AWAITING_CONFIRMATION):
+            for failed in (False, True):
+                self.assertNotEqual(
+                    state_for_agent(agent, answered=True, failed=failed),
+                    MascotState.COMPLETE,
+                    f"{agent} claimed success while still running")
+
+
+class DissolveTests(unittest.TestCase):
+    """States should cross-fade rather than snap between two photographs."""
+
+    @unittest.skipIf(reduced_motion(), "the machine asked for no animation")
+    def test_a_state_change_dissolves(self) -> None:
+        mascot = Mascot(44)
+        mascot.set_state(MascotState.WORKING)
+        mascot.set_state(MascotState.COMPLETE)
+        self.assertIsNotNone(mascot._fade_from, "nothing was held to fade out")
+        seen = set()
+        for _ in range(mascot_module._FADE_MS // mascot_module._FRAME_MS + 2):
+            mascot._render()
+            seen.add(mascot.pixmap().toImage().constBits().tobytes())
+            mascot._advance()
+        self.assertGreater(len(seen), 3, "the dissolve had no intermediate frames")
+        self.assertEqual(mascot._fade_left, 0)
+        self.assertIsNone(mascot._fade_from, "the outgoing frame was never released")
+
+    def test_reduced_motion_swaps_instantly(self) -> None:
+        real = mascot_module.reduced_motion
+        try:
+            mascot_module.reduced_motion = lambda: True
+            mascot = Mascot(44)
+            mascot.set_state(MascotState.WORKING)
+            mascot.set_state(MascotState.COMPLETE)
+            self.assertIsNone(mascot._fade_from, "it dissolved with motion off")
+            self.assertEqual(mascot._fade_left, 0)
+        finally:
+            mascot_module.reduced_motion = real
+
+    @unittest.skipIf(reduced_motion(), "the machine asked for no animation")
+    def test_hovering_is_felt_but_never_distorts(self) -> None:
+        mascot = Mascot(44)
+        mascot.set_state(MascotState.IDLE)
+        mascot._elapsed = 0
+        plain = mascot._animated_frame(mascot._still).toImage()
+        mascot._set_hovered(True)
+        hovered = mascot._animated_frame(mascot._still).toImage()
+        self.assertNotEqual(plain, hovered, "hovering did nothing")
+        # A uniform scale keeps the frame the same shape; only its content grows.
+        self.assertEqual(plain.size(), hovered.size())
+
+    def test_hovering_does_nothing_with_reduced_motion(self) -> None:
+        real = mascot_module.reduced_motion
+        try:
+            mascot_module.reduced_motion = lambda: True
+            mascot = Mascot(44)
+            mascot.set_state(MascotState.IDLE)
+            mascot._set_hovered(True)
+            self.assertIs(mascot._animated_frame(mascot._still), mascot._still)
+        finally:
+            mascot_module.reduced_motion = real

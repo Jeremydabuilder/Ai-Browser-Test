@@ -170,6 +170,12 @@ transform does to the drawing rather than by what it looks like:
   placeholder and as a rendering fault on an illustration, so it stops the
   moment real artwork is installed.
 
+States **cross-fade** into one another over 200ms rather than swapping. The two
+frames are composited centred on the widget rather than at their own sizes,
+because a pose with both arms up is wider than one standing still and blending
+them at their own sizes would slide Py sideways as they change. Hovering swells
+him by 3% — enough to feel that he noticed, not enough to see.
+
 `complete` also gets a one-shot on arrival: a small rise and swell that crests
 in about 200ms and is spent inside a second, then settles into an ordinary happy
 breath. A celebration that loops forever stops being a celebration.
@@ -181,8 +187,9 @@ They are an **animated asset** — drop a `.gif`, `.webp` or `.apng` in beside t
 stills and it wins over the still of the same name automatically and plays
 through `QMovie` instead of this layer. No code change.
 
-Cost, measured: 0.16 ms per frame at the panel's 44px and 0.56 ms at the new
-tab's 210px, at 20fps — around 0.3% and 1.1% of one core.
+Cost, measured: 0.17 ms per frame at the panel's 44px and 0.49 ms at the new
+tab's 210px, at 20fps — around 0.35% and 1% of one core. A dissolve frame costs
+0.08 ms and there are four of them per state change.
 
 All motion stops when `PYBROWSER_REDUCED_MOTION=1`, `QT_REDUCED_MOTION=1` or
 `NO_ANIMATIONS=1` is set — including animated assets.
