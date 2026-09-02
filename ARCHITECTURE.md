@@ -310,6 +310,55 @@ the goal is the user's own words, so user authority is the correct level.
 in the briefing would smuggle untrusted text in at user authority, which is
 exactly what the trust boundary in `app/agent/prompt.py` exists to prevent.
 
+### Findings
+
+A Mission accumulates what Py *worked out*, not just where it went, so the user
+can come back tomorrow and read the mission instead of the transcript.
+
+`mission_save_finding` is the only tool that writes anything outside the
+browser, and it is deliberately the narrowest thing that could work: one
+required string, an optional tab id, no mission id, no query, no store handle.
+`ToolRegistry` is handed the Mission service and uses exactly one method on it,
+so "the model cannot write anywhere except the active mission" is a property of
+what was passed in rather than of the model behaving itself.
+
+Four rules carry the weight:
+
+**The source is resolved from the real browser.** There is no url parameter. A
+model that hallucinates a source - or a page that talks it into claiming one -
+cannot forge attribution, because the URL and title are read from the tab. An
+explicit `tab_id` that does not resolve is an error, never a fallback to
+whatever is in front: a wrong citation is worse than a missing one.
+
+**Sources are Mission pages.** Finding something on a page files that page as a
+source, so there is one concept rather than two. `mission_findings.page_id` is
+`ON DELETE SET NULL`: losing a source costs the attribution, never the
+discovery.
+
+**Deduplication is a constraint, not a hope.** `finding_key()` normalises case,
+whitespace and trailing punctuation; `UNIQUE(mission_id, key)` does the rest.
+Exact-after-normalisation only - a similarity threshold that silently swallows
+a genuinely new finding is a worse failure than a near-duplicate the user can
+delete, and it cannot be tested deterministically. An edit moves the key with
+the text; an edit that would collide with another finding is refused rather
+than merged, because merging deletes a row the user did not ask to lose.
+
+**Over-length findings are refused, not truncated.** Cutting "$129 until
+Friday" down to "$129" stores a fact with its qualifier removed. One more tool
+call is cheaper than a wrong fact in the user's board.
+
+Findings are **not** sent to the model. They are model-authored prose about
+untrusted page content, and replaying them would give page-derived text a
+second life at conversation authority. A page can still induce a *false*
+finding - that is a display-integrity problem, visible and one click to delete,
+not an escalation - but it cannot become an instruction, reach the system
+prompt, or enter the Mission briefing.
+
+`LOCAL_WRITE_TOOLS` is how the confirmation gate classifies it: exempt for a
+stated reason (no page, no network, no spend, one click to undo), and
+deliberately *not* filed under `READ_ONLY_TOOLS`, which would be a lie. The
+fail-closed default for unclassified tools is untouched.
+
 Mission status (`active`/`paused`/`completed`) and Py's mascot state
 (`IDLE`/`READING`/.../`STUCK`) are different concepts and are never wired
 together: one says what the user is working on, the other what the assistant is
@@ -319,7 +368,7 @@ doing this second.
 
 `app/storage/database.py` keeps `_SCHEMA` (what a new profile gets) and
 `_MIGRATIONS` (how an existing one catches up), applied by `user_version`.
-Missions were the first step, v1 -> v2. Each step is idempotent, runs in one
+Missions were the first step, v1 -> v2; findings the second, v2 -> v3. Each step is idempotent, runs in one
 transaction, and is never edited once shipped - a mistake is fixed by adding
 the next step, because someone's profile has already run the old one. A profile
 stamped *newer* than this build is left alone rather than downgraded.

@@ -24,7 +24,10 @@ from __future__ import annotations
 from PySide6.QtCore import QObject, Signal
 
 from app.missions.model import (
+    MAX_FINDING_CHARS,
+    MAX_FINDINGS_PER_MISSION,
     Mission,
+    MissionFinding,
     MissionPage,
     MissionStatus,
     PageSource,
@@ -49,7 +52,7 @@ class MissionService(QObject):
     #: The active Mission changed: a different one, or None. Carries the
     #: Mission (with pages) or None.
     active_changed = Signal(object)
-    #: The active Mission's pages changed.
+    #: The active Mission's pages or findings changed.
     pages_changed = Signal(object)      # Mission
     #: The set of Missions changed - one was created, renamed, or its status
     #: moved. Carries the Mission that changed, or None for a bulk change.
@@ -207,13 +210,10 @@ class MissionService(QObject):
 
     def _is_active_tab(self, tab_id: int) -> bool:
         """Is ``tab_id`` the tab the user is currently looking at?"""
-        if tab_id is None or tab_id < 0 or self._controller is None:
+        if tab_id is None or tab_id < 0:
             return False
-        try:
-            return any(entry.get("active") and entry.get("tab_id") == tab_id
-                       for entry in self._controller.list_tabs())
-        except RuntimeError:                 # the window is going away
-            return False
+        active = self._active_tab_entry()
+        return active is not None and active.get("tab_id") == tab_id
 
     # -- live tabs -------------------------------------------------------
     #
@@ -262,6 +262,102 @@ class MissionService(QObject):
         self._tabs.new_tab(page.url)
         return True
 
+    # -- findings --------------------------------------------------------
+    #
+    # The one thing the agent may write. Everything about how it is written is
+    # decided here, not by the model: the Mission it lands in, the source it is
+    # attributed to, the length, and whether it is a duplicate.
+
+    def save_finding(self, text: str, tab_id: int | None = None) -> dict:
+        """Record a discovery against the active Mission.
+
+        Returns a small dict the tool layer turns into a tool result. Never
+        raises: a failed save is a normal outcome the model should read and
+        correct, not an exception.
+
+        Two properties this method exists to guarantee:
+
+        **The source is resolved from the real browser, never from the model.**
+        There is no url parameter. A model that hallucinates a source - or a
+        page that talks it into claiming one - cannot forge attribution,
+        because the URL and title are read from the tab itself.
+
+        **An explicit tab_id that does not resolve is an error, not a
+        fallback.** Quietly attributing a finding to whatever happens to be in
+        front would point the user at the wrong page, and a wrong citation is
+        worse than a missing one.
+        """
+        mission = self._active
+        if mission is None:
+            return {"status": "no_mission"}
+
+        page_id, url, title = None, "", ""
+        if tab_id is not None:
+            resolved = self._tab_entry(tab_id)
+            if resolved is None:
+                return {"status": "unknown_tab", "tab_id": tab_id}
+            url, title = resolved.get("url", ""), resolved.get("title", "")
+        else:
+            active = self._active_tab_entry()
+            if active is not None:
+                url, title = active.get("url", ""), active.get("title", "")
+
+        if url and is_associable(url):
+            # Finding something on a page makes it a source. Recording it here
+            # keeps sources and Mission pages one concept rather than two.
+            page = self._store.add_page(mission.id, url, title, PageSource.READ)
+            page_id = page.id if page is not None else None
+
+        outcome, finding = self._store.add_finding(mission.id, text, page_id)
+        self._refresh()
+        result = {"status": outcome}
+        if finding is not None:
+            result["finding_id"] = finding.id
+            result["source"] = finding.source_domain
+        if outcome == self._store.TOO_LONG:
+            result["limit"] = MAX_FINDING_CHARS
+        if outcome == self._store.FULL:
+            result["limit"] = MAX_FINDINGS_PER_MISSION
+        return result
+
+    def edit_finding(self, finding_id: int, text: str) -> str:
+        """Reword a finding. Returns the store's outcome string."""
+        outcome, _finding = self._store.edit_finding(finding_id, text)
+        self._refresh()
+        self.missions_changed.emit(self._active)
+        return outcome
+
+    def delete_finding(self, finding_id: int) -> bool:
+        removed = self._store.remove_finding(finding_id)
+        if removed:
+            self._refresh()
+        return removed
+
+    def source_page(self, finding: MissionFinding) -> MissionPage | None:
+        """The Mission page a finding came from, if it still has one."""
+        if finding.page_id is None or self._active is None:
+            return None
+        return next((p for p in self._active.pages if p.id == finding.page_id), None)
+
+    # -- tab lookup ------------------------------------------------------
+    def _tab_entry(self, tab_id: int) -> dict | None:
+        """One open tab by id, or None. Never falls back to another tab."""
+        if self._controller is None or not isinstance(tab_id, int):
+            return None
+        try:
+            return next((t for t in self._controller.list_tabs()
+                         if t.get("tab_id") == tab_id), None)
+        except RuntimeError:
+            return None
+
+    def _active_tab_entry(self) -> dict | None:
+        if self._controller is None:
+            return None
+        try:
+            return next((t for t in self._controller.list_tabs() if t.get("active")), None)
+        except RuntimeError:
+            return None
+
     # -- what the agent is told ------------------------------------------
     def briefing(self) -> str:
         """The one sentence the agent is given about the active Mission.
@@ -290,4 +386,5 @@ class MissionService(QObject):
                 f"My goal: {mission.goal}\n\n"
                 "Keep this goal in mind for the requests that follow. "
                 "Pages you open or read will be filed under this mission "
-                "automatically.")
+                "automatically, and you can record what you learn with "
+                "mission_save_finding.")

@@ -15,22 +15,172 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QFontMetrics
 from PySide6.QtWidgets import (
     QApplication,
+    QDialog,
+    QDialogButtonBox,
     QFrame,
     QHBoxLayout,
     QInputDialog,
     QLabel,
+    QMessageBox,
+    QPlainTextEdit,
     QPushButton,
     QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
 
-from app.missions.model import Mission, MissionPage, MissionStatus
+from app.missions.model import (
+    MAX_FINDING_CHARS,
+    Mission,
+    MissionFinding,
+    MissionPage,
+    MissionStatus,
+)
 from app.ui import theme
 
-#: Pages listed before the rest are summarised. A Mission panel is a reminder,
-#: not a file manager.
-VISIBLE_PAGES = 6
+#: Findings listed before the rest are summarised. Findings lead the card:
+#: they are what the Mission is actually for.
+VISIBLE_FINDINGS = 4
+
+#: Pages listed before the rest are summarised. Fewer than the findings above
+#: them, on purpose - a Mission panel is a reminder, not a file manager.
+VISIBLE_PAGES = 3
+
+#: A finding is folded to this many lines in the panel. The whole text stays in
+#: the tooltip and in the editor - this is display, never storage.
+FINDING_LINES = 2
+
+
+class _ClickableLabel(QLabel):
+    """A label that can be clicked.
+
+    Used instead of a QPushButton because these need to wrap: a finding is a
+    sentence, and a button will not break one across lines.
+    """
+
+    clicked = Signal()
+
+    def __init__(self, text: str, parent: QWidget | None = None) -> None:
+        super().__init__(text, parent)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+
+    def mouseReleaseEvent(self, event) -> None:      # noqa: N802 - Qt naming
+        if event.button() == Qt.MouseButton.LeftButton and self.rect().contains(
+                event.position().toPoint()):
+            self.clicked.emit()
+        super().mouseReleaseEvent(event)
+
+
+class _TwoLineLabel(_ClickableLabel):
+    """A clickable label that occupies exactly one or two lines, never more.
+
+    Qt's own word wrap was the obvious choice and the wrong one here: a wrapped
+    label's height depends on its width, a plain QWidget does not forward that
+    question to its layout, and the result was findings drawn on top of each
+    other. Wrapping the text here instead makes the height something this
+    widget decides rather than something the layout has to discover - so four
+    findings always fit, at any panel width, and a long one is folded with an
+    ellipsis instead of pushing the card into a scrolling dashboard.
+    """
+
+    LINES = FINDING_LINES
+
+    def __init__(self, text: str, parent: QWidget | None = None) -> None:
+        super().__init__(text, parent)
+        self._full = " ".join((text or "").split())
+        self.setWordWrap(False)
+        self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+        self.setMinimumWidth(60)
+        self._apply()
+
+    def _apply(self) -> None:
+        metrics = QFontMetrics(self.font())
+        width = max(self.width(), 60)
+        lines: list[str] = []
+        remaining = self._full
+        while remaining and len(lines) < self.LINES:
+            if metrics.horizontalAdvance(remaining) <= width:
+                lines.append(remaining)
+                remaining = ""
+                break
+            if len(lines) == self.LINES - 1:
+                lines.append(metrics.elidedText(
+                    remaining, Qt.TextElideMode.ElideRight, width))
+                remaining = ""
+                break
+            # Longest prefix that fits, broken at a space where one exists.
+            cut = len(remaining)
+            while cut > 1 and metrics.horizontalAdvance(remaining[:cut]) > width:
+                cut -= 1
+            space = remaining.rfind(" ", 0, cut + 1)
+            if space > 0:
+                cut = space
+            lines.append(remaining[:cut].rstrip())
+            remaining = remaining[cut:].lstrip()
+        self.setText("\n".join(lines))
+        self.setFixedHeight(metrics.lineSpacing() * max(len(lines), 1) + 2)
+
+    def resizeEvent(self, event) -> None:            # noqa: N802 - Qt naming
+        super().resizeEvent(event)
+        self._apply()
+
+
+class _FindingRow(QWidget):
+    """One discovery, with where it came from.
+
+    Two click targets and no other chrome: the text opens the editor, the
+    domain opens the page. A hover-revealed delete button would be a 16px
+    target in a 300px panel, and a permanent one would put a column of crosses
+    down the side of the user's own notes.
+    """
+
+    edit_requested = Signal(object)      # MissionFinding
+    source_requested = Signal(object)    # MissionFinding
+
+    def __init__(self, finding: MissionFinding, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.finding = finding
+        c = parent._colours
+        m = theme.METRICS
+        # A word-wrapped QLabel reports its height as a function of its width,
+        # and a plain QWidget does not pass that question on to its layout.
+        # Without this the row keeps the height of a single line and the second
+        # line is drawn over the row below it.
+        self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Minimum)
+
+        row = QHBoxLayout(self)
+        row.setContentsMargins(0, 3, 0, 3)
+        row.setSpacing(m.space_2)
+
+        tick = QFrame(self)
+        tick.setFixedWidth(2)
+        tick.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Expanding)
+        tick.setStyleSheet(f"background:{c.accent}; border:none;"
+                           f" border-radius:1px;")
+        row.addWidget(tick)
+
+        body = QVBoxLayout()
+        body.setContentsMargins(0, 0, 0, 0)
+        body.setSpacing(1)
+
+        self.text = _TwoLineLabel(finding.text, self)
+        self.text.setStyleSheet(f"color:{c.text}; font-size:{m.text_sm}px;")
+        self.text.setToolTip(f"{finding.text}\n\nClick to edit or delete")
+        self.text.clicked.connect(lambda: self.edit_requested.emit(self.finding))
+        body.addWidget(self.text)
+
+        domain = finding.source_domain
+        if domain:
+            # Secondary by design: the discovery is the content, the source is
+            # the footnote.
+            self.source = _ClickableLabel(_elide(domain, 30), self)
+            self.source.setStyleSheet(f"color:{c.muted}; font-size:{m.text_xs}px;")
+            self.source.setToolTip(f"{finding.source_title or domain}\n"
+                                   f"{finding.source_url}\n\nClick to open this page")
+            self.source.clicked.connect(
+                lambda: self.source_requested.emit(self.finding))
+            body.addWidget(self.source)
+        row.addLayout(body, 1)
 
 
 class _ElidedLabel(QLabel):
@@ -159,6 +309,23 @@ class MissionCard(QFrame):
         self.goal.setStyleSheet(f"color:{c.muted}; font-size:{m.text_sm}px;")
         outer.addWidget(self.goal)
 
+        # Findings first: the discoveries are what the Mission is for, the
+        # pages are how it got them.
+        self.findings_label = QLabel("", self)
+        self.findings_label.setStyleSheet(
+            f"color:{c.disabled}; font-size:{m.text_xs}px; font-weight:600;"
+            " letter-spacing:0.06em;")
+        outer.addWidget(self.findings_label)
+
+        self._findings_box = QVBoxLayout()
+        self._findings_box.setSpacing(0)
+        outer.addLayout(self._findings_box)
+
+        self.more_findings = QLabel("", self)
+        self.more_findings.setStyleSheet(f"color:{c.disabled}; font-size:{m.text_xs}px;")
+        self.more_findings.hide()
+        outer.addWidget(self.more_findings)
+
         self.pages_label = QLabel("", self)
         self.pages_label.setStyleSheet(
             f"color:{c.disabled}; font-size:{m.text_xs}px; font-weight:600;"
@@ -220,17 +387,49 @@ class MissionCard(QFrame):
             f"color:{tone}; font-size:{m.text_xs}px; font-weight:700;"
             " letter-spacing:0.08em;")
 
+        self._render_findings(mission)
         self._render_pages(mission)
         self.show()
 
-    def _render_pages(self, mission: Mission) -> None:
-        while self._pages_box.count():
-            item = self._pages_box.takeAt(0)
+    @staticmethod
+    def _clear(box) -> None:
+        while box.count():
+            item = box.takeAt(0)
             widget = item.widget()
             if widget is not None:
                 widget.setParent(None)
                 widget.deleteLater()
 
+    def _render_findings(self, mission: Mission) -> None:
+        self._clear(self._findings_box)
+        findings = list(mission.findings)
+        if not findings:
+            self.findings_label.setText("FINDINGS")
+            empty = QLabel("What Py works out for this mission will be "
+                           "collected here.", self)
+            empty.setWordWrap(True)
+            empty.setStyleSheet(
+                f"color:{self._colours.disabled}; font-size:{theme.METRICS.text_sm}px;")
+            self._findings_box.addWidget(empty)
+            self.more_findings.hide()
+            return
+
+        self.findings_label.setText(f"FINDINGS \u00b7 {len(findings)}")
+        for finding in findings[:VISIBLE_FINDINGS]:
+            row = _FindingRow(finding, self)
+            row.edit_requested.connect(self._edit_finding)
+            row.source_requested.connect(self._open_source)
+            self._findings_box.addWidget(row)
+
+        hidden = len(findings) - VISIBLE_FINDINGS
+        if hidden > 0:
+            self.more_findings.setText(f"and {hidden} more")
+            self.more_findings.show()
+        else:
+            self.more_findings.hide()
+
+    def _render_pages(self, mission: Mission) -> None:
+        self._clear(self._pages_box)
         pages = list(mission.pages)
         if not pages:
             self.pages_label.setText("PAGES")
@@ -273,6 +472,39 @@ class MissionCard(QFrame):
         if ok and title.strip():
             self._service.rename(mission.id, title)
 
+    def _edit_finding(self, finding: MissionFinding) -> None:
+        """Reword or remove one finding.
+
+        A dialog rather than inline editing: at 300px an inline editor has to
+        solve focus, commit and escape in a row that is already two lines, and
+        the payoff is one saved click on an action nobody performs often.
+        """
+        dialog = _FindingDialog(finding, self)
+        outcome = dialog.exec()
+        if outcome == _FindingDialog.DELETE:
+            self._service.delete_finding(finding.id)
+            return
+        if outcome != QDialog.DialogCode.Accepted:
+            return
+        text = dialog.text().strip()
+        if not text or text == finding.text:
+            return
+        result = self._service.edit_finding(finding.id, text)
+        if result == "duplicate":
+            QMessageBox.information(
+                self, "Already recorded",
+                "This mission already has a finding that says the same thing, "
+                "so this one was left as it was.")
+        elif result == "too_long":
+            QMessageBox.information(
+                self, "Too long",
+                f"A finding can be up to {MAX_FINDING_CHARS} characters.")
+
+    def _open_source(self, finding: MissionFinding) -> None:
+        page = self._service.source_page(finding)
+        if page is not None:
+            self._service.show(page)
+
     def _pause(self) -> None:
         self._service.pause()
         self.changed.emit()
@@ -280,6 +512,45 @@ class MissionCard(QFrame):
     def _complete(self) -> None:
         self._service.complete()
         self.changed.emit()
+
+
+class _FindingDialog(QDialog):
+    """Edit one finding, or delete it. Delete lives here rather than as a
+    second control in the row - see the note on _FindingRow."""
+
+    DELETE = 2      # a third outcome alongside Accepted and Rejected
+
+    def __init__(self, finding: MissionFinding, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Finding")
+        m = theme.METRICS
+        layout = QVBoxLayout(self)
+        layout.setSpacing(m.space_3)
+
+        self._edit = QPlainTextEdit(finding.text, self)
+        self._edit.setMinimumWidth(360)
+        self._edit.setFixedHeight(90)
+        layout.addWidget(self._edit)
+
+        if finding.source_url:
+            source = QLabel(f"From {finding.source_domain}", self)
+            source.setToolTip(finding.source_url)
+            source.setStyleSheet(f"color:{theme.palette_for(QApplication.instance()).muted};"
+                                 f" font-size:{m.text_xs}px;")
+            layout.addWidget(source)
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel,
+            self)
+        remove = buttons.addButton("Delete", QDialogButtonBox.ButtonRole.DestructiveRole)
+        remove.setProperty("kind", "danger")
+        remove.clicked.connect(lambda: self.done(self.DELETE))
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def text(self) -> str:
+        return self._edit.toPlainText()
 
 
 def _elide(text: str, limit: int) -> str:

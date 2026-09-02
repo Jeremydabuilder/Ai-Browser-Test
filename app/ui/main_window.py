@@ -591,7 +591,7 @@ class MainWindow(QMainWindow):
 
         if self._agent_session is None:
             self._agent_session, reason = build_session(
-                self.controller, self, self.settings)
+                self.controller, self, self.settings, self.missions)
             if self._agent_session is None:
                 self._agent_unavailable = True
                 self._show_status(f"AI agent unavailable: {reason}")

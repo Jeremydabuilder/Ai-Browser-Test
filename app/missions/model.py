@@ -120,6 +120,63 @@ class MissionPage:
         return self.title.strip() or self.domain or self.url
 
 
+#: Longest finding we will store. Not a truncation point: a finding over this
+#: is refused with an error telling the model to shorten it. Silently cutting
+#: "$129 until Friday" down to "$129" would store a fact with its qualifier
+#: removed, which is worse than spending one more tool call.
+MAX_FINDING_CHARS = 200
+
+#: Findings one Mission may hold. A Mission is a task, not a notebook; past
+#: this the panel stops being readable and the board stops being a summary.
+MAX_FINDINGS_PER_MISSION = 40
+
+
+def finding_key(text: str) -> str:
+    """The identity of a finding, for "have we already recorded this?".
+
+    Deliberately exact-after-normalisation: case, whitespace and trailing
+    punctuation are noise, and nothing else is. No fuzzy matching - a
+    similarity threshold that silently swallows a genuinely new finding is a
+    worse failure than a near-duplicate the user can delete in one click, and
+    it cannot be tested deterministically.
+
+    Same reasoning as page_key: one function, so tightening it later is one
+    edit rather than a hunt through the UI.
+    """
+    return " ".join((text or "").split()).strip(" .,;:!-\u2013\u2014").lower()
+
+
+@dataclass(frozen=True)
+class MissionFinding:
+    """One thing Py discovered, and where it came from.
+
+    The text is written by the model, never copied from a page: Py reads
+    untrusted page content and writes a sentence about it. The *source* is not
+    the model's to claim - it is resolved from the real tab at save time. See
+    MissionService.save_finding.
+    """
+
+    id: int
+    mission_id: int
+    text: str
+    key: str = ""
+    #: The mission_pages row this came from, or None if the page has since been
+    #: forgotten. Losing a source costs the attribution, never the discovery.
+    page_id: int | None = None
+    created_at: str = ""
+    updated_at: str = ""
+    #: Filled in by the store when it reads the joined page row.
+    source_url: str = ""
+    source_title: str = ""
+
+    @property
+    def source_domain(self) -> str:
+        if not self.source_url:
+            return ""
+        return MissionPage(id=0, mission_id=self.mission_id,
+                           url=self.source_url).domain
+
+
 @dataclass(frozen=True)
 class Mission:
     """A goal, and the pages that served it."""
@@ -132,6 +189,7 @@ class Mission:
     updated_at: str = ""
     #: Filled by the store when the caller asked for them; empty otherwise.
     pages: tuple[MissionPage, ...] = field(default_factory=tuple)
+    findings: tuple[MissionFinding, ...] = field(default_factory=tuple)
 
     @property
     def is_active(self) -> bool:
@@ -276,3 +334,9 @@ def clean_title(title: str) -> str:
 
 def clean_goal(goal: str) -> str:
     return " ".join((goal or "").split())[:MAX_GOAL]
+
+
+def clean_finding(text: str) -> str:
+    """Normalise a finding's whitespace. Does NOT shorten it - see the note on
+    MAX_FINDING_CHARS. Length is the caller's to check and refuse."""
+    return " ".join((text or "").split())

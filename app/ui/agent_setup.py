@@ -224,7 +224,7 @@ class ApiKeyDialog(QDialog):
         self.accept()
 
 
-def build_session(browser, parent=None, settings=None):
+def build_session(browser, parent=None, settings=None, missions=None):
     """Create an AgentSession if the agent can run, else return (None, reason).
 
     Every failure path here is soft. A missing SDK or credential must leave a
@@ -251,7 +251,8 @@ def build_session(browser, parent=None, settings=None):
                       "Tools \u2192 Configure AI Agent")
     try:
         config = AgentConfig.from_environment(settings)
-        return AgentSession(browser, ClaudeClient(credential, config), config, parent), ""
+        return AgentSession(browser, ClaudeClient(credential, config), config,
+                            parent, missions=missions), ""
     except BaseException as exc:  # noqa: BLE001
         # Nothing the agent does may take the browser down with it.
         if isinstance(exc, (KeyboardInterrupt, SystemExit)):

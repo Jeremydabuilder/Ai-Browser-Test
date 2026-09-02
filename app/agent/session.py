@@ -217,11 +217,14 @@ class AgentSession(QObject):
         transport: ClaudeTransport,
         config: AgentConfig | None = None,
         parent: QObject | None = None,
+        missions=None,
     ) -> None:
         super().__init__(parent)
         self.config = config or AgentConfig()
         self._browser = browser
-        self._tools = ToolRegistry(browser, self.config.limits)
+        # `missions` is passed straight through to the registry, which needs
+        # one method from it. The session itself stays Mission-ignorant.
+        self._tools = ToolRegistry(browser, self.config.limits, missions)
 
         # -- agent state, deliberately separate from browser state -------
         self._messages: list[dict[str, Any]] = []
@@ -603,8 +606,18 @@ class AgentSession(QObject):
         if outcome.immediate is not None:
             import json
 
-            self.trace.record(tracing.TOOL_SUCCEEDED, tool=call.name)
-            self._update_step(StepState.DONE)
+            # A tool that finished at once can still have refused. Reading the
+            # payload keeps the checklist honest: a refused save used to show a
+            # tick beside "Noting ..." for something that was never saved.
+            refused = outcome.immediate.get("ok") is False
+            self.trace.record(
+                tracing.TOOL_FAILED if refused else tracing.TOOL_SUCCEEDED, tool=call.name)
+            if refused:
+                error = outcome.immediate.get("error") or {}
+                self._update_step(StepState.FAILED, str(error.get("code", "")).lower()
+                                  .replace("_", " ") or "refused")
+            else:
+                self._update_step(StepState.DONE)
             self._record_result(call.id, json.dumps(outcome.immediate, ensure_ascii=False),
                                 tool_name=call.name)
             self._advance()

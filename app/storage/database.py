@@ -25,7 +25,7 @@ import threading
 from pathlib import Path
 from typing import Any, Iterable, Sequence
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS history (
@@ -76,6 +76,23 @@ CREATE TABLE IF NOT EXISTS mission_pages (
 );
 CREATE INDEX IF NOT EXISTS idx_mission_pages_mission
     ON mission_pages(mission_id, last_seen DESC);
+
+-- What Py discovered, and which page it came from. page_id is ON DELETE SET
+-- NULL rather than CASCADE: losing a source costs the attribution, never the
+-- discovery. UNIQUE(mission_id, key) is what makes deduplication a constraint
+-- rather than a hopeful check.
+CREATE TABLE IF NOT EXISTS mission_findings (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    mission_id INTEGER NOT NULL REFERENCES missions(id) ON DELETE CASCADE,
+    page_id    INTEGER          REFERENCES mission_pages(id) ON DELETE SET NULL,
+    text       TEXT NOT NULL,
+    key        TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(mission_id, key)
+);
+CREATE INDEX IF NOT EXISTS idx_mission_findings_mission
+    ON mission_findings(mission_id, created_at);
 """
 
 #: How a profile at version N becomes a profile at version N+1.
@@ -117,6 +134,21 @@ _MIGRATIONS: dict[int, str] = {
     );
     CREATE INDEX IF NOT EXISTS idx_mission_pages_mission
         ON mission_pages(mission_id, last_seen DESC);
+    """,
+    # v2 -> v3: Mission findings.
+    2: """
+    CREATE TABLE IF NOT EXISTS mission_findings (
+        id         INTEGER PRIMARY KEY AUTOINCREMENT,
+        mission_id INTEGER NOT NULL REFERENCES missions(id) ON DELETE CASCADE,
+        page_id    INTEGER          REFERENCES mission_pages(id) ON DELETE SET NULL,
+        text       TEXT NOT NULL,
+        key        TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        UNIQUE(mission_id, key)
+    );
+    CREATE INDEX IF NOT EXISTS idx_mission_findings_mission
+        ON mission_findings(mission_id, created_at);
     """,
 }
 

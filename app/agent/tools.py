@@ -27,6 +27,10 @@ from app.agent.config import ContextLimits
 from app.browser.controller import BrowserController, ScrollDirection
 from app.browser.futures import BrowserFuture
 from app.browser.results import ActionResult
+# Data only - model.py holds no Qt, no database and no browser. The limit is
+# imported rather than restated so the schema the model reads and the rule the
+# store enforces can never drift apart.
+from app.missions.model import MAX_FINDING_CHARS
 
 # ---------------------------------------------------------------------------
 # Untrusted content marking
@@ -187,14 +191,81 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
            "text_contains": {"type": "string", "description": "Substring of the page text."},
            "timeout_ms": {"type": "integer", "description": "Defaults to 10000."},
            "tab_id": _TAB}),
+
+    # The only tool that writes anything outside the browser. It reaches one
+    # method on the Mission service - not a database, not a query, not a
+    # mission id - so the model can record a discovery and can do nothing else.
+    _tool("mission_save_finding",
+          "Record one useful discovery against the mission the user is working on. "
+          "Save a fact worth having tomorrow - a price, a specification, a comparison, "
+          "a repeated complaint - written so it still makes sense on its own. "
+          "Do not save progress commentary, plans, or a summary of what you are about "
+          "to do. Findings are shown to the user, not fed back to you. "
+          f"Maximum {MAX_FINDING_CHARS} characters; a longer one is refused rather "
+          "than shortened, so write it short. Saving the same finding twice updates "
+          "the first rather than adding a second.",
+          {"text": {"type": "string",
+                    "description": "The discovery, in one self-contained sentence. "
+                                   "Include the actual fact, not just that a page "
+                                   "looked promising."},
+           "tab_id": {"type": "integer",
+                      "description": "The tab the finding came from, for attribution. "
+                                     "Omit to use the tab in front. An id that is not "
+                                     "open is an error, never a fallback."}},
+          ["text"]),
 ]
 
 TOOL_NAMES = {schema["name"] for schema in TOOL_SCHEMAS}
+
+
+def _handler_map(schemas: list[dict[str, Any]] | None = None) -> dict[str, str]:
+    """Tool name -> the ToolRegistry method that runs it.
+
+    This used to be `getattr(self, "_run_" + name[len("browser_"):])`, which
+    assumed every tool name began with `browser_` and sliced off a fixed eight
+    characters. `mission_save_finding` survives that by pure luck - "mission_"
+    is also eight characters long - and the next namespace would not. Slicing
+    at the namespace separator instead of at a number makes the mapping mean
+    what it says.
+
+    Built once at import, with a collision check, so adding a tool whose
+    handler name clashes with another's fails loudly here rather than quietly
+    running the wrong code.
+    """
+    mapping: dict[str, str] = {}
+    for schema in schemas if schemas is not None else TOOL_SCHEMAS:
+        name = schema["name"]
+        _prefix, _, rest = name.partition("_")
+        if not rest:
+            raise AssertionError(f"tool name {name!r} needs a namespace prefix")
+        handler = f"_run_{rest}"
+        if handler in mapping.values():
+            clash = next(k for k, v in mapping.items() if v == handler)
+            raise AssertionError(
+                f"tools {clash!r} and {name!r} both map to {handler!r}")
+        mapping[name] = handler
+    return mapping
+
+
+_HANDLERS = _handler_map()
 
 #: Tools that change only which tab is in front - no page effect, nothing to
 #: confirm. Listed explicitly so `assess` can fail closed on anything else.
 _UNCLASSIFIED_SAFE = {"browser_select_tab", "browser_close_tab",
                       "browser_back", "browser_forward", "browser_reload"}
+
+#: Tools that write to the user's own local records and touch no web page.
+#:
+#: Deliberately NOT part of READ_ONLY_TOOLS: saving a finding is a write, and
+#: calling it read-only would put a lie in the code for the next person to
+#: build on. It is exempt from confirmation for a stated reason rather than by
+#: category - it sends nothing anywhere, spends nothing, changes no page, and
+#: is one click for the user to undo. A modal per recorded fact would make the
+#: feature unusable.
+#:
+#: The fail-closed default in `assess` is untouched: a tool in neither this set
+#: nor any other is still treated as a write.
+LOCAL_WRITE_TOOLS = {"mission_save_finding"}
 
 #: Tools that only read. Used to skip confirmation checks entirely.
 READ_ONLY_TOOLS = {
@@ -202,6 +273,65 @@ READ_ONLY_TOOLS = {
     "browser_find_elements",
     "browser_wait_for_element", "browser_scroll", "browser_scroll_to_element",
 }
+
+
+def _error(code: str, message: str, *, hint: str = "") -> dict[str, Any]:
+    """A refused tool call, in the same shape as every other tool error.
+
+    Same keys as `encode` produces for a failed ActionResult, so the model
+    reads one error format across the whole tool surface rather than two.
+    """
+    payload: dict[str, Any] = {
+        "ok": False,
+        "error": {"code": code, "message": message, "recoverable": True},
+    }
+    if hint:
+        payload["hint"] = hint
+    return payload
+
+
+def _finding_activity(text: str) -> str:
+    """What the step checklist says while a finding is saved.
+
+    Shows the finding, elided, because "Saving a finding" tells the user
+    nothing about what Py thought was worth keeping.
+    """
+    condensed = " ".join(text.split())
+    if len(condensed) > 60:
+        condensed = condensed[:59].rstrip() + "\u2026"
+    return f'Noting "{condensed}"'
+
+
+#: Why a save was refused, and what the model should do about it. Each hint is
+#: an instruction the model can actually follow, not a restatement.
+_FINDING_ERRORS: dict[str, tuple[str, str, str]] = {
+    "no_mission": ("NO_ACTIVE_MISSION",
+                   "There is no mission active, so there is nothing to record against.",
+                   "Answer the user normally. Do not try again."),
+    "too_long": ("FINDING_TOO_LONG",
+                 "That finding is longer than the limit and was NOT saved.",
+                 "Rewrite it shorter, keeping the fact and any qualifier that "
+                 "changes its meaning, and call the tool again."),
+    "full": ("MISSION_FULL",
+             "This mission already holds the maximum number of findings.",
+             "Stop recording findings and finish the task."),
+    "no_text": ("EMPTY_FINDING", "A finding needs some text.",
+                "Write the discovery as one sentence and try again."),
+    "unknown_tab": ("UNKNOWN_TAB",
+                    "There is no open tab with that id, so the finding was NOT "
+                    "saved - it would have been attributed to the wrong page.",
+                    "Call browser_list_tabs for a current id, or omit tab_id to "
+                    "use the tab in front."),
+}
+
+
+def _finding_error(result: dict) -> dict:
+    code, message, hint = _FINDING_ERRORS.get(
+        result.get("status", ""),
+        ("FINDING_FAILED", "The finding could not be saved.", "Carry on with the task."))
+    if "limit" in result:
+        message = f"{message} The limit is {result['limit']}."
+    return _error(code, message, hint=hint)
 
 
 # ---------------------------------------------------------------------------
@@ -230,9 +360,19 @@ class ToolError(ValueError):
 class ToolRegistry:
     """Validates tool arguments and calls BrowserController."""
 
-    def __init__(self, browser: BrowserController, limits: ContextLimits | None = None) -> None:
+    def __init__(self, browser: BrowserController, limits: ContextLimits | None = None,
+                 missions=None) -> None:
+        """``missions`` is the Mission service, or None when there is not one.
+
+        Typed loosely on purpose: this class needs exactly one method from it,
+        ``save_finding(text, tab_id)``. It gets no store, no database handle
+        and no way to name a mission - so "the model cannot write anywhere
+        except the active mission" is a property of what was passed in, not of
+        the model behaving itself.
+        """
         self._browser = browser
         self._limits = limits or ContextLimits()
+        self._missions = missions
 
     # -- argument helpers ------------------------------------------------
     @staticmethod
@@ -281,6 +421,11 @@ class ToolRegistry:
         control.
         """
         if name in READ_ONLY_TOOLS:
+            return {"level": "normal", "reasons": [], "requires_confirmation": False}
+        if name in LOCAL_WRITE_TOOLS:
+            # A local, reversible write to the user's own mission board. It
+            # never reaches the browser's safety layer because there is no
+            # page, URL or element for that layer to judge.
             return {"level": "normal", "reasons": [], "requires_confirmation": False}
         ref = args.get("ref")
         tab_id = self._tab(args) if isinstance(args.get("tab_id"), int) else None
@@ -366,6 +511,8 @@ class ToolRegistry:
         try:
             if name == "browser_navigate":
                 return f"Opening {self._string(args, 'url')}"
+            if name == "mission_save_finding":
+                return _finding_activity(self._string(args, "text"))
             if name == "browser_get_page":
                 return "Reading the page"
             if name == "browser_get_page_text":
@@ -419,10 +566,39 @@ class ToolRegistry:
             raise ToolError(f"Unknown tool '{name}'.")
         if not isinstance(args, dict):
             raise ToolError("Tool arguments must be an object.")
-        handler: Callable[[dict], ToolOutcome] = getattr(self, f"_run_{name[len('browser_'):]}")
+        handler: Callable[[dict], ToolOutcome] = getattr(self, _HANDLERS[name])
         return handler(args)
 
     # Each handler below is deliberately thin - validate, call, return.
+    def _run_save_finding(self, args: dict) -> ToolOutcome:
+        """Record one discovery against the active Mission.
+
+        Every failure here is a normal tool result the model can read and act
+        on - too long, no mission, unknown tab - rather than an exception. The
+        model's next move differs in each case, so the code says which.
+        """
+        text = self._string(args, "text", required=True)
+        tab_id = self._int(args, "tab_id", None)
+        if self._missions is None:
+            return ToolOutcome(immediate=_error(
+                "NO_MISSION", "Missions are not available in this window.",
+                hint="Carry on with the task; nothing needs recording."),
+                activity="Saving a finding")
+
+        result = self._missions.save_finding(text, tab_id)
+        status = result.get("status")
+        if status in ("saved", "updated"):
+            source = result.get("source") or ""
+            return ToolOutcome(
+                # Deliberately terse: the text is already in the conversation
+                # because the model just wrote it, and echoing it back would
+                # pay for it twice.
+                immediate={"ok": True, "status": status,
+                           "finding_id": result.get("finding_id"),
+                           **({"source": source} if source else {})},
+                activity=_finding_activity(text))
+        return ToolOutcome(immediate=_finding_error(result), activity="Saving a finding")
+
     def _run_get_page(self, args: dict) -> ToolOutcome:
         return ToolOutcome(future=self._browser.get_page_structure(
             self._tab(args),

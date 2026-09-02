@@ -14,13 +14,18 @@ the one hot path, and it is still only as frequent as the agent's actions.
 from __future__ import annotations
 
 from app.missions.model import (
+    MAX_FINDING_CHARS,
+    MAX_FINDINGS_PER_MISSION,
     MAX_TITLE,
     Mission,
+    MissionFinding,
     MissionPage,
     MissionStatus,
     PageSource,
     clean_goal,
     clean_title,
+    clean_finding,
+    finding_key,
     is_associable,
     now,
     page_key,
@@ -64,7 +69,8 @@ class MissionStore:
         if row is None:
             return None
         pages = tuple(self.pages(mission_id)) if with_pages else ()
-        return Mission(**dict(row), pages=pages)
+        found = tuple(self.findings(mission_id)) if with_pages else ()
+        return Mission(**dict(row), pages=pages, findings=found)
 
     def recent(self, limit: int = 20, *, with_pages: bool = False) -> list[Mission]:
         """Missions, most recently touched first."""
@@ -73,7 +79,8 @@ class MissionStore:
             "FROM missions ORDER BY updated_at DESC, id DESC LIMIT ?", (limit,))
         return [
             Mission(**dict(row),
-                    pages=tuple(self.pages(row["id"])) if with_pages else ())
+                    pages=tuple(self.pages(row["id"])) if with_pages else (),
+                    findings=tuple(self.findings(row["id"])) if with_pages else ())
             for row in rows
         ]
 
@@ -180,6 +187,126 @@ class MissionStore:
         """Forget one page. Note that closing its tab does NOT call this:
         a Mission remembers where it went, whether or not the tab is still open."""
         self._db.execute("DELETE FROM mission_pages WHERE id = ?", (page_id,))
+
+    # -- findings --------------------------------------------------------
+    #
+    # A finding is model-authored prose about untrusted page content. This
+    # class stores it; it never decides what deserves to be one, and it never
+    # sees a web page.
+
+    #: What add_finding did, so the caller can tell the model and the user
+    #: apart from each other without parsing a sentence.
+    SAVED = "saved"
+    UPDATED = "updated"          # same key already present, text refreshed
+    TOO_LONG = "too_long"
+    FULL = "full"
+    NO_TEXT = "no_text"
+
+    def add_finding(self, mission_id: int, text: str,
+                    page_id: int | None = None) -> tuple[str, MissionFinding | None]:
+        """Record a discovery. Returns (outcome, finding).
+
+        Over-length findings are REFUSED, not truncated. Cutting
+        "$129 until Friday" down to "$129" would store a fact with its
+        qualifier removed, and a wrong fact in the user's board is worse than
+        one extra tool call.
+        """
+        text = clean_finding(text)
+        if not text:
+            return self.NO_TEXT, None
+        if len(text) > MAX_FINDING_CHARS:
+            return self.TOO_LONG, None
+
+        key = finding_key(text)
+        existing = self.find_finding(mission_id, key)
+        if existing is not None:
+            # The same discovery again. Refresh the wording and the source -
+            # a second sighting on a better page is worth keeping - but not
+            # created_at, because this is the same finding.
+            self._db.execute(
+                "UPDATE mission_findings SET text = ?, page_id = COALESCE(?, page_id), "
+                "updated_at = ? WHERE id = ?",
+                (text, page_id, now(), existing.id))
+            self._touch_mission(mission_id)
+            return self.UPDATED, self.get_finding(existing.id)
+
+        if self.finding_count(mission_id) >= MAX_FINDINGS_PER_MISSION:
+            return self.FULL, None
+        stamp = now()
+        cursor = self._db.execute(
+            "INSERT INTO mission_findings "
+            "(mission_id, page_id, text, key, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (mission_id, page_id, text, key, stamp, stamp))
+        if cursor is None:
+            return self.NO_TEXT, None
+        self._touch_mission(mission_id)
+        return self.SAVED, self.get_finding(int(cursor.lastrowid))
+
+    def edit_finding(self, finding_id: int, text: str) -> tuple[str, MissionFinding | None]:
+        """Reword a finding, keeping its dedup key in step with its text.
+
+        If the new wording collides with another finding in the same Mission,
+        the edit is REFUSED rather than resolved by guesswork. Merging would
+        silently delete a row the user did not ask to lose, and letting it
+        through would violate UNIQUE. Refusing is the only outcome that
+        destroys nothing and is the same every time.
+        """
+        text = clean_finding(text)
+        if not text:
+            return self.NO_TEXT, None
+        if len(text) > MAX_FINDING_CHARS:
+            return self.TOO_LONG, None
+        current = self.get_finding(finding_id)
+        if current is None:
+            return self.NO_TEXT, None
+
+        key = finding_key(text)
+        clash = self.find_finding(current.mission_id, key)
+        if clash is not None and clash.id != finding_id:
+            return "duplicate", clash
+        self._db.execute(
+            "UPDATE mission_findings SET text = ?, key = ?, updated_at = ? WHERE id = ?",
+            (text, key, now(), finding_id))
+        self._touch_mission(current.mission_id)
+        return self.UPDATED, self.get_finding(finding_id)
+
+    #: Every finding, with its source page joined on. A LEFT JOIN because
+    #: page_id is nullable by design.
+    _FINDING_COLUMNS = (
+        "SELECT f.id, f.mission_id, f.text, f.key, f.page_id, "
+        "       f.created_at, f.updated_at, "
+        "       COALESCE(p.url, '') AS source_url, "
+        "       COALESCE(p.title, '') AS source_title "
+        "FROM mission_findings f "
+        "LEFT JOIN mission_pages p ON p.id = f.page_id ")
+
+    def findings(self, mission_id: int) -> list[MissionFinding]:
+        rows = self._db.query(
+            self._FINDING_COLUMNS + "WHERE f.mission_id = ? ORDER BY f.created_at, f.id",
+            (mission_id,))
+        return [MissionFinding(**dict(row)) for row in rows]
+
+    def get_finding(self, finding_id: int) -> MissionFinding | None:
+        row = self._db.query_one(self._FINDING_COLUMNS + "WHERE f.id = ?", (finding_id,))
+        return MissionFinding(**dict(row)) if row else None
+
+    def find_finding(self, mission_id: int, key: str) -> MissionFinding | None:
+        row = self._db.query_one(
+            self._FINDING_COLUMNS + "WHERE f.mission_id = ? AND f.key = ?",
+            (mission_id, key))
+        return MissionFinding(**dict(row)) if row else None
+
+    def finding_count(self, mission_id: int) -> int:
+        row = self._db.query_one(
+            "SELECT COUNT(*) AS n FROM mission_findings WHERE mission_id = ?",
+            (mission_id,))
+        return int(row["n"]) if row else 0
+
+    def remove_finding(self, finding_id: int) -> bool:
+        cursor = self._db.execute("DELETE FROM mission_findings WHERE id = ?",
+                                  (finding_id,))
+        return bool(cursor is not None and cursor.rowcount)
 
     def _touch_mission(self, mission_id: int) -> None:
         self._db.execute("UPDATE missions SET updated_at = ? WHERE id = ?",
