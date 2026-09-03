@@ -219,7 +219,7 @@ class LiveReconfigurationTests(unittest.TestCase):
     def test_a_broken_credential_lookup_does_not_stop_the_browser(self) -> None:
         broken = self.window._current_credential
         try:
-            self.window._current_credential = lambda: None
+            self.window._current_credential = lambda provider=None: None
             self.window._apply_agent_settings()     # must not raise
         finally:
             self.window._current_credential = broken

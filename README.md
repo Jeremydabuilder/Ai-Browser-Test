@@ -58,7 +58,7 @@ nss alsa-lib`.
 ## Tests
 
 ```bash
-python -m unittest discover -s tests -v          # 1058 tests
+python -m unittest discover -s tests -v          # 1109 tests
 python scripts/smoke_test.py                     # headless end-to-end run
 python scripts/feature_check.py                  # 28-point feature checklist
 python scripts/agent_demo.py                     # the research demo, offline
@@ -390,6 +390,16 @@ secret — the same dialog, **Tools → Configure AI Agent…**) and it is sent 
 the `anthropic-workspace-id` header on every request. An ordinary key needs
 none of this and nothing changes for it. `ANTHROPIC_WORKSPACE_ID` sets the
 same thing from the environment.
+
+**Testing for free.** Anthropic is the default, but **Tools → Configure AI
+Agent…** also offers **Groq** and **OpenRouter**, both of which have a free
+tier — pick a provider from the dropdown, paste that provider's key, and
+choose a model from its live model list. The agent loop (tools, Missions,
+the approval gate) behaves identically no matter which provider is active;
+see [`docs/ai_agent.md`](docs/ai_agent.md) §3a for how. A model that cannot
+reliably support tool calling is flagged rather than silently offered, and
+**Test Connection** in that same dialog runs one real request to prove a key
+and model actually work before you start a task with them.
 
 Open the panel with **Ctrl+Shift+A** (or Tools → Show AI Agent).
 

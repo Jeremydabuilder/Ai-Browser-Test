@@ -1,7 +1,9 @@
 """Drive a real conversation per model, with the browser's exact parameters.
 
-    python scripts/api_preflight.py                 # every model in the picker
+    python scripts/api_preflight.py                 # every Anthropic model in the picker
     python scripts/api_preflight.py claude-opus-5   # just one
+    python scripts/api_preflight.py --provider groq llama-3.3-70b-versatile
+    python scripts/api_preflight.py --provider openrouter some/model-id
 
 Answers the question the test suite cannot: *will the API accept what this
 browser sends?* Every agent test drives a scripted transport, which proves the
@@ -31,7 +33,7 @@ sys.path.insert(0, ROOT)
 
 from app.agent.claude_client import ClaudeClient, ClaudeError, api_message_of  # noqa: E402
 from app.agent.config import MODELS, AgentConfig, describe_model  # noqa: E402
-from app.agent.credentials import resolve  # noqa: E402
+from app.agent.credentials import resolve, resolve_for  # noqa: E402
 from app.agent.prompt import SYSTEM_PROMPT  # noqa: E402
 from app.agent.tools import TOOL_SCHEMAS  # noqa: E402
 
@@ -148,11 +150,62 @@ def check(model_id: str, credential) -> bool:
     return True
 
 
+def check_other_provider(provider: str, model_id: str, credential) -> bool:
+    """The Groq/OpenRouter equivalent of check() above.
+
+    Deliberately not a full 3-stage conversation walk: those providers speak
+    a translated wire format (see app/agent/openai_compatible.py), and the
+    single most useful question for someone testing PyBrowser for free is
+    simply "does this key and model accept a tool-calling request at all" -
+    exactly what OpenAICompatibleClient.test_connection() answers, and the
+    same method Tools -> Configure AI Agent's Test Connection button calls.
+    """
+    from app.agent.openai_compatible import GroqClient, OpenRouterClient
+
+    client_class = {"groq": GroqClient, "openrouter": OpenRouterClient}[provider]
+    label = describe_model(model_id).label
+    print(f"\n{model_id}  {DIM}{label}{OFF}")
+    ok, message = client_class.test_connection(credential.secret or "", model_id)
+    if ok:
+        print(f"  {GREEN}ok{OFF}      {message}")
+    else:
+        print(f"  {RED}FAILED{OFF}  {message}")
+    return ok
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("models", nargs="*",
-                        help="model ids to try (default: every one in the picker)")
+                        help="model ids to try (default: every one in the picker; "
+                             "required when --provider is groq or openrouter)")
+    parser.add_argument("--provider", default="anthropic",
+                        choices=("anthropic", "groq", "openrouter"),
+                        help="which provider to test (default: anthropic)")
     args = parser.parse_args()
+
+    if args.provider != "anthropic":
+        credential = resolve_for(args.provider)
+        if not credential.available:
+            print(f"{RED}No {args.provider} API key.{OFF} Set "
+                  f"{args.provider.upper()}_API_KEY, or add one in the browser "
+                  "under Tools -> Configure AI Agent.")
+            return 2
+        print(f"credential: {credential.describe()}")
+        if not args.models:
+            print(f"{RED}Pass at least one model id to test against {args.provider}.{OFF} "
+                  "Use Tools -> Configure AI Agent's Refresh model list to see what's "
+                  "currently available, or the provider's own model-list endpoint.")
+            return 2
+        results = {model_id: check_other_provider(args.provider, model_id, credential)
+                  for model_id in args.models}
+        print()
+        broken = [model_id for model_id, ok in results.items() if not ok]
+        if broken:
+            print(f"{RED}{len(broken)} of {len(results)} models rejected the request: "
+                  f"{', '.join(broken)}{OFF}")
+            return 1
+        print(f"{GREEN}All {len(results)} models accepted the browser's request.{OFF}")
+        return 0
 
     credential = resolve()
     if not credential.available:

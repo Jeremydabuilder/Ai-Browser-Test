@@ -7,3 +7,9 @@ PySide6>=6.6,<7
 # panel reports that it is unconfigured if they are missing.
 anthropic>=1.0,<2
 keyring>=24            # OS keychain for the API key - never a file in the repo
+
+# Groq and OpenRouter (free-tier-friendly alternatives to Anthropic - see
+# Tools -> Configure AI Agent). httpx2 already ships as anthropic's own HTTP
+# dependency; declared explicitly here because app/agent/openai_compatible.py
+# imports it directly rather than relying on it being pulled in transitively.
+httpx2

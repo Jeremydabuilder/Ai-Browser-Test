@@ -135,6 +135,69 @@ keeps its ordinary message.
 exactly as the browser's settings-backed config would — the same path an
 identity-linked key needs to succeed against the real API.
 
+## 3a. Other providers — Groq, OpenRouter
+
+Anthropic is the default, and the only provider with a cost/effort control or
+a workspace id. Testing the agent loop does not have to cost money though:
+Groq and OpenRouter both have a free tier and both speak an OpenAI-compatible
+`/chat/completions` endpoint, and PyBrowser can drive either one through the
+exact same agent loop.
+
+**Why `AgentSession` never needed to change.** It only ever talks to a
+`ClaudeTransport`-shaped object - one method, `send(system, messages, tools,
+on_text=None) -> AgentResponse`. It echoes `response.raw_content` back
+verbatim as the `content` of the next assistant message, and the only thing
+it ever reads off a content block is `.type` (see `_holds_tool_result` in
+session.py) - which meant the Anthropic content-block shape
+(`{"type": "text", ...}`, `{"type": "tool_use", "id", "name", "input"}`) was
+already the de facto internal message format, not an Anthropic-only one.
+`app/agent/openai_compatible.py` reuses it as the boundary: every translation
+both directions - PyBrowser's tools/messages into the sibling `tool_calls`
+array Groq and OpenRouter expect, their response back into those same
+Anthropic-shaped blocks - happens inside that one module.
+`AgentSession`, `ToolRegistry`, Missions and `safety.py` are all unmodified
+by this feature; a test (`SafetyParityTests` in `tests/test_providers.py`)
+asserts `ToolRegistry.__init__` takes no provider argument at all, and that
+`assess()` cannot see which transport is in use.
+
+**One factory, one dispatch point.** `build_transport()` in
+`app/ui/agent_setup.py` is the only place that branches on provider - it
+picks `ClaudeClient`, `GroqClient` or `OpenRouterClient` and hands it
+straight to `AgentSession`. Nowhere else does.
+
+**Credentials.** Groq and OpenRouter have no Bedrock/Vertex/OAuth-profile
+equivalent - just a key, in the OS keyring or an environment variable
+(`GROQ_API_KEY`, `OPENROUTER_API_KEY`). `credentials.resolve_for(provider)`
+handles all three providers; Anthropic's own `resolve()` is untouched and
+`resolve_for("anthropic")` simply calls it. Each provider gets its own
+keyring *account* (`ApiKeyStore(account="groq-api-key")`, etc.), so switching
+providers can never see or clobber another provider's stored key -
+`CredentialIsolationTests` in `tests/test_providers.py` asserts this
+directly.
+
+**Model capability.** PyBrowser's agent depends on tool calling for every
+action, so a model that cannot do that reliably must never be picked
+silently. Model ids and their free-tier status change often enough that a
+hardcoded catalogue would go stale, so **Tools → Configure AI Agent** fetches
+each provider's live `/models` endpoint (`OpenAICompatibleClient.list_models`)
+rather than trusting a fixed list. OpenRouter reports tool-calling support
+per model (`supported_parameters`); Groq's listing does not, so
+`GroqClient.capability_of` only rules out the obviously-non-chat entries
+(audio/moderation models) by name and otherwise says plainly that support is
+unconfirmed. The dialog's **Test Connection** button
+(`OpenAICompatibleClient.test_connection`) is the actual proof either way: a
+real, minimal tool-calling round trip against the configured key and model,
+reporting success or the provider's own words on why not - the same method
+`scripts/api_preflight.py --provider groq <model>` calls from the terminal.
+
+**Errors.** `OpenAICompatibleClient._handle_response` translates the common
+failures into the same `ClaudeError` shape Anthropic errors use - invalid
+key, no permission for this model, model not found, rate limited, free quota
+exhausted (detected from the provider's own error text), a server error, and
+the model-does-not-support-tools case specifically. The provider's own
+sentence is preserved as `api_message`; the raw response body never reaches
+the UI, and the API key is never included in any raised message.
+
 ## 4. Tools
 
 19 tools, each mapping to exactly one `BrowserController` method:

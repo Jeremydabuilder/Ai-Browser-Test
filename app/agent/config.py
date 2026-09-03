@@ -64,6 +64,11 @@ class ModelChoice:
     #: intermittent 400 partway through a long task, which is a miserable
     #: thing to debug from a bug report.
     checks_history_edits: bool = False
+    #: False on a model known not to support tool/function calling reliably
+    #: enough for PyBrowser's agent loop, which depends on it for every
+    #: action. Such a model is still listed - hiding it silently would look
+    #: like a bug - but the dialog refuses to select it and says why.
+    supports_tools: bool = True
 
 
 #: The models this browser offers. Ordered most-capable first, because that is
@@ -116,6 +121,75 @@ def describe_model(model_id: str) -> ModelChoice:
         return known
     return ModelChoice(model_id, model_id, "Not in this browser's catalogue; "
                                            "settings are used as given.")
+
+
+# ---------------------------------------------------------------------------
+# Providers - Anthropic is not the only way to run the agent loop
+# ---------------------------------------------------------------------------
+#
+# AgentSession never sees any of this: it only ever talks to whatever
+# ClaudeTransport-shaped client build_session() hands it. This section exists
+# so Tools -> Configure AI Agent can offer a provider dropdown and know what
+# to ask for from each one - a key, sometimes a workspace id, never anything
+# provider-specific leaking further into the app.
+
+
+PROVIDER_ANTHROPIC = "anthropic"
+PROVIDER_GROQ = "groq"
+PROVIDER_OPENROUTER = "openrouter"
+
+DEFAULT_PROVIDER = PROVIDER_ANTHROPIC
+
+
+@dataclass(frozen=True)
+class ProviderInfo:
+    """What the settings dialog needs to know about one provider.
+
+    Deliberately thin - no base_url, no client class, nothing that would
+    pull an HTTP or SDK dependency into this module. Those live with each
+    provider's own client (``app/agent/openai_compatible.py``), which the
+    UI imports lazily, only for the provider actually selected.
+    """
+
+    id: str
+    label: str
+    #: Environment variable that can supply the key without the dialog.
+    key_env_var: str
+    #: One line explaining where to get a key and what it costs.
+    key_help: str
+    #: Anthropic alone has a workspace id, a cost/effort control, and a
+    #: multi-way credential cascade (keyring, OAuth profile, cloud
+    #: backends) - the others are "paste a key" and nothing more.
+    is_anthropic: bool = False
+
+
+PROVIDERS: tuple[ProviderInfo, ...] = (
+    ProviderInfo(
+        PROVIDER_ANTHROPIC, "Anthropic (Claude)",
+        "ANTHROPIC_API_KEY",
+        "Paid; see Tools → Configure AI Agent for every way to authenticate.",
+        is_anthropic=True,
+    ),
+    ProviderInfo(
+        PROVIDER_GROQ, "Groq",
+        "GROQ_API_KEY",
+        "Free tier available. Get a key at console.groq.com.",
+    ),
+    ProviderInfo(
+        PROVIDER_OPENROUTER, "OpenRouter",
+        "OPENROUTER_API_KEY",
+        "Several free-tier models. Get a key at openrouter.ai/keys.",
+    ),
+)
+
+_PROVIDERS_BY_ID = {info.id: info for info in PROVIDERS}
+
+
+def describe_provider(provider_id: str) -> ProviderInfo:
+    return _PROVIDERS_BY_ID.get(provider_id, PROVIDERS[0])
+
+
+PROVIDER_IDS = frozenset(info.id for info in PROVIDERS)
 
 
 # ---------------------------------------------------------------------------
@@ -274,6 +348,10 @@ class ContextLimits:
 
 @dataclass
 class AgentConfig:
+    #: Which provider build_session() should construct a client for. One of
+    #: PROVIDER_IDS. AgentSession itself never reads this - see PROVIDERS
+    #: above for why.
+    provider: str = DEFAULT_PROVIDER
     model: str = DEFAULT_MODEL
     #: A backstop, not a tuning knob: the model never sees it, and hitting it
     #: truncates an answer mid-sentence. Generous enough never to bind on the
@@ -323,6 +401,9 @@ class AgentConfig:
         config = cls()
         if settings is not None:
             try:
+                stored_provider = settings.get(KEY_AGENT_PROVIDER, DEFAULT_PROVIDER)
+                if stored_provider in PROVIDER_IDS:
+                    config.provider = stored_provider
                 config.model = settings.get(KEY_AGENT_MODEL, DEFAULT_MODEL) or DEFAULT_MODEL
                 stored_effort = settings.get(KEY_AGENT_EFFORT, DEFAULT_EFFORT)
                 if stored_effort in _EFFORT_IDS:
@@ -332,6 +413,9 @@ class AgentConfig:
             except Exception:  # noqa: BLE001 - preferences are never load-bearing
                 pass
 
+        provider = (os.environ.get(ENV_PROVIDER) or "").strip().lower()
+        if provider in PROVIDER_IDS:
+            config.provider = provider
         model = os.environ.get(ENV_MODEL)
         if model:
             config.model = model.strip()
@@ -349,6 +433,7 @@ class AgentConfig:
         return config
 
 
+ENV_PROVIDER = "PYBROWSER_AGENT_PROVIDER"
 ENV_MODEL = "PYBROWSER_AGENT_MODEL"
 ENV_EFFORT = "PYBROWSER_AGENT_EFFORT"
 ENV_CACHE = "PYBROWSER_AGENT_CACHE"
@@ -357,9 +442,10 @@ ENV_CACHE = "PYBROWSER_AGENT_CACHE"
 #: this codebase and the SDK agree a workspace needs naming.
 ENV_WORKSPACE_ID = "ANTHROPIC_WORKSPACE_ID"
 
-#: Settings-table keys. Model, effort and workspace id are preferences, not
-#: secrets, so they belong in the ordinary settings table - unlike the API
-#: key, which never touches SQLite.
+#: Settings-table keys. Provider, model, effort and workspace id are
+#: preferences, not secrets, so they belong in the ordinary settings table -
+#: unlike an API key, which never touches SQLite.
+KEY_AGENT_PROVIDER = "agent_provider"
 KEY_AGENT_MODEL = "agent_model"
 KEY_AGENT_EFFORT = "agent_effort"
 KEY_AGENT_WORKSPACE_ID = "agent_workspace_id"

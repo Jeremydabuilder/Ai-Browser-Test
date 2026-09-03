@@ -990,7 +990,7 @@ class MainWindow(QMainWindow):
                 self._agent_unavailable = False
                 self._agent_session.briefing_provider = self.missions.briefing
                 self._agent_session.step_recorder = self.routines.record_step
-                credential = self._current_credential()
+                credential = self._current_credential(self._agent_session.config.provider)
                 self._credential_id = credential.fingerprint if credential else ""
         self.set_side_panel(AgentPanel(self._agent_session, self, self.missions))
         self._agent_action.setChecked(True)
@@ -1025,7 +1025,7 @@ class MainWindow(QMainWindow):
         from app.agent.config import AgentConfig
 
         wanted = AgentConfig.from_environment(self.settings)
-        credential = self._current_credential()
+        credential = self._current_credential(wanted.provider)
         session = self._agent_session
 
         if session is None:
@@ -1038,8 +1038,9 @@ class MainWindow(QMainWindow):
             return
 
         unchanged = (
-            (wanted.model, wanted.effort, wanted.workspace_id)
-            == (session.config.model, session.config.effort, session.config.workspace_id)
+            (wanted.provider, wanted.model, wanted.effort, wanted.workspace_id)
+            == (session.config.provider, session.config.model, session.config.effort,
+                session.config.workspace_id)
             and (credential is None or credential.fingerprint == self._credential_id)
         )
         if unchanged:
@@ -1049,17 +1050,22 @@ class MainWindow(QMainWindow):
             return
         self._rebuild_agent(f"Py now using {wanted.model_choice.label}.")
 
-    def _current_credential(self):
+    def _current_credential(self, provider: str | None = None):
         """The credential as it stands right now, or None if it cannot be read.
 
         Separate so the failure is one place: reading a credential touches the
         OS keyring, and a browser must not fall over because a keyring is
-        broken.
+        broken. ``provider`` defaults to whatever is currently configured, so
+        existing callers that do not care which provider is active keep
+        working unchanged.
         """
         try:
-            from app.agent.credentials import resolve
+            from app.agent.config import AgentConfig
+            from app.agent.credentials import resolve_for
 
-            return resolve()
+            if provider is None:
+                provider = AgentConfig.from_environment(self.settings).provider
+            return resolve_for(provider)
         except BaseException as exc:  # noqa: BLE001
             if isinstance(exc, (KeyboardInterrupt, SystemExit)):
                 raise

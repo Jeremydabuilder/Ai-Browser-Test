@@ -74,6 +74,10 @@ class Credential:
     secret: str | None = None        # api key or bearer token, if applicable
     region: str = ""
     project: str = ""
+    #: Which provider this credential is for. Defaults to Anthropic so every
+    #: existing caller of resolve() - which only ever returns an Anthropic
+    #: credential - keeps working without change.
+    provider: str = "anthropic"
 
     @property
     def available(self) -> bool:
@@ -99,7 +103,8 @@ class Credential:
         """
         import hashlib
 
-        material = f"{self.mode}|{self.region}|{self.project}|{self.secret or ''}"
+        material = (f"{self.provider}|{self.mode}|{self.region}|{self.project}|"
+                   f"{self.secret or ''}")
         return hashlib.sha256(material.encode("utf-8")).hexdigest()[:16]
 
 
@@ -215,3 +220,61 @@ def options_summary() -> list[tuple[str, bool, str]]:
         (Mode.VERTEX, _cloud_backend() is not None
          and _cloud_backend().mode == Mode.VERTEX, SETUP_HELP[Mode.VERTEX]),
     ]
+
+
+# ---------------------------------------------------------------------------
+# Other providers - Groq, OpenRouter: a key, and nothing else
+# ---------------------------------------------------------------------------
+#
+# These have no Bedrock/Vertex/OAuth-profile equivalent, so their resolution
+# is far shorter than Anthropic's: the OS keyring, or an environment
+# variable. Each gets its own keyring *account* - ApiKeyStore already takes
+# one - so switching providers can never see or clobber another provider's
+# key, and clearing one provider's key never touches another's.
+
+#: provider id -> (label, env var, keyring account name)
+PROVIDER_KEY_INFO: dict[str, tuple[str, str, str]] = {
+    "groq": ("Groq", "GROQ_API_KEY", "groq-api-key"),
+    "openrouter": ("OpenRouter", "OPENROUTER_API_KEY", "openrouter-api-key"),
+}
+
+
+def provider_key_store(provider: str) -> ApiKeyStore:
+    """The keyring account for one non-Anthropic provider's key."""
+    _label, _env, account = PROVIDER_KEY_INFO[provider]
+    return ApiKeyStore(account=account)
+
+
+def resolve_for(provider: str, store: ApiKeyStore | None = None) -> Credential:
+    """Resolve a credential for any supported provider, Anthropic included.
+
+    Anthropic keeps its own full cascade via ``resolve()`` above, untouched -
+    a cloud backend, the keyring, an env var, a bearer token, or a signed-in
+    CLI profile. The other providers are simple enough that duplicating that
+    cascade would be pretending they have options they do not: keyring, then
+    environment, then nothing. Never raises, for the same reason ``resolve()``
+    never does - this is called while building the agent panel.
+    """
+    if provider == "anthropic" or provider not in PROVIDER_KEY_INFO:
+        return resolve(store)
+
+    label, env_var, _account = PROVIDER_KEY_INFO[provider]
+    try:
+        key_store = store or provider_key_store(provider)
+    except BaseException:  # noqa: BLE001
+        key_store = None
+
+    try:
+        keyring_key = key_store.get_keyring_key() if key_store is not None else None
+    except BaseException:  # noqa: BLE001 - a broken keyring is not fatal
+        keyring_key = None
+    if keyring_key:
+        return Credential(Mode.KEYRING, f"{label} API key from the OS keyring",
+                          secret=keyring_key, provider=provider)
+
+    env_key = (os.environ.get(env_var) or "").strip()
+    if env_key:
+        return Credential(Mode.ENV_KEY, f"{label} API key from {env_var}",
+                          secret=env_key, provider=provider)
+
+    return Credential(Mode.NONE, f"no {label} credential configured", provider=provider)
