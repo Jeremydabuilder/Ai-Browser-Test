@@ -17,7 +17,12 @@ the prompt names the marker this module owns.
 
 from __future__ import annotations
 
-from app.missions.model import Mission, MissionDecision, MissionFinding
+from app.missions.model import (
+    Mission,
+    MissionChallenge,
+    MissionDecision,
+    MissionFinding,
+)
 
 #: The fence. Everything board-derived goes inside it - the findings, their
 #: source domains, and the line saying how many were left out. A reader that
@@ -62,7 +67,7 @@ def neutralise(text: str) -> str:
     return text
 
 
-def _line(finding: MissionFinding) -> str:
+def _line(finding: MissionFinding, verdict: str = "") -> str:
     """One finding, with where it came from and how old it is.
 
     The age is here because the prompt tells Py to verify anything before
@@ -71,8 +76,19 @@ def _line(finding: MissionFinding) -> str:
     without it.
     """
     text = " ".join(finding.text.split())
-    marks = [mark for mark in (finding.source_domain, finding.age) if mark]
+    # A verdict rides in the existing fence as one word rather than earning a
+    # third marker. "CONTRADICTED" beside a note is the whole signal that
+    # matters, and a briefing with three kinds of block in it stops being read.
+    marks = [mark for mark in (finding.source_domain, finding.age, verdict) if mark]
     return f"- {text}  ({', '.join(marks)})" if marks else f"- {text}"
+
+
+def _verdicts(mission: Mission | None) -> dict[int, str]:
+    """finding id -> the verdict of its live challenge, upper-cased."""
+    if mission is None:
+        return {}
+    return {c.target_id: c.verdict_label for c in mission.challenges
+            if c.target_kind == "finding"}
 
 
 def selected(findings) -> tuple[list[MissionFinding], int]:
@@ -94,7 +110,7 @@ def selected(findings) -> tuple[list[MissionFinding], int]:
     return kept, len(ordered) - len(kept)
 
 
-def findings_block(findings) -> str:
+def findings_block(findings, verdicts: dict[int, str] | None = None) -> str:
     """The fenced record, or "" when there is nothing to record.
 
     An empty fence would be noise in every fresh Mission's first request and
@@ -103,14 +119,16 @@ def findings_block(findings) -> str:
     kept, omitted = selected(findings)
     if not kept:
         return ""
-    lines = [neutralise(_line(finding)) for finding in kept]
+    verdicts = verdicts or {}
+    lines = [neutralise(_line(finding, verdicts.get(finding.id, ""))) for finding in kept]
     if omitted:
         lines.append(neutralise(f"({omitted} earlier findings not shown)"))
     body = "\n".join(lines)
     return f"{FINDINGS_OPEN}\n{body}\n{FINDINGS_CLOSE}"
 
 
-def decision_block(decision: MissionDecision | None) -> str:
+def decision_block(decision: MissionDecision | None,
+                   challenge: MissionChallenge | None = None) -> str:
     """The fenced record of what was decided, or "".
 
     Evidence snapshots are deliberately left out: they are the same sentences
@@ -122,6 +140,8 @@ def decision_block(decision: MissionDecision | None) -> str:
     lines = [f"Decided: {decision.decision}", f"Because: {decision.rationale}"]
     for alternative in decision.alternatives:
         lines.append(f"Not chosen: {alternative.name} - {alternative.reason}")
+    if challenge is not None:
+        lines.append(f"Challenged: {challenge.verdict_label} - {challenge.summary}")
     if decision.created_at:
         from app.missions.model import relative_age
 
@@ -138,10 +158,13 @@ def compose(mission: Mission | None) -> str:
         return ""
     parts = [f'I am working on a mission called "{mission.title}". '
              f"My goal: {mission.goal}"]
-    decided = decision_block(mission.decision)
+    decided = decision_block(
+        mission.decision,
+        mission.challenge_of("decision", mission.decision.id)
+        if mission.decision is not None else None)
     if decided:
         parts.append("What was decided on this mission before:\n" + decided)
-    block = findings_block(mission.findings)
+    block = findings_block(mission.findings, _verdicts(mission))
     if block:
         parts.append("Notes I recorded earlier on this mission:\n" + block)
     parts.append("Keep this goal in mind for the requests that follow. "

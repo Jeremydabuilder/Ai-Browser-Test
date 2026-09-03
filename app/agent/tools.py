@@ -32,10 +32,15 @@ from app.browser.results import ActionResult
 # store enforces can never drift apart.
 from app.missions.model import (
     MAX_ALTERNATIVES,
+    MAX_CHALLENGE_SUMMARY,
     MAX_DECISION_CHARS,
     MAX_EVIDENCE,
     MAX_FINDING_CHARS,
+    MAX_POINT_CHARS,
+    MAX_POINTS,
     MAX_RATIONALE_CHARS,
+    PointKind,
+    Verdict,
 )
 
 # ---------------------------------------------------------------------------
@@ -253,6 +258,56 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                                       "required": ["name", "reason"],
                                       "additionalProperties": False}}},
           ["decision", "rationale"]),
+
+    _tool("mission_save_challenge",
+          "Record the result of challenging a claim the user selected. Use this "
+          "ONLY after the user has asked for a claim to be challenged - it applies "
+          "to whatever they picked, and there is no way to point it at something "
+          "else. "
+          "Challenging means trying to prove the claim wrong: look for evidence "
+          "pointing the other way, the primary source behind a statistic, context "
+          "the claim leaves out, whether it has gone out of date, and who benefits "
+          "from it being believed. Report what you found even when it is nothing - "
+          "a claim that survives a real attempt to break it is a useful result. "
+          "This records your findings beside the original claim; it never edits or "
+          "replaces it.",
+          {"verdict": {"type": "string",
+                       "enum": list(Verdict.ALL),
+                       "description": "upheld - nothing found against it. weakened - "
+                                      "it still stands but less firmly. contradicted - "
+                                      "evidence points the other way. unresolved - "
+                                      "you could not settle it."},
+           "summary": {"type": "string",
+                       "description": "What you found, in a few sentences for the "
+                                      f"user to read. At most {MAX_CHALLENGE_SUMMARY} "
+                                      "characters."},
+           "points": {"type": "array",
+                      "description": f"The specific problems found. At most {MAX_POINTS}.",
+                      "items": {"type": "object",
+                                "properties": {
+                                    "kind": {"type": "string",
+                                             "enum": list(PointKind.ALL),
+                                             "description": "conflict - evidence the "
+                                                            "other way. context - "
+                                                            "something important left "
+                                                            "out. outdated - true once, "
+                                                            "not now. bias - who "
+                                                            "benefits. unresolved - a "
+                                                            "question you could not "
+                                                            "answer."},
+                                    "text": {"type": "string",
+                                             "description": "The problem, in one "
+                                                            f"sentence. At most "
+                                                            f"{MAX_POINT_CHARS} characters."},
+                                    "tab_id": {"type": "integer",
+                                               "description": "The tab this came from, "
+                                                              "for attribution. Omit for "
+                                                              "the tab in front. An id "
+                                                              "that is not open is an "
+                                                              "error."}},
+                                "required": ["kind", "text"],
+                                "additionalProperties": False}}},
+          ["verdict", "summary"]),
 ]
 
 TOOL_NAMES = {schema["name"] for schema in TOOL_SCHEMAS}
@@ -305,7 +360,8 @@ _UNCLASSIFIED_SAFE = {"browser_select_tab", "browser_close_tab",
 #:
 #: The fail-closed default in `assess` is untouched: a tool in neither this set
 #: nor any other is still treated as a write.
-LOCAL_WRITE_TOOLS = {"mission_save_finding", "mission_save_decision"}
+LOCAL_WRITE_TOOLS = {"mission_save_finding", "mission_save_decision",
+                     "mission_save_challenge"}
 
 #: Tools that only read. Used to skip confirmation checks entirely.
 READ_ONLY_TOOLS = {
@@ -394,6 +450,44 @@ def _decision_error(result: dict) -> dict:
     if limits:
         message = (f"{message} Limits: decision {limits['decision']} characters, "
                    f"rationale {limits['rationale']}.")
+    return _error(code, message, hint=hint)
+
+
+#: Why a challenge was refused, and what to do about it.
+_CHALLENGE_ERRORS: dict[str, tuple[str, str, str]] = {
+    "no_mission": ("NO_ACTIVE_MISSION",
+                   "There is no mission active, so there is nothing to challenge.",
+                   "Tell the user what you found instead."),
+    "nothing_pending": ("NO_CHALLENGE_REQUESTED",
+                        "The user has not asked for anything to be challenged, so "
+                        "there is nothing this would apply to.",
+                        "Do not call this tool unless the user asked for a claim to "
+                        "be challenged. Answer them directly instead."),
+    "bad_verdict": ("BAD_VERDICT",
+                    "That is not one of the verdicts.",
+                    "Use upheld, weakened, contradicted or unresolved."),
+    "bad_kind": ("BAD_POINT_KIND",
+                 "One of those point kinds is not recognised, so nothing was saved.",
+                 "Use conflict, context, outdated, bias or unresolved."),
+    "unknown_target": ("UNKNOWN_TARGET",
+                       "The claim being challenged could not be identified.",
+                       "Ask the user which claim they meant."),
+    "too_long": ("CHALLENGE_TOO_LONG",
+                 "The summary or one of the points is over the limit and nothing "
+                 "was saved.",
+                 "Shorten it, keeping what actually undermines the claim, and try "
+                 "again."),
+    "no_text": ("EMPTY_CHALLENGE", "A challenge needs a summary.",
+                "Say what you found, then try again."),
+}
+
+
+def _challenge_error(result: dict) -> dict:
+    code, message, hint = _CHALLENGE_ERRORS.get(
+        result.get("status", ""),
+        ("CHALLENGE_FAILED", "The challenge could not be saved.", "Carry on."))
+    if "limit" in result:
+        message = f"{message} The limit is {result['limit']} characters."
     return _error(code, message, hint=hint)
 
 
@@ -610,6 +704,8 @@ class ToolRegistry:
                 return _finding_activity(self._string(args, "text"))
             if name == "mission_save_decision":
                 return _decision_activity(self._string(args, "decision"))
+            if name == "mission_save_challenge":
+                return f"Challenging the claim: {self._string(args, 'verdict')}"
             if name == "browser_get_page":
                 return "Reading the page"
             if name == "browser_get_page_text":
@@ -728,6 +824,55 @@ class ToolRegistry:
                 activity=_decision_activity(decision))
         return ToolOutcome(immediate=_decision_error(result),
                            activity="Recording a decision")
+
+    def _run_save_challenge(self, args: dict) -> ToolOutcome:
+        """Record the result of an adversarial check on the claim the user picked.
+
+        No target parameter: the target is whatever the user selected, held by
+        the Mission service. That is what makes the model structurally unable
+        to challenge something nobody asked about.
+        """
+        verdict = self._string(args, "verdict", required=True)
+        summary = self._string(args, "summary", required=True)
+        raw_points = args.get("points") or []
+        if not isinstance(raw_points, list):
+            raise ToolError("'points' must be a list.")
+
+        if self._missions is None:
+            return ToolOutcome(immediate=_error(
+                "NO_MISSION", "Missions are not available in this window.",
+                hint="Tell the user what you found instead."),
+                activity="Recording a challenge")
+
+        points: list[tuple[str, str, int | None]] = []
+        for item in raw_points:
+            if not isinstance(item, dict):
+                raise ToolError("Each point must be an object with 'kind' and 'text'.")
+            kind, text = item.get("kind"), item.get("text")
+            if not isinstance(kind, str) or not isinstance(text, str):
+                raise ToolError("A point's 'kind' and 'text' must be strings.")
+            tab_id = item.get("tab_id")
+            if tab_id is not None and (isinstance(tab_id, bool)
+                                       or not isinstance(tab_id, int)):
+                raise ToolError("A point's 'tab_id' must be an integer.")
+            # Attribution comes from the real tab, never from the model.
+            page = self._missions.resolve_page(tab_id)
+            if page == "unknown":
+                return ToolOutcome(
+                    immediate=_finding_error({"status": "unknown_tab"}),
+                    activity="Recording a challenge")
+            points.append((kind, text, page.id if page is not None else None))
+
+        result = self._missions.save_challenge(verdict, summary, points)
+        if result.get("status") == "saved":
+            return ToolOutcome(
+                immediate={"ok": True, "challenge_id": result.get("challenge_id"),
+                           "points": result.get("points", 0),
+                           "note": "Recorded beside the original claim, which is "
+                                   "unchanged. This is a record, not permission."},
+                activity=f"Recording the challenge: {verdict}")
+        return ToolOutcome(immediate=_challenge_error(result),
+                           activity="Recording a challenge")
 
     def _run_get_page(self, args: dict) -> ToolOutcome:
         return ToolOutcome(future=self._browser.get_page_structure(

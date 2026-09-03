@@ -78,9 +78,13 @@ def summarise(mission, *, with_detail: bool = False,
     }
     if with_detail:
         row["decision"] = _decision(mission.decision)
+        if row["decision"] is not None:
+            row["decision"]["challenge"] = _challenge(
+                mission.challenge_of("decision", mission.decision.id))
         row["findingList"] = [
             {"id": f.id, "text": f.text, "source": f.source_domain,
-             "url": f.source_url, "age": f.age}
+             "url": f.source_url, "age": f.age,
+             "challenge": _challenge(mission.challenge_of("finding", f.id))}
             for f in mission.findings
         ]
         row["pageList"] = [
@@ -115,6 +119,31 @@ def _decision(decision) -> dict[str, Any] | None:
         "alternatives": [
             {"name": a.name, "reason": a.reason} for a in decision.alternatives
         ],
+    }
+
+
+def _challenge(challenge) -> dict[str, Any] | None:
+    """A challenge, flattened, grouped by the kind of problem found."""
+    if challenge is None:
+        return None
+    from app.missions.model import PointKind, relative_age
+
+    groups = []
+    for kind in PointKind.ALL:
+        points = challenge.points_of(kind)
+        if points:
+            groups.append({
+                "label": PointKind.LABELS[kind],
+                "points": [{"text": p.text, "source": p.source_domain}
+                           for p in points],
+            })
+    return {
+        "id": challenge.id,
+        "verdict": challenge.verdict,
+        "label": challenge.verdict_label,
+        "summary": challenge.summary,
+        "age": relative_age(challenge.created_at),
+        "groups": groups,
     }
 
 
@@ -264,6 +293,29 @@ _TEMPLATE = """<!doctype html>
   .decision .src, .decision .why-not { color: var(--muted); font-size: 12px; }
   .decision .flag { color: var(--muted); font-size: 11px; font-style: italic; }
   .decision .acts { margin-top: 18px; }
+  /* A challenge sits beneath what it challenges and is unmistakably a second
+     opinion rather than a correction of the first. */
+  .challenge { margin: 6px 0 14px 12px; padding-left: 14px;
+               border-left: 2px solid var(--line); }
+  .challenge .verdict { font-size: 10px; font-weight: 700; letter-spacing: .08em; }
+  .challenge .verdict.upheld { color: var(--success); }
+  .challenge .verdict.weakened { color: var(--warning); }
+  .challenge .verdict.contradicted { color: var(--danger); }
+  .challenge .verdict.unresolved { color: var(--muted); }
+  .challenge .when { color: var(--disabled); font-size: 11px; margin-left: 8px; }
+  .challenge .sum { color: var(--text); font-size: 13px; margin: 3px 0 8px; }
+  .challenge .grp { display: flex; gap: 12px; margin-bottom: 5px; }
+  .challenge .grp .k {
+    flex: 0 0 108px; font-size: 10px; font-weight: 600; letter-spacing: .06em;
+    color: var(--disabled); padding-top: 2px;
+  }
+  .challenge .grp .v { flex: 1; min-width: 0; font-size: 13px; }
+  .challenge .grp .v .src { color: var(--muted); font-size: 11px; }
+  button.link {
+    background: none; border: none; padding: 0; cursor: pointer; font: inherit;
+    color: var(--muted); font-size: 12px;
+  }
+  button.link:hover { color: var(--accent); }
   ul { list-style: none; margin: 0; padding: 0; }
   li.finding { padding: 9px 0 9px 12px; border-left: 2px solid var(--accent);
                margin-bottom: 6px; }
@@ -366,6 +418,37 @@ _TEMPLATE = """<!doctype html>
     });
   }
 
+  function challengeBlock(challenge) {
+    if (!challenge) { return null; }
+    var box = el("div", "challenge");
+    var head = el("div");
+    head.appendChild(el("span", "verdict " + challenge.verdict, challenge.label));
+    head.appendChild(el("span", "when", challenge.age));
+    box.appendChild(head);
+    box.appendChild(el("div", "sum", challenge.summary));
+    challenge.groups.forEach(function (group) {
+      var row = el("div", "grp");
+      row.appendChild(el("div", "k", group.label));
+      var values = el("div", "v");
+      group.points.forEach(function (point) {
+        values.appendChild(el("div", null, point.text));
+        if (point.source) { values.appendChild(el("div", "src", point.source)); }
+      });
+      row.appendChild(values);
+      box.appendChild(row);
+    });
+    return box;
+  }
+
+  function challengeButton(kind, id, existing) {
+    var button = el("button", "link", existing ? "Challenge again" : "Challenge");
+    button.title = "Ask Py to try to prove this wrong";
+    button.addEventListener("click", function () {
+      act("challenge", { kind: kind, target: id });
+    });
+    return button;
+  }
+
   function renderDecision(mission) {
     // Nothing at all when there is none. A mission still being worked on
     // should look like one, not like a form with an empty field.
@@ -428,8 +511,17 @@ _TEMPLATE = """<!doctype html>
       act("clear-decision", { id: mission.id });
     });
     acts.appendChild(clear);
+    var challenge = el("button", "act", decision.challenge ? "Challenge again" : "Challenge");
+    challenge.title = "Ask Py to try to prove this wrong";
+    challenge.addEventListener("click", function () {
+      act("challenge", { kind: "decision", target: decision.id });
+    });
+    acts.appendChild(challenge);
     box.appendChild(acts);
     body.appendChild(box);
+
+    var verdict = challengeBlock(decision.challenge);
+    if (verdict) { body.appendChild(verdict); }
   }
 
   function renderDetail(mission) {
@@ -466,9 +558,12 @@ _TEMPLATE = """<!doctype html>
         var li = el("li", "finding");
         li.appendChild(el("div", null, finding.text));
         var marks = [finding.source, finding.age].filter(Boolean);
-        if (marks.length) {
-          li.appendChild(el("div", "src", marks.join(" \u00b7 ")));
-        }
+        var meta = el("div", "src", marks.join(" \u00b7 "));
+        if (marks.length) { meta.appendChild(document.createTextNode(" \u00b7 ")); }
+        meta.appendChild(challengeButton("finding", finding.id, finding.challenge));
+        li.appendChild(meta);
+        var verdict = challengeBlock(finding.challenge);
+        if (verdict) { li.appendChild(verdict); }
         found.appendChild(li);
       });
       body.appendChild(found);

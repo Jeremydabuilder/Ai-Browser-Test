@@ -269,6 +269,124 @@ class MissionDecision:
         return not self.superseded_at
 
 
+class Verdict:
+    """How a claim stood up to being attacked.
+
+    Four, and a closed set. The point of Challenge Mode is that the answer is
+    one of a small number of things a person can act on, not a paragraph they
+    have to interpret.
+    """
+
+    UPHELD = "upheld"                # nothing found that undermines it
+    WEAKENED = "weakened"            # still stands, but less firmly
+    CONTRADICTED = "contradicted"    # evidence points the other way
+    UNRESOLVED = "unresolved"        # could not be settled either way
+
+    ALL = (UPHELD, WEAKENED, CONTRADICTED, UNRESOLVED)
+    LABELS = {UPHELD: "UPHELD", WEAKENED: "WEAKENED",
+              CONTRADICTED: "CONTRADICTED", UNRESOLVED: "UNRESOLVED"}
+
+
+class PointKind:
+    """Why a piece of counter-evidence matters.
+
+    A `kind` here earns its place where the decision's would not have: the UI
+    groups by it, and it is the difference between an adversarial check and
+    another pile of notes.
+    """
+
+    CONFLICT = "conflict"       # evidence pointing the other way
+    CONTEXT = "context"         # something important the claim leaves out
+    OUTDATED = "outdated"       # true once, not now
+    BIAS = "bias"               # who benefits from the claim being believed
+    UNRESOLVED = "unresolved"   # a question the search could not answer
+
+    ALL = (CONFLICT, CONTEXT, OUTDATED, BIAS, UNRESOLVED)
+    LABELS = {CONFLICT: "CONFLICTS", CONTEXT: "MISSING CONTEXT",
+              OUTDATED: "OUT OF DATE", BIAS: "INCENTIVES",
+              UNRESOLVED: "UNRESOLVED"}
+
+
+class TargetKind:
+    """What was challenged."""
+
+    FINDING = "finding"
+    DECISION = "decision"
+    ALL = (FINDING, DECISION)
+
+
+#: Limits, refused rather than truncated - see MAX_FINDING_CHARS.
+MAX_CHALLENGE_SUMMARY = 600
+MAX_POINT_CHARS = 200
+MAX_POINTS = 8
+
+
+@dataclass(frozen=True)
+class ChallengePoint:
+    """One thing found while attacking a claim."""
+
+    id: int
+    challenge_id: int
+    kind: str
+    text: str
+    page_id: int | None = None
+    position: int = 0
+    #: Where it was found, joined from the Mission page. Not stored twice.
+    source_url: str = ""
+    source_title: str = ""
+
+    @property
+    def label(self) -> str:
+        return PointKind.LABELS.get(self.kind, self.kind.upper())
+
+    @property
+    def source_domain(self) -> str:
+        if not self.source_url:
+            return ""
+        return MissionPage(id=0, mission_id=0, url=self.source_url).domain
+
+
+@dataclass(frozen=True)
+class MissionChallenge:
+    """The result of trying to prove a claim wrong.
+
+    Never replaces what it challenges. The original finding or decision is
+    left exactly as it was and this sits beside it, because the user needs to
+    see both to judge - which is the whole feature.
+
+    ``claim`` is a snapshot of the challenged text. If the finding is later
+    edited or deleted, the challenge still says what it was actually made
+    against; the same reasoning as decision evidence.
+    """
+
+    id: int
+    mission_id: int
+    target_kind: str
+    target_id: int
+    claim: str
+    verdict: str
+    summary: str
+    created_at: str = ""
+    superseded_at: str = ""
+    points: tuple[ChallengePoint, ...] = field(default_factory=tuple)
+
+    @property
+    def live(self) -> bool:
+        return not self.superseded_at
+
+    @property
+    def verdict_label(self) -> str:
+        return Verdict.LABELS.get(self.verdict, self.verdict.upper())
+
+    @property
+    def stands(self) -> bool:
+        """Did the claim survive? Used only for display emphasis."""
+        return self.verdict == Verdict.UPHELD
+
+    def points_of(self, kind: str) -> list[ChallengePoint]:
+        return [point for point in self.points if point.kind == kind]
+
+
 @dataclass(frozen=True)
 class Mission:
     """A goal, and the pages that served it."""
@@ -285,6 +403,13 @@ class Mission:
     #: The current decision, if one has been made. Superseded ones are kept in
     #: the database but never carried here: the product shows one decision.
     decision: MissionDecision | None = None
+    #: Live challenges on this Mission, whatever they target.
+    challenges: tuple[MissionChallenge, ...] = field(default_factory=tuple)
+
+    def challenge_of(self, kind: str, target_id: int) -> MissionChallenge | None:
+        """The live challenge against one finding or decision, if any."""
+        return next((c for c in self.challenges
+                     if c.target_kind == kind and c.target_id == target_id), None)
 
     @property
     def is_active(self) -> bool:

@@ -137,7 +137,8 @@ class _FindingRow(QWidget):
     edit_requested = Signal(object)      # MissionFinding
     source_requested = Signal(object)    # MissionFinding
 
-    def __init__(self, finding: MissionFinding, parent: QWidget | None = None) -> None:
+    def __init__(self, finding: MissionFinding, parent: QWidget | None = None,
+                 verdict: str = "") -> None:
         super().__init__(parent)
         self.finding = finding
         c = parent._colours
@@ -169,7 +170,8 @@ class _FindingRow(QWidget):
         self.text.clicked.connect(lambda: self.edit_requested.emit(self.finding))
         body.addWidget(self.text)
 
-        domain = " \u00b7 ".join(m for m in (finding.source_domain, finding.age) if m)
+        domain = " \u00b7 ".join(
+            m for m in (finding.source_domain, finding.age, verdict) if m)
         if domain:
             # Secondary by design: the discovery is the content, the source is
             # the footnote.
@@ -445,7 +447,9 @@ class MissionCard(QFrame):
 
         self.findings_label.setText(f"FINDINGS \u00b7 {len(findings)}")
         for finding in findings[:VISIBLE_FINDINGS]:
-            row = _FindingRow(finding, self)
+            challenge = mission.challenge_of("finding", finding.id)
+            row = _FindingRow(finding, self,
+                              challenge.verdict_label if challenge else "")
             row.edit_requested.connect(self._edit_finding)
             row.source_requested.connect(self._open_source)
             self._findings_box.addWidget(row)
@@ -513,6 +517,12 @@ class MissionCard(QFrame):
         if outcome == _FindingDialog.DELETE:
             self._service.delete_finding(finding.id)
             return
+        if outcome == _FindingDialog.CHALLENGE:
+            window = self.window()
+            challenge = getattr(window, "challenge_claim", None)
+            if callable(challenge):
+                challenge("finding", finding.id)
+            return
         if outcome != QDialog.DialogCode.Accepted:
             return
         text = dialog.text().strip()
@@ -544,10 +554,10 @@ class MissionCard(QFrame):
 
 
 class _FindingDialog(QDialog):
-    """Edit one finding, or delete it. Delete lives here rather than as a
-    second control in the row - see the note on _FindingRow."""
+    """Edit one finding, delete it, or ask Py to attack it."""
 
-    DELETE = 2      # a third outcome alongside Accepted and Rejected
+    DELETE = 2        # a third outcome alongside Accepted and Rejected
+    CHALLENGE = 3
 
     def __init__(self, finding: MissionFinding, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -571,6 +581,10 @@ class _FindingDialog(QDialog):
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel,
             self)
+        challenge = buttons.addButton("Challenge",
+                                      QDialogButtonBox.ButtonRole.ActionRole)
+        challenge.setToolTip("Ask Py to try to prove this wrong")
+        challenge.clicked.connect(lambda: self.done(self.CHALLENGE))
         remove = buttons.addButton("Delete", QDialogButtonBox.ButtonRole.DestructiveRole)
         remove.setProperty("kind", "danger")
         remove.clicked.connect(lambda: self.done(self.DELETE))

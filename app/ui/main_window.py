@@ -415,6 +415,10 @@ class MainWindow(QMainWindow):
             self._edit_decision(mission_id)
         elif name == "clear-decision" and mission_id is not None:
             self._clear_decision(mission_id)
+        elif name == "challenge":
+            target = (params.get("target") or "").strip()
+            if target.isdigit():
+                self.challenge_claim(params.get("kind") or "finding", int(target))
 
     def _resume_mission(self, mission_id: int) -> None:
         """Make a Mission active in this window, and show Py.
@@ -532,6 +536,41 @@ class MainWindow(QMainWindow):
         if answer == QMessageBox.StandardButton.Yes:
             self.missions.clear_decision(mission_id)
             self._reload_mission_views(mission_id)
+
+    def challenge_claim(self, target_kind: str, target_id: int) -> None:
+        """Ask Py to try to prove one claim wrong.
+
+        The target is recorded on the Mission service, not passed through the
+        model: `mission_save_challenge` has no parameter naming a target, so
+        Py can only report on whatever the user actually selected. The request
+        itself is an ordinary message - the same path a quick action takes -
+        so Challenge Mode adds no new way for the agent to reach the browser.
+        """
+        claim = self.missions.begin_challenge(target_kind, target_id)
+        if not claim:
+            self._show_status("That claim is no longer part of the active mission.")
+            return
+        noun = "decision" if target_kind == "decision" else "note"
+        # Short and readable: how to challenge something is static guidance in
+        # the system prompt, so the message the user sees in their own
+        # transcript is the request they actually made, not a briefing.
+        self._ask_py(f"Challenge this {noun}: {claim}")
+
+    def _ask_py(self, text: str) -> None:
+        """Open Py and send a prepared request.
+
+        Unlike `_open_agent_with`, which writes into the box for the user to
+        read and change, this sends: the user clicked a button on one specific
+        claim, so there is nothing left to decide. It goes through the panel's
+        ordinary ask path - the same one the quick actions use - so no new
+        route into the agent exists.
+        """
+        if self._side_panel is None:
+            self._toggle_agent_panel()
+        panel = self._side_panel
+        ask = getattr(panel, "ask", None)
+        if callable(ask):
+            ask(text)
 
     def _reload_mission_views(self, _mission_id: int = 0) -> None:
         """Re-render any tab currently showing the library."""

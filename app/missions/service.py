@@ -28,10 +28,13 @@ from app.missions.bus import bus
 from app.missions.model import (
     MAX_DECISION_CHARS,
     MAX_FINDING_CHARS,
+    MAX_CHALLENGE_SUMMARY,
     MAX_FINDINGS_PER_MISSION,
     MAX_RATIONALE_CHARS,
     Mission,
+    MissionChallenge,
     MissionDecision,
+    TargetKind,
     MissionFinding,
     MissionPage,
     MissionStatus,
@@ -89,6 +92,13 @@ class MissionService(QObject):
         #: activation is. A finding saved five minutes later does not silently
         #: turn into a second briefing at the start of the next task.
         self._briefing = ""
+        #: What the user asked Py to challenge, while that is in progress.
+        #: Runtime only: it belongs to one live interaction and means nothing
+        #: after a restart. Holding it here rather than passing it through the
+        #: model is what makes Py structurally unable to challenge something
+        #: the user did not select - there is no tool parameter to name a
+        #: target with.
+        self._pending_challenge: tuple[str, int, str] | None = None
         if controller is not None:
             controller.action_completed.connect(self._on_action)
         # Every window hears about every Mission change, including its own.
@@ -183,6 +193,8 @@ class MissionService(QObject):
 
     def _set_active(self, mission: Mission | None) -> None:
         self._active = mission
+        # A challenge belongs to the mission it was started on.
+        self._pending_challenge = None
         if mission is not None:
             self._activation += 1
             self._briefing = briefing_text.compose(mission)
@@ -363,6 +375,102 @@ class MissionService(QObject):
             self._announce(mission_id)
             self.missions_changed.emit(self._store.get(mission_id))
         return cleared
+
+    # -- challenges ------------------------------------------------------
+    #
+    # A challenge is an attack on a claim, recorded beside it. It never edits
+    # the finding or decision it targets: the user needs both to judge, which
+    # is the whole feature.
+
+    def begin_challenge(self, target_kind: str, target_id: int) -> str:
+        """Mark what the user asked to have challenged. Returns the claim text.
+
+        Returns "" when there is nothing to challenge, in which case nothing is
+        marked and the caller should do nothing.
+        """
+        mission = self._active
+        if mission is None or target_kind not in TargetKind.ALL:
+            return ""
+        claim = ""
+        if target_kind == TargetKind.FINDING:
+            finding = next((f for f in mission.findings if f.id == target_id), None)
+            claim = finding.text if finding is not None else ""
+        elif mission.decision is not None and mission.decision.id == target_id:
+            claim = f"{mission.decision.decision} - {mission.decision.rationale}"
+        if not claim:
+            return ""
+        self._pending_challenge = (target_kind, target_id, claim)
+        return claim
+
+    def cancel_challenge(self) -> None:
+        self._pending_challenge = None
+
+    @property
+    def pending_challenge(self) -> tuple[str, int, str] | None:
+        return self._pending_challenge
+
+    def save_challenge(self, verdict: str, summary: str,
+                       points: list[tuple[str, str, int | None]] | None = None) -> dict:
+        """Record the result of the challenge the user asked for.
+
+        There is no target parameter, and that is deliberate: the target is
+        whatever the user selected. A call with nothing pending is refused
+        rather than guessed at.
+        """
+        mission = self._active
+        if mission is None:
+            return {"status": "no_mission"}
+        if self._pending_challenge is None:
+            return {"status": "nothing_pending"}
+        target_kind, target_id, claim = self._pending_challenge
+
+        outcome, saved = self._store.save_challenge(
+            mission.id, target_kind, target_id, claim, verdict, summary, points)
+        result = {"status": outcome}
+        if saved is not None:
+            result["challenge_id"] = saved.id
+            result["points"] = len(saved.points)
+            self._pending_challenge = None
+        if outcome == self._store.CHALLENGE_TOO_LONG:
+            result["limit"] = MAX_CHALLENGE_SUMMARY
+        self._refresh()
+        self._announce(mission.id)
+        return result
+
+    def challenge(self, target_kind: str, target_id: int) -> MissionChallenge | None:
+        return self._store.challenge(target_kind, target_id)
+
+    def clear_challenge(self, challenge_id: int) -> bool:
+        cleared = self._store.clear_challenge(challenge_id)
+        if cleared:
+            self._refresh()
+            if self._active is not None:
+                self._announce(self._active.id)
+        return cleared
+
+    def resolve_page(self, tab_id: int | None):
+        """The Mission page for a tab, filing it if it is not one yet.
+
+        Shared by findings and challenge points so attribution is derived the
+        same way for both: from the real tab, never from anything the model
+        claims. An explicit tab id that does not resolve returns the string
+        "unknown" rather than falling back to whatever is in front.
+        """
+        mission = self._active
+        if mission is None:
+            return None
+        if tab_id is not None:
+            entry = self._tab_entry(tab_id)
+            if entry is None:
+                return "unknown"
+        else:
+            entry = self._active_tab_entry()
+        if entry is None:
+            return None
+        url, title = entry.get("url", ""), entry.get("title", "")
+        if not url or not is_associable(url):
+            return None
+        return self._store.add_page(mission.id, url, title, PageSource.READ)
 
     # -- the library -----------------------------------------------------
     def search(self, query: str, limit: int = 200) -> list[Mission]:

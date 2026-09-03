@@ -15,16 +15,24 @@ from __future__ import annotations
 
 from app.missions.model import (
     MAX_ALTERNATIVES,
+    MAX_CHALLENGE_SUMMARY,
     MAX_DECISION_CHARS,
     MAX_EVIDENCE,
     MAX_FINDING_CHARS,
     MAX_FINDINGS_PER_MISSION,
+    MAX_POINT_CHARS,
+    MAX_POINTS,
     MAX_RATIONALE_CHARS,
     MAX_TITLE,
+    ChallengePoint,
     DecisionAlternative,
     DecisionEvidence,
     Mission,
+    MissionChallenge,
     MissionDecision,
+    PointKind,
+    TargetKind,
+    Verdict,
     MissionFinding,
     MissionPage,
     MissionStatus,
@@ -86,7 +94,9 @@ class MissionStore:
         pages = tuple(self.pages(mission_id)) if with_pages else ()
         found = tuple(self.findings(mission_id)) if with_pages else ()
         decision = self.decision(mission_id) if with_pages else None
-        return Mission(**dict(row), pages=pages, findings=found, decision=decision)
+        challenges = tuple(self.challenges(mission_id)) if with_pages else ()
+        return Mission(**dict(row), pages=pages, findings=found, decision=decision,
+                       challenges=challenges)
 
     def recent(self, limit: int = 20, *, with_pages: bool = False) -> list[Mission]:
         """Missions, most recently touched first."""
@@ -531,6 +541,113 @@ class MissionStore:
             "LEFT JOIN mission_findings f ON f.id = e.finding_id "
             "WHERE e.decision_id = ? ORDER BY e.position, e.id", (decision_id,))
         return [DecisionEvidence(**dict(row)) for row in rows]
+
+    # -- challenges ------------------------------------------------------
+    #
+    # A challenge never edits what it challenges. It is a second opinion filed
+    # beside the first, so the user can read both; overwriting the original
+    # would destroy the comparison the feature exists to make.
+
+    CHALLENGE_SAVED = "saved"
+    CHALLENGE_TOO_LONG = "too_long"
+    CHALLENGE_NO_TEXT = "no_text"
+    CHALLENGE_BAD_VERDICT = "bad_verdict"
+    CHALLENGE_BAD_KIND = "bad_kind"
+    CHALLENGE_UNKNOWN_TARGET = "unknown_target"
+
+    def save_challenge(self, mission_id: int, target_kind: str, target_id: int,
+                       claim: str, verdict: str, summary: str,
+                       points: list[tuple[str, str, int | None]] | None = None
+                       ) -> tuple[str, MissionChallenge | None]:
+        """Record the result of attacking one claim, superseding any earlier one."""
+        if target_kind not in TargetKind.ALL:
+            return self.CHALLENGE_UNKNOWN_TARGET, None
+        if verdict not in Verdict.ALL:
+            return self.CHALLENGE_BAD_VERDICT, None
+        summary = collapse(summary)
+        claim = collapse(claim)
+        if not summary or not claim:
+            return self.CHALLENGE_NO_TEXT, None
+        if len(summary) > MAX_CHALLENGE_SUMMARY:
+            return self.CHALLENGE_TOO_LONG, None
+
+        cleaned: list[tuple[str, str, int | None]] = []
+        for kind, text, page_id in (points or [])[:MAX_POINTS]:
+            if kind not in PointKind.ALL:
+                return self.CHALLENGE_BAD_KIND, None
+            text = collapse(text)
+            if not text:
+                continue
+            if len(text) > MAX_POINT_CHARS:
+                return self.CHALLENGE_TOO_LONG, None
+            cleaned.append((kind, text, page_id))
+
+        stamp = now()
+        current = self.challenge(target_kind, target_id)
+        if current is not None:
+            self._db.execute(
+                "UPDATE mission_challenges SET superseded_at = ? WHERE id = ?",
+                (stamp, current.id))
+        cursor = self._db.execute(
+            "INSERT INTO mission_challenges "
+            "(mission_id, target_kind, target_id, claim, verdict, summary, "
+            " created_at, superseded_at) VALUES (?, ?, ?, ?, ?, ?, ?, '')",
+            (mission_id, target_kind, target_id, claim, verdict, summary, stamp))
+        if cursor is None:
+            return self.CHALLENGE_NO_TEXT, None
+        challenge_id = int(cursor.lastrowid)
+        for position, (kind, text, page_id) in enumerate(cleaned):
+            self._db.execute(
+                "INSERT INTO challenge_points "
+                "(challenge_id, kind, text, page_id, position) VALUES (?, ?, ?, ?, ?)",
+                (challenge_id, kind, text, page_id, position))
+        self._touch_mission(mission_id)
+        return self.CHALLENGE_SAVED, self.get_challenge(challenge_id)
+
+    def challenge(self, target_kind: str, target_id: int) -> MissionChallenge | None:
+        """The live challenge against one claim, or None."""
+        row = self._db.query_one(
+            "SELECT id FROM mission_challenges "
+            "WHERE target_kind = ? AND target_id = ? AND superseded_at = ''",
+            (target_kind, target_id))
+        return self.get_challenge(int(row["id"])) if row else None
+
+    def challenges(self, mission_id: int) -> list[MissionChallenge]:
+        """Every live challenge on a Mission."""
+        rows = self._db.query(
+            "SELECT id FROM mission_challenges "
+            "WHERE mission_id = ? AND superseded_at = '' ORDER BY created_at, id",
+            (mission_id,))
+        return [self.get_challenge(int(row["id"])) for row in rows]
+
+    def get_challenge(self, challenge_id: int) -> MissionChallenge | None:
+        row = self._db.query_one(
+            "SELECT id, mission_id, target_kind, target_id, claim, verdict, "
+            "       summary, created_at, superseded_at "
+            "FROM mission_challenges WHERE id = ?", (challenge_id,))
+        if row is None:
+            return None
+        return MissionChallenge(**dict(row), points=tuple(self._points(challenge_id)))
+
+    def clear_challenge(self, challenge_id: int) -> bool:
+        """Retire a challenge, keeping the record that it was made."""
+        challenge = self.get_challenge(challenge_id)
+        if challenge is None or not challenge.live:
+            return False
+        self._db.execute("UPDATE mission_challenges SET superseded_at = ? WHERE id = ?",
+                         (now(), challenge_id))
+        self._touch_mission(challenge.mission_id)
+        return True
+
+    def _points(self, challenge_id: int) -> list[ChallengePoint]:
+        rows = self._db.query(
+            "SELECT c.id, c.challenge_id, c.kind, c.text, c.page_id, c.position, "
+            "       COALESCE(p.url, '') AS source_url, "
+            "       COALESCE(p.title, '') AS source_title "
+            "FROM challenge_points c "
+            "LEFT JOIN mission_pages p ON p.id = c.page_id "
+            "WHERE c.challenge_id = ? ORDER BY c.position, c.id", (challenge_id,))
+        return [ChallengePoint(**dict(row)) for row in rows]
 
     def _touch_mission(self, mission_id: int) -> None:
         self._db.execute("UPDATE missions SET updated_at = ? WHERE id = ?",

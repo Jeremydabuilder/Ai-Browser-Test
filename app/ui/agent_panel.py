@@ -467,6 +467,15 @@ class AgentPanel(QWidget):
             return
         self._session.clear()
 
+    def ask(self, text: str) -> None:
+        """Send a prepared message from outside the panel.
+
+        Public because the window uses it for actions the user started
+        elsewhere - challenging a claim from the Mission page. It is the same
+        path as a quick action, so nothing new can reach the agent through it.
+        """
+        self._ask(text)
+
     def _ask(self, text: str) -> None:
         """Send a prepared message, exactly as if the user had typed it."""
         if self._session is None or self._session.busy:

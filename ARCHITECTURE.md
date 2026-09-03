@@ -437,6 +437,37 @@ instructions, never consent. A test asserts the safety layer's judgement is
 byte-identical before and after saving a decision that claims the user approved
 a purchase.
 
+### Challenge Mode
+
+The user can point at a finding or a decision and ask Py to try to prove it
+wrong. `mission_challenges` records the verdict - `upheld`, `weakened`,
+`contradicted` or `unresolved` - a summary written for the user, and typed
+`challenge_points` saying what was actually found: evidence the other way,
+missing context, an out-of-date claim, an incentive to believe it, or a
+question that could not be settled.
+
+**The target is chosen by the user, not by the model.** `mission_save_challenge`
+has no parameter naming a target. The user clicks Challenge, the service records
+the target in runtime state, and the tool applies to that. Three things follow:
+the model is structurally unable to challenge something nobody asked about; it
+does not need a finding id it cannot see (the briefing lists findings without
+ids, so a resumed Mission would otherwise be unchallengeable); and a call with
+nothing pending is a clean error rather than a guess.
+
+**A challenge never edits what it challenges.** It is filed beside the original,
+which is left exactly as it was, because the user needs both to judge. `claim`
+snapshots the challenged text, so editing or deleting the finding afterwards
+leaves the challenge still saying what it was made against - the same reasoning
+as decision evidence. Append-only, with a partial unique index for one live
+challenge per claim.
+
+**No new browsing capability.** The investigation uses the browser tools that
+already existed and are already gated; only recording the result is new. And no
+third briefing marker: a challenged note carries its verdict as one word inside
+the existing findings fence, and a challenged decision carries a line inside the
+existing decision fence. A briefing with three kinds of block in it stops being
+read.
+
 ### The Mission Library
 
 `pybrowser://missions/` is a real page, not a panel view. A Mission is not a

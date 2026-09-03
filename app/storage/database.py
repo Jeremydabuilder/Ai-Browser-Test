@@ -25,7 +25,7 @@ import threading
 from pathlib import Path
 from typing import Any, Iterable, Sequence
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS history (
@@ -144,6 +144,41 @@ CREATE TABLE IF NOT EXISTS decision_evidence (
 );
 CREATE INDEX IF NOT EXISTS idx_decision_evidence
     ON decision_evidence(decision_id, position);
+
+-- The result of trying to prove a claim wrong. Never replaces what it
+-- challenges: the original finding or decision is left as it was, and this
+-- sits beside it so the user can see both and judge.
+--
+-- target_id is a plain integer, not a foreign key, and `claim` snapshots the
+-- challenged text. A polymorphic FK would buy nothing and cost the history:
+-- delete the finding and the challenge should still say what it was made
+-- against. Append-only, like decisions.
+CREATE TABLE IF NOT EXISTS mission_challenges (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    mission_id    INTEGER NOT NULL REFERENCES missions(id) ON DELETE CASCADE,
+    target_kind   TEXT NOT NULL,
+    target_id     INTEGER NOT NULL,
+    claim         TEXT NOT NULL,
+    verdict       TEXT NOT NULL,
+    summary       TEXT NOT NULL,
+    created_at    TEXT NOT NULL,
+    superseded_at TEXT NOT NULL DEFAULT ''
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_one_live_challenge
+    ON mission_challenges(target_kind, target_id) WHERE superseded_at = '';
+CREATE INDEX IF NOT EXISTS idx_mission_challenges
+    ON mission_challenges(mission_id, created_at);
+
+CREATE TABLE IF NOT EXISTS challenge_points (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    challenge_id INTEGER NOT NULL REFERENCES mission_challenges(id) ON DELETE CASCADE,
+    kind         TEXT NOT NULL,
+    text         TEXT NOT NULL,
+    page_id      INTEGER          REFERENCES mission_pages(id) ON DELETE SET NULL,
+    position     INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_challenge_points
+    ON challenge_points(challenge_id, position);
 """
 
 #: How a profile at version N becomes a profile at version N+1.
@@ -204,6 +239,43 @@ _MIGRATIONS: dict[int, str] = {
     # v3 -> v4: soft delete. See the note in _SCHEMA.
     3: """
     ALTER TABLE missions ADD COLUMN deleted_at TEXT NOT NULL DEFAULT '';
+    """,
+    # v5 -> v6: challenge mode. See the notes in _SCHEMA.
+    5: """
+    -- The result of trying to prove a claim wrong. Never replaces what it
+    -- challenges: the original finding or decision is left as it was, and this
+    -- sits beside it so the user can see both and judge.
+    --
+    -- target_id is a plain integer, not a foreign key, and `claim` snapshots the
+    -- challenged text. A polymorphic FK would buy nothing and cost the history:
+    -- delete the finding and the challenge should still say what it was made
+    -- against. Append-only, like decisions.
+    CREATE TABLE IF NOT EXISTS mission_challenges (
+        id            INTEGER PRIMARY KEY AUTOINCREMENT,
+        mission_id    INTEGER NOT NULL REFERENCES missions(id) ON DELETE CASCADE,
+        target_kind   TEXT NOT NULL,
+        target_id     INTEGER NOT NULL,
+        claim         TEXT NOT NULL,
+        verdict       TEXT NOT NULL,
+        summary       TEXT NOT NULL,
+        created_at    TEXT NOT NULL,
+        superseded_at TEXT NOT NULL DEFAULT ''
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_one_live_challenge
+        ON mission_challenges(target_kind, target_id) WHERE superseded_at = '';
+    CREATE INDEX IF NOT EXISTS idx_mission_challenges
+        ON mission_challenges(mission_id, created_at);
+    
+    CREATE TABLE IF NOT EXISTS challenge_points (
+        id           INTEGER PRIMARY KEY AUTOINCREMENT,
+        challenge_id INTEGER NOT NULL REFERENCES mission_challenges(id) ON DELETE CASCADE,
+        kind         TEXT NOT NULL,
+        text         TEXT NOT NULL,
+        page_id      INTEGER          REFERENCES mission_pages(id) ON DELETE SET NULL,
+        position     INTEGER NOT NULL DEFAULT 0
+    );
+    CREATE INDEX IF NOT EXISTS idx_challenge_points
+        ON challenge_points(challenge_id, position);
     """,
     # v4 -> v5: decision memory. See the notes in _SCHEMA.
     4: """
