@@ -25,7 +25,7 @@ import threading
 from pathlib import Path
 from typing import Any, Iterable, Sequence
 
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS history (
@@ -53,6 +53,12 @@ CREATE TABLE IF NOT EXISTS settings (
 -- Pages are addressed by URL, never by tab id: a tab id is an in-memory
 -- counter that means nothing after a restart, and holding one would make a
 -- mission corruptible by closing a tab.
+-- parent_id/branch_name: a Mission may branch from another - "Trip Plan" into
+-- "Budget", "Comfort", "Fastest" - each evolving independently from there.
+-- ON DELETE SET NULL rather than CASCADE: deleting a parent must not take its
+-- branches down with it: each branch is a full copy of the state it branched
+-- from, not a view onto the parent, so it stands on its own.
+--
 -- next_ref is the next finding reference this mission will issue: a high-water
 -- mark rather than a count, because deleting the highest-numbered finding must
 -- not hand its number to the next one - a citation written last month would
@@ -75,7 +81,9 @@ CREATE TABLE IF NOT EXISTS missions (
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     deleted_at TEXT NOT NULL DEFAULT '',
-    next_ref   INTEGER NOT NULL DEFAULT 1
+    next_ref   INTEGER NOT NULL DEFAULT 1,
+    parent_id  INTEGER REFERENCES missions(id) ON DELETE SET NULL,
+    branch_name TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_missions_updated ON missions(updated_at DESC);
 
@@ -288,6 +296,11 @@ _MIGRATIONS: dict[int, str] = {
     # v3 -> v4: soft delete. See the note in _SCHEMA.
     3: """
     ALTER TABLE missions ADD COLUMN deleted_at TEXT NOT NULL DEFAULT '';
+    """,
+    # v8 -> v9: branching. parent_id/branch_name on missions.
+    8: """
+    ALTER TABLE missions ADD COLUMN parent_id INTEGER REFERENCES missions(id) ON DELETE SET NULL;
+    ALTER TABLE missions ADD COLUMN branch_name TEXT NOT NULL DEFAULT '';
     """,
     # v7 -> v8: routines (Teach Py).
     7: """

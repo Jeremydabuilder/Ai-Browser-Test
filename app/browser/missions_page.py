@@ -68,7 +68,7 @@ class LibraryData:
 
 def summarise(mission, *, with_detail: bool = False,
               findings: int | None = None, pages: int | None = None,
-              routines=None) -> dict[str, Any]:
+              routines=None, children=None, parent=None) -> dict[str, Any]:
     """One Mission as the page wants it.
 
     The counts are passed in for the list view, where Missions are read without
@@ -83,6 +83,7 @@ def summarise(mission, *, with_detail: bool = False,
         "updated": mission.updated_at,
         "findings": len(mission.findings) if findings is None else findings,
         "pages": len(mission.pages) if pages is None else pages,
+        "branchName": mission.branch_name,
     }
     if with_detail:
         row["decision"] = _decision(mission.decision)
@@ -102,6 +103,13 @@ def summarise(mission, *, with_detail: bool = False,
         row["routineList"] = [
             {"id": routine.id, "name": routine.name, "steps": len(routine.steps)}
             for routine in (routines or [])
+        ]
+        row["parent"] = ({"id": parent.id, "title": parent.title}
+                         if parent is not None else None)
+        row["branches"] = [
+            {"id": child.id, "title": child.title, "branchName": child.branch_name,
+             "status": child.status}
+            for child in (children or [])
         ]
     return row
 
@@ -335,9 +343,10 @@ _TEMPLATE = """<!doctype html>
   }
   .empty { color: var(--muted); padding: 32px 0; }
   .back {
-    background: none; border: none; color: var(--muted); cursor: pointer;
-    font: inherit; padding: 0; margin-bottom: 18px;
+    display: block; background: none; border: none; color: var(--muted);
+    cursor: pointer; font: inherit; padding: 0; margin-bottom: 8px;
   }
+  .back:last-of-type { margin-bottom: 18px; }
   .back:hover { color: var(--accent); }
   .detail-goal { color: var(--muted); margin: 4px 0 22px; font-size: 15px; }
   .actions { display: flex; gap: 8px; margin: 0 0 26px; }
@@ -665,8 +674,17 @@ _TEMPLATE = """<!doctype html>
     back.addEventListener("click", function () { act("library", {}); });
     body.appendChild(back);
 
+    if (mission.parent) {
+      var lineage = el("button", "link", "Branched from " + mission.parent.title);
+      lineage.addEventListener("click", function () {
+        act("open", { id: mission.parent.id });
+      });
+      body.appendChild(lineage);
+    }
+
     var head = el("div", "row");
     head.appendChild(el("h1", null, mission.title));
+    if (mission.branchName) { head.appendChild(el("span", "tag", mission.branchName)); }
     body.appendChild(head);
     body.appendChild(el("div", "detail-goal", mission.goal));
 
@@ -683,7 +701,28 @@ _TEMPLATE = """<!doctype html>
     var remove = el("button", "act danger", "Delete");
     remove.addEventListener("click", function () { act("delete", { id: mission.id }); });
     actions.appendChild(remove);
+    var branch = el("button", "act", "Branch this mission");
+    branch.title = "Fork an independent copy - its own findings, its own decision";
+    branch.addEventListener("click", function () { act("branch", { id: mission.id }); });
+    actions.appendChild(branch);
     body.appendChild(actions);
+
+    if (mission.branches && mission.branches.length) {
+      body.appendChild(el("h2", null, "BRANCHES \u00b7 " + mission.branches.length));
+      var branches = el("ul");
+      mission.branches.forEach(function (child) {
+        var li = el("li", "page");
+        var row = el("div", "root-row");
+        row.appendChild(el("span", "t", child.title));
+        if (child.status === "active") { row.appendChild(el("span", "tag", "ACTIVE")); }
+        var open = el("button", "link", "Open");
+        open.addEventListener("click", function () { act("open", { id: child.id }); });
+        row.appendChild(open);
+        li.appendChild(row);
+        branches.appendChild(li);
+      });
+      body.appendChild(branches);
+    }
 
     body.appendChild(el("h2", null, "FINDINGS \\u00b7 " + mission.findingList.length));
     if (!mission.findingList.length) {

@@ -499,6 +499,22 @@ class MissionService(QObject):
             return None
         return self._store.add_page(mission.id, url, title, PageSource.READ)
 
+    # -- branching --------------------------------------------------------
+    def branch(self, mission_id: int, branch_name: str) -> Mission | None:
+        """Fork a Mission into an independent copy. See MissionStore.branch
+        for exactly what is and is not carried over."""
+        new_mission = self._store.branch(mission_id, branch_name)
+        if new_mission is not None:
+            self.missions_changed.emit(new_mission)
+            self._announce(new_mission.id)
+        return new_mission
+
+    def children(self, mission_id: int) -> list[Mission]:
+        return self._store.children(mission_id)
+
+    def parent_of(self, mission_id: int) -> Mission | None:
+        return self._store.parent_of(mission_id)
+
     # -- the library -----------------------------------------------------
     def search(self, query: str, limit: int = 200) -> list[Mission]:
         """Missions matching a query. One method, one corpus - see the store."""

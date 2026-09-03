@@ -589,6 +589,15 @@ class Mission:
     decision: MissionDecision | None = None
     #: Live challenges on this Mission, whatever they target.
     challenges: tuple[MissionChallenge, ...] = field(default_factory=tuple)
+    #: The Mission this one branched from, or None for a root Mission.
+    parent_id: int | None = None
+    #: What distinguishes this branch from its siblings - "Budget", "Fastest".
+    #: Empty on a root Mission.
+    branch_name: str = ""
+
+    @property
+    def is_branch(self) -> bool:
+        return self.parent_id is not None
 
     def challenge_of(self, kind: str, target_id: int) -> MissionChallenge | None:
         """The live challenge against one finding or decision, if any."""

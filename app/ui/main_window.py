@@ -364,8 +364,11 @@ class MainWindow(QMainWindow):
                 if mission is None:
                     return LibraryData(total=self.missions.store.count())
                 return LibraryData(
-                    detail=summarise(mission, with_detail=True,
-                                     routines=self.routines.for_mission(mission.id)),
+                    detail=summarise(
+                        mission, with_detail=True,
+                        routines=self.routines.for_mission(mission.id),
+                        children=self.missions.children(mission.id),
+                        parent=self.missions.parent_of(mission.id)),
                     total=self.missions.store.count())
             found = self.missions.search(query)
             store = self.missions.store
@@ -433,6 +436,8 @@ class MainWindow(QMainWindow):
             self._edit_decision(mission_id)
         elif name == "clear-decision" and mission_id is not None:
             self._clear_decision(mission_id)
+        elif name == "branch" and mission_id is not None:
+            self._branch_mission(mission_id)
         elif name == "routine-run":
             identifier = (params.get("id") or "").strip()
             if identifier.isdigit():
@@ -667,6 +672,30 @@ class MainWindow(QMainWindow):
         if callable(begin):
             begin(routine.name)
         self._agent_session.run_routine(routine.resolve(overrides))
+
+    def _branch_mission(self, mission_id: int) -> None:
+        """Fork a Mission: an independent copy of its findings and decision.
+
+        The two evolve separately from this point - editing or deleting
+        something in one can never reach into the other, because branching
+        copies rows rather than sharing them. See MissionStore.branch.
+        """
+        from PySide6.QtWidgets import QInputDialog
+
+        mission = self.missions.store.get(mission_id)
+        if mission is None:
+            return
+        name, ok = QInputDialog.getText(
+            self, "Branch mission", "What distinguishes this branch?",
+            text="")
+        if not ok or not name.strip():
+            return
+        new_mission = self.missions.branch(mission_id, name)
+        if new_mission is None:
+            self._show_status("Could not branch that mission.")
+            return
+        self._show_status(f"Branched: {new_mission.title}")
+        self._open_mission(new_mission.id)
 
     def _reload_mission_views(self, _mission_id: int = 0) -> None:
         """Re-render any tab currently showing the library."""

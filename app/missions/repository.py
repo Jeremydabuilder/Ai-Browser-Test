@@ -82,11 +82,80 @@ class MissionStore:
         return Mission(id=int(cursor.lastrowid), title=title, goal=goal,
                        status=MissionStatus.ACTIVE, created_at=stamp, updated_at=stamp)
 
+    # -- branching --------------------------------------------------------
+    #
+    # A branch is a full copy of its parent's state at the moment it forks,
+    # never a view onto the parent. Findings and the live decision are
+    # snapshotted into new rows on the new Mission, with their own fresh refs
+    # (see model.finding_ref) - so editing or deleting something in one branch
+    # can never reach into another, the same historical-accuracy reasoning as
+    # decision evidence and challenge snapshots throughout this module.
+    #
+    # Deliberately NOT copied: challenges (they target specific finding rows
+    # by id, and the branch's findings are new rows - a copied challenge would
+    # point at the wrong claim) and Routines (still reachable on the parent;
+    # copying them per branch is not needed for a branch to work). Both are
+    # limitations worth being honest about rather than silently approximating.
+    def branch(self, mission_id: int, branch_name: str) -> Mission | None:
+        """Fork a Mission. Returns the new branch, or None if the source is gone."""
+        source = self.get(mission_id)
+        if source is None:
+            return None
+        branch_name = collapse(branch_name)[:MAX_TITLE]
+        title = f"{source.title} \u2014 {branch_name}" if branch_name else source.title
+        stamp = now()
+        cursor = self._db.execute(
+            "INSERT INTO missions (title, goal, status, created_at, updated_at, "
+            "parent_id, branch_name) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (title, source.goal, MissionStatus.ACTIVE, stamp, stamp,
+             mission_id, branch_name))
+        if cursor is None:
+            return None
+        new_id = int(cursor.lastrowid)
+
+        # Findings: fresh rows, fresh refs, same text and source page.
+        old_to_new: dict[int, int] = {}
+        for finding in source.findings:
+            page_id = None
+            if finding.source_url:
+                page = self.add_page(new_id, finding.source_url, finding.source_title)
+                page_id = page.id if page is not None else None
+            _, copied = self.add_finding(new_id, finding.text, page_id)
+            if copied is not None:
+                old_to_new[finding.id] = copied.id
+
+        # The live decision, if any: a fresh decision on the new Mission,
+        # citing the branch's own copies of the findings it rested on.
+        if source.decision is not None:
+            decision = source.decision
+            evidence_ids = [old_to_new[e.finding_id] for e in decision.evidence
+                            if e.finding_id in old_to_new]
+            self.save_decision(
+                new_id, decision.decision, decision.rationale, evidence_ids,
+                [(a.name, a.reason) for a in decision.alternatives],
+                [a.text for a in decision.assumptions])
+
+        return self.get(new_id)
+
+    def children(self, mission_id: int) -> list[Mission]:
+        """This Mission's branches, most recently touched first."""
+        rows = self._db.query(
+            self._MISSION_COLUMNS + f"WHERE parent_id = ? AND {self._ALIVE} "
+            "ORDER BY updated_at DESC, id DESC", (mission_id,))
+        return [Mission(**dict(row)) for row in rows]
+
+    def parent_of(self, mission_id: int) -> Mission | None:
+        row = self._db.query_one("SELECT parent_id FROM missions WHERE id = ?",
+                                 (mission_id,))
+        if row is None or row["parent_id"] is None:
+            return None
+        return self.get(int(row["parent_id"]))
+
     #: Columns every Mission read selects, and the clause that hides deleted
     #: ones. Written once so a new query cannot forget the filter - which is
     #: the failure mode of soft delete everywhere it has ever been done badly.
-    _MISSION_COLUMNS = ("SELECT id, title, goal, status, created_at, updated_at "
-                        "FROM missions ")
+    _MISSION_COLUMNS = ("SELECT id, title, goal, status, created_at, updated_at, "
+                        "parent_id, branch_name FROM missions ")
     _ALIVE = "deleted_at = ''"
 
     def get(self, mission_id: int, *, with_pages: bool = True) -> Mission | None:

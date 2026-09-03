@@ -437,6 +437,28 @@ instructions, never consent. A test asserts the safety layer's judgement is
 byte-identical before and after saving a decision that claims the user approved
 a purchase.
 
+### Branching ("Branch the Internet")
+
+A Mission can be forked into an independent copy - `missions.parent_id` and
+`branch_name`, ON DELETE SET NULL so deleting a parent never takes its
+branches down with it. Branching **copies rows**, never shares them: findings
+get fresh mission-local refs on the new Mission, the live decision (if any) is
+recreated citing the branch's own copies, and pages come along too. From the
+moment a branch exists, editing or deleting anything in one Mission cannot
+reach the other - the same historical-accuracy pattern as decision evidence
+and challenge snapshots throughout this codebase, applied to a whole Mission
+at once.
+
+Deliberately **not** copied: challenges (a challenge targets a specific
+finding row by id, and the branch's findings are new rows - carrying the old
+challenge over would attach it to the wrong claim, so the branch starts
+unchallenged) and Routines (still reachable on the parent; not duplicated per
+branch in V1). Both are named limitations, not silent gaps.
+
+Branching is a UI-only, local, reversible action - no new agent tool. It
+changes no Mission's active/inactive state: forking from the library must not
+hijack Py's context, the same reasoning as "open is not resume".
+
 ### Routines (Teach Py)
 
 A Routine is a taught sequence of the agent's own tool calls, saved while

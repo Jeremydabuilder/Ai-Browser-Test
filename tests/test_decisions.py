@@ -325,11 +325,15 @@ class MigrationTests(unittest.TestCase):
 
         conn = sqlite3.connect(path)
         for table in ("decision_assumptions", "decision_evidence",
-                      "decision_alternatives", "mission_decisions"):
+                      "decision_alternatives", "mission_decisions",
+                      "challenge_points", "mission_challenges",
+                      "routine_steps", "routines"):
             conn.execute(f"DROP TABLE IF EXISTS {table}")
         conn.execute("DROP INDEX IF EXISTS idx_finding_ref")
         conn.execute("ALTER TABLE mission_findings DROP COLUMN ref")
         conn.execute("ALTER TABLE missions DROP COLUMN next_ref")
+        conn.execute("ALTER TABLE missions DROP COLUMN parent_id")
+        conn.execute("ALTER TABLE missions DROP COLUMN branch_name")
         conn.execute("PRAGMA user_version=4")
         conn.commit()
         conn.close()
