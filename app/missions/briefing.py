@@ -76,11 +76,16 @@ def _line(finding: MissionFinding, verdict: str = "") -> str:
     without it.
     """
     text = " ".join(finding.text.split())
+    # The mission-local reference goes first, because it is how the model
+    # cites this finding when recording a decision - and without it a resumed
+    # mission's evidence is unciteable.
+    label = f"[{finding.label}] " if finding.label else ""
     # A verdict rides in the existing fence as one word rather than earning a
     # third marker. "CONTRADICTED" beside a note is the whole signal that
     # matters, and a briefing with three kinds of block in it stops being read.
     marks = [mark for mark in (finding.source_domain, finding.age, verdict) if mark]
-    return f"- {text}  ({', '.join(marks)})" if marks else f"- {text}"
+    return (f"- {label}{text}  ({', '.join(marks)})" if marks
+            else f"- {label}{text}")
 
 
 def _verdicts(mission: Mission | None) -> dict[int, str]:
@@ -138,6 +143,11 @@ def decision_block(decision: MissionDecision | None,
     if decision is None:
         return ""
     lines = [f"Decided: {decision.decision}", f"Because: {decision.rationale}"]
+    cited = [evidence.label for evidence in decision.evidence if evidence.label]
+    if cited:
+        lines.append("Supported by: " + ", ".join(cited))
+    for assumption in decision.assumptions:
+        lines.append(f"Assuming: {assumption.text}")
     for alternative in decision.alternatives:
         lines.append(f"Not chosen: {alternative.name} - {alternative.reason}")
     if challenge is not None:

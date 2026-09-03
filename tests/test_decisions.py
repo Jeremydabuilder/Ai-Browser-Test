@@ -164,10 +164,14 @@ class SaveTests(unittest.TestCase):
     def test_a_decision_holds_no_model_reasoning_fields(self) -> None:
         # There is nowhere to put a chain of thought, and that is the design.
         _, decision = self.board.decide()
+        # assumptions and evidence are what the decision rests on; verdict is
+        # the result of challenging it. None of them is a place to put
+        # reasoning, and there is still nowhere that is.
         self.assertEqual(
             set(decision.__dataclass_fields__),
             {"id", "mission_id", "decision", "rationale", "created_at",
-             "superseded_at", "alternatives", "evidence"})
+             "superseded_at", "alternatives", "evidence", "assumptions",
+             "verdict"})
 
 
 class HistoryTests(unittest.TestCase):
@@ -320,8 +324,12 @@ class MigrationTests(unittest.TestCase):
         board.close()
 
         conn = sqlite3.connect(path)
-        for table in ("decision_evidence", "decision_alternatives", "mission_decisions"):
+        for table in ("decision_assumptions", "decision_evidence",
+                      "decision_alternatives", "mission_decisions"):
             conn.execute(f"DROP TABLE IF EXISTS {table}")
+        conn.execute("DROP INDEX IF EXISTS idx_finding_ref")
+        conn.execute("ALTER TABLE mission_findings DROP COLUMN ref")
+        conn.execute("ALTER TABLE missions DROP COLUMN next_ref")
         conn.execute("PRAGMA user_version=4")
         conn.commit()
         conn.close()
@@ -401,7 +409,7 @@ class ToolTests(unittest.TestCase):
 
     def test_the_tool_records_a_decision_with_its_evidence(self) -> None:
         result = self._run(decision="Option A", rationale="Cheapest that fits",
-                           evidence=[self.finding.id],
+                           evidence=[self.finding.label],
                            alternatives=[{"name": "Option B", "reason": "over budget"}])
         self.assertTrue(result["ok"])
         decision = self.service.decision(self.mission.id)
@@ -418,7 +426,8 @@ class ToolTests(unittest.TestCase):
 
         schema = next(s for s in TOOL_SCHEMAS if s["name"] == "mission_save_decision")
         self.assertEqual(set(schema["input_schema"]["properties"]),
-                         {"decision", "rationale", "evidence", "alternatives"})
+                         {"decision", "rationale", "evidence", "alternatives",
+                          "assumptions"})
         self.assertFalse(schema["input_schema"]["additionalProperties"])
 
     def test_over_long_comes_back_as_a_correctable_error(self) -> None:
@@ -428,7 +437,7 @@ class ToolTests(unittest.TestCase):
         self.assertIn("Shorten", result["hint"])
 
     def test_unknown_evidence_comes_back_as_a_correctable_error(self) -> None:
-        result = self._run(decision="Option A", rationale="why", evidence=[99999])
+        result = self._run(decision="Option A", rationale="why", evidence=["F99"])
         self.assertFalse(result["ok"])
         self.assertEqual(result["error"]["code"], "UNKNOWN_EVIDENCE")
 
@@ -441,8 +450,8 @@ class ToolTests(unittest.TestCase):
     def test_bad_argument_shapes_are_rejected(self) -> None:
         from app.agent.tools import ToolError
 
-        for args in ({"decision": "A", "rationale": "w", "evidence": "1"},
-                     {"decision": "A", "rationale": "w", "evidence": ["1"]},
+        for args in ({"decision": "A", "rationale": "w", "evidence": "F1"},
+                     {"decision": "A", "rationale": "w", "evidence": [1]},
                      {"decision": "A", "rationale": "w", "alternatives": "B"},
                      {"decision": "A", "rationale": "w", "alternatives": [{"name": 1}]}):
             with self.assertRaises(ToolError):

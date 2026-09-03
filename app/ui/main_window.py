@@ -338,11 +338,17 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
     # The Mission Library
     # ------------------------------------------------------------------
-    def _mission_library_data(self, mission_id, query: str):
+    def _mission_library_data(self, mission_id, query: str, view: str = ""):
         """What the library page shows. Reads; never writes."""
-        from app.browser.missions_page import LibraryData, summarise
+        from app.browser.missions_page import LibraryData, evidence_map, summarise
 
         try:
+            if mission_id is not None and view == "evidence":
+                mission = self.missions.store.get(int(mission_id))
+                if mission is None:
+                    return LibraryData(total=self.missions.store.count())
+                return LibraryData(evidence=evidence_map(mission),
+                                   total=self.missions.store.count())
             if mission_id is not None:
                 mission = self.missions.store.get(int(mission_id))
                 if mission is None:
@@ -415,6 +421,11 @@ class MainWindow(QMainWindow):
             self._edit_decision(mission_id)
         elif name == "clear-decision" and mission_id is not None:
             self._clear_decision(mission_id)
+        elif name == "evidence" and mission_id is not None:
+            from app.browser.missions_page import evidence_url
+
+            if tab := self._current():
+                tab.navigate(evidence_url(mission_id))
         elif name == "challenge":
             target = (params.get("target") or "").strip()
             if target.isdigit():

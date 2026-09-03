@@ -308,6 +308,12 @@ class MigrationTests(unittest.TestCase):
 
         # Wind the file back to v3, as an existing profile would be.
         conn = sqlite3.connect(path)
+        for table in ("decision_assumptions", "challenge_points",
+                      "mission_challenges"):
+            conn.execute(f"DROP TABLE IF EXISTS {table}")
+        conn.execute("DROP INDEX IF EXISTS idx_finding_ref")
+        conn.execute("ALTER TABLE mission_findings DROP COLUMN ref")
+        conn.execute("ALTER TABLE missions DROP COLUMN next_ref")
         conn.execute("ALTER TABLE missions DROP COLUMN deleted_at")
         conn.execute("PRAGMA user_version=3")
         conn.commit()

@@ -25,7 +25,7 @@ import threading
 from pathlib import Path
 from typing import Any, Iterable, Sequence
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS history (
@@ -53,6 +53,15 @@ CREATE TABLE IF NOT EXISTS settings (
 -- Pages are addressed by URL, never by tab id: a tab id is an in-memory
 -- counter that means nothing after a restart, and holding one would make a
 -- mission corruptible by closing a tab.
+-- next_ref is the next finding reference this mission will issue: a high-water
+-- mark rather than a count, because deleting the highest-numbered finding must
+-- not hand its number to the next one - a citation written last month would
+-- start pointing at something else.
+--
+-- Note for future edits: SQLite re-parses a table's definition on
+-- ALTER TABLE ... DROP COLUMN, and a comment sitting between the last column
+-- and the closing bracket makes that fail. Keep the prose up here.
+--
 -- deleted_at is a soft delete, and it is not bookkeeping: a Mission is the
 -- record of a decision, and "why did we rule that out?" is a question people
 -- ask months later. Deleting rows on request would answer it with silence.
@@ -65,7 +74,8 @@ CREATE TABLE IF NOT EXISTS missions (
     status     TEXT NOT NULL DEFAULT 'active',
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
-    deleted_at TEXT NOT NULL DEFAULT ''
+    deleted_at TEXT NOT NULL DEFAULT '',
+    next_ref   INTEGER NOT NULL DEFAULT 1
 );
 CREATE INDEX IF NOT EXISTS idx_missions_updated ON missions(updated_at DESC);
 
@@ -87,18 +97,25 @@ CREATE INDEX IF NOT EXISTS idx_mission_pages_mission
 -- NULL rather than CASCADE: losing a source costs the attribution, never the
 -- discovery. UNIQUE(mission_id, key) is what makes deduplication a constraint
 -- rather than a hopeful check.
+-- `ref` is the mission-local number a finding is known by - F1, F2, F3. It is
+-- what the user and the model see; the row id never leaves this layer. Refs
+-- are assigned once and never reused, so deleting F2 leaves a permanent gap
+-- rather than repointing every citation that mentioned it.
 CREATE TABLE IF NOT EXISTS mission_findings (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     mission_id INTEGER NOT NULL REFERENCES missions(id) ON DELETE CASCADE,
     page_id    INTEGER          REFERENCES mission_pages(id) ON DELETE SET NULL,
     text       TEXT NOT NULL,
     key        TEXT NOT NULL,
+    ref        INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     UNIQUE(mission_id, key)
 );
 CREATE INDEX IF NOT EXISTS idx_mission_findings_mission
     ON mission_findings(mission_id, created_at);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_finding_ref
+    ON mission_findings(mission_id, ref);
 
 -- What was decided, and the reasons a person can read. Deliberately holds no
 -- model reasoning: `rationale` is the sentence shown to the user.
@@ -118,6 +135,17 @@ CREATE TABLE IF NOT EXISTS mission_decisions (
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_one_live_decision
     ON mission_decisions(mission_id) WHERE superseded_at = '';
+
+-- What a decision takes for granted, said out loud. User-visible data, and
+-- the one part of "why" that a rationale paragraph cannot be decomposed into.
+CREATE TABLE IF NOT EXISTS decision_assumptions (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    decision_id INTEGER NOT NULL REFERENCES mission_decisions(id) ON DELETE CASCADE,
+    text        TEXT NOT NULL,
+    position    INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_decision_assumptions
+    ON decision_assumptions(decision_id, position);
 
 CREATE TABLE IF NOT EXISTS decision_alternatives (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -240,6 +268,39 @@ _MIGRATIONS: dict[int, str] = {
     3: """
     ALTER TABLE missions ADD COLUMN deleted_at TEXT NOT NULL DEFAULT '';
     """,
+    # v6 -> v7: the evidence graph - finding refs and decision assumptions.
+    #
+    # The backfill numbers existing findings per mission in created_at order,
+    # with the row id as the tie-break, so two runs of this migration on the
+    # same data produce the same refs. Anything else would mean a citation
+    # written before an upgrade pointing somewhere else after it.
+    6: """
+    ALTER TABLE mission_findings ADD COLUMN ref INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE missions ADD COLUMN next_ref INTEGER NOT NULL DEFAULT 1;
+
+    UPDATE mission_findings SET ref = (
+        SELECT COUNT(*) FROM mission_findings AS earlier
+        WHERE earlier.mission_id = mission_findings.mission_id
+          AND (earlier.created_at < mission_findings.created_at
+               OR (earlier.created_at = mission_findings.created_at
+                   AND earlier.id <= mission_findings.id))
+    );
+
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_finding_ref
+        ON mission_findings(mission_id, ref);
+
+    UPDATE missions SET next_ref = 1 + COALESCE(
+        (SELECT MAX(ref) FROM mission_findings WHERE mission_id = missions.id), 0);
+
+    CREATE TABLE IF NOT EXISTS decision_assumptions (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        decision_id INTEGER NOT NULL REFERENCES mission_decisions(id) ON DELETE CASCADE,
+        text        TEXT NOT NULL,
+        position    INTEGER NOT NULL DEFAULT 0
+    );
+    CREATE INDEX IF NOT EXISTS idx_decision_assumptions
+        ON decision_assumptions(decision_id, position);
+    """,
     # v5 -> v6: challenge mode. See the notes in _SCHEMA.
     5: """
     -- The result of trying to prove a claim wrong. Never replaces what it
@@ -298,7 +359,18 @@ _MIGRATIONS: dict[int, str] = {
     CREATE UNIQUE INDEX IF NOT EXISTS idx_one_live_decision
         ON mission_decisions(mission_id) WHERE superseded_at = '';
     
-    CREATE TABLE IF NOT EXISTS decision_alternatives (
+    -- What a decision takes for granted, said out loud. User-visible data, and
+-- the one part of "why" that a rationale paragraph cannot be decomposed into.
+CREATE TABLE IF NOT EXISTS decision_assumptions (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    decision_id INTEGER NOT NULL REFERENCES mission_decisions(id) ON DELETE CASCADE,
+    text        TEXT NOT NULL,
+    position    INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_decision_assumptions
+    ON decision_assumptions(decision_id, position);
+
+CREATE TABLE IF NOT EXISTS decision_alternatives (
         id          INTEGER PRIMARY KEY AUTOINCREMENT,
         decision_id INTEGER NOT NULL REFERENCES mission_decisions(id) ON DELETE CASCADE,
         name        TEXT NOT NULL,

@@ -160,6 +160,9 @@ class MissionFinding:
     mission_id: int
     text: str
     key: str = ""
+    #: Mission-local number. See finding_ref: this is what the user and the
+    #: model see, never the row id.
+    ref: int = 0
     #: The mission_pages row this came from, or None if the page has since been
     #: forgotten. Losing a source costs the attribution, never the discovery.
     page_id: int | None = None
@@ -168,6 +171,10 @@ class MissionFinding:
     #: Filled in by the store when it reads the joined page row.
     source_url: str = ""
     source_title: str = ""
+
+    @property
+    def label(self) -> str:
+        return finding_ref(self.ref) if self.ref else ""
 
     @property
     def age(self) -> str:
@@ -228,6 +235,10 @@ class DecisionEvidence:
     #: What the finding says now, or None if it no longer exists. Filled by the
     #: store from the live row; not stored.
     current_text: str | None = None
+    #: The finding's mission-local number, and the verdict of its live
+    #: challenge if it has one. Both filled by the store.
+    ref: int = 0
+    verdict: str = ""
 
     @property
     def missing(self) -> bool:
@@ -238,6 +249,30 @@ class DecisionEvidence:
     def changed(self) -> bool:
         """The finding still exists but no longer says what it said."""
         return self.current_text is not None and self.current_text != self.text
+
+    @property
+    def label(self) -> str:
+        return finding_ref(self.ref) if self.ref else ""
+
+    @property
+    def state(self) -> str:
+        """What has happened to this evidence, most serious thing first."""
+        candidates = []
+        if self.missing:
+            candidates.append(EvidenceState.MISSING)
+        if self.verdict in Verdict.ALL:
+            candidates.append(self.verdict)
+        if self.changed:
+            candidates.append(EvidenceState.CHANGED)
+        return EvidenceState.worst(candidates or [EvidenceState.UNCHALLENGED])
+
+    @property
+    def glyph(self) -> str:
+        return EvidenceState.GLYPHS.get(self.state, "")
+
+    @property
+    def note(self) -> str:
+        return EvidenceState.LABELS.get(self.state, "")
 
 
 @dataclass(frozen=True)
@@ -263,10 +298,159 @@ class MissionDecision:
     superseded_at: str = ""
     alternatives: tuple[DecisionAlternative, ...] = field(default_factory=tuple)
     evidence: tuple[DecisionEvidence, ...] = field(default_factory=tuple)
+    assumptions: tuple[DecisionAssumption, ...] = field(default_factory=tuple)
+    #: The verdict of this decision's own live challenge, if it has one.
+    #: Filled by the store; part of the status rule below.
+    verdict: str = ""
 
     @property
     def live(self) -> bool:
         return not self.superseded_at
+
+    @property
+    def status(self) -> str:
+        """How this decision is standing up, read from its evidence right now.
+
+        Computed, never stored: a stored status goes stale the moment a
+        challenge lands somewhere else, and the graph is meant to reflect the
+        evidence as it is. Nothing here rewrites the decision.
+        """
+        return DecisionStatus.of((e.state for e in self.evidence), self.verdict)
+
+    @property
+    def status_label(self) -> str:
+        return DecisionStatus.LABELS.get(self.status, self.status.upper())
+
+    @property
+    def challenge_verdict_label(self) -> str:
+        return Verdict.LABELS.get(self.verdict, "") if self.verdict else ""
+
+
+#: How a finding is named to the user and to the model. Mission-local and
+#: never a database id: "F3" always means "this mission's third finding", so
+#: there is no way to express a reference to another mission's finding at all.
+FINDING_PREFIX = "F"
+DECISION_REF = "D"
+
+
+def finding_ref(ref: int) -> str:
+    """The label for a finding's mission-local number."""
+    return f"{FINDING_PREFIX}{int(ref)}"
+
+
+def parse_finding_ref(text: str) -> int | None:
+    """The number in a finding reference, or None if it is not one.
+
+    Accepts "F3", "f3" and a bare "3", because a model that has been reading
+    "F3" all conversation will sometimes write one and sometimes the other,
+    and a citation refused on formatting is a wasted turn. What it will not do
+    is guess: anything else is None, and the caller reports it.
+    """
+    text = (text or "").strip().upper()
+    if text.startswith(FINDING_PREFIX):
+        text = text[len(FINDING_PREFIX):]
+    if text.isdigit():
+        number = int(text)
+        return number if number > 0 else None
+    return None
+
+
+class EvidenceState:
+    """What has happened to one piece of supporting evidence since.
+
+    ``ORDER`` is the precedence, most serious first, and it is explicit for a
+    reason: an item can be several of these at once - a finding that was
+    reworded *and* contradicted - and which one the UI shows must never depend
+    on the order rows came back from a query.
+    """
+
+    MISSING = "missing"              # the finding was deleted
+    CONTRADICTED = "contradicted"    # its challenge found against it
+    WEAKENED = "weakened"
+    UNRESOLVED = "unresolved"
+    CHANGED = "changed"              # the finding now reads differently
+    UPHELD = "upheld"                # challenged, and it held
+    UNCHALLENGED = "unchallenged"    # nobody has attacked it
+
+    ORDER = (MISSING, CONTRADICTED, WEAKENED, UNRESOLVED, CHANGED,
+             UPHELD, UNCHALLENGED)
+
+    #: A glyph, so state is not carried by colour alone.
+    GLYPHS = {MISSING: "\u2715", CONTRADICTED: "\u2715", WEAKENED: "!",
+              UNRESOLVED: "?", CHANGED: "~", UPHELD: "\u2713",
+              UNCHALLENGED: "\u2713"}
+
+    LABELS = {MISSING: "finding removed", CONTRADICTED: "contradicted",
+              WEAKENED: "weakened", UNRESOLVED: "unresolved",
+              CHANGED: "text changed since", UPHELD: "upheld",
+              UNCHALLENGED: ""}
+
+    @staticmethod
+    def worst(states) -> str:
+        """The most serious of several states. Deterministic by ORDER."""
+        present = set(states)
+        for state in EvidenceState.ORDER:
+            if state in present:
+                return state
+        return EvidenceState.UNCHALLENGED
+
+
+class DecisionStatus:
+    """How a decision is standing up, read from its evidence right now.
+
+    Computed, never stored. A stored status is one that goes stale the moment
+    a challenge lands somewhere else, and the whole point is that the graph
+    reflects the evidence as it is. Nothing here rewrites the decision.
+    """
+
+    NEEDS_REVIEW = "needs review"
+    CHECK = "check"
+    SOUND = "sound"
+
+    LABELS = {NEEDS_REVIEW: "NEEDS REVIEW", CHECK: "CHECK", SOUND: "SOUND"}
+
+    #: Evidence states that force each status. First rule that matches wins.
+    _REVIEW = (EvidenceState.CONTRADICTED, EvidenceState.MISSING)
+    _CHECK = (EvidenceState.WEAKENED, EvidenceState.UNRESOLVED,
+              EvidenceState.CHANGED)
+
+    @staticmethod
+    def of(evidence_states, decision_verdict: str = "") -> str:
+        """The status, by the precedence agreed with the user.
+
+        1. NEEDS REVIEW - the decision itself was contradicted, or any support
+           is contradicted or gone.
+        2. CHECK - the decision was weakened or left unresolved, or any support
+           is weakened, unresolved, or has changed since.
+        3. SOUND - otherwise.
+        """
+        states = set(evidence_states)
+        if decision_verdict == Verdict.CONTRADICTED or (states & set(DecisionStatus._REVIEW)):
+            return DecisionStatus.NEEDS_REVIEW
+        if decision_verdict in (Verdict.WEAKENED, Verdict.UNRESOLVED) or (
+                states & set(DecisionStatus._CHECK)):
+            return DecisionStatus.CHECK
+        return DecisionStatus.SOUND
+
+
+#: Assumptions one decision may carry. A decision resting on more than a
+#: handful of unstated things is a decision that has not been made yet.
+MAX_ASSUMPTIONS = 5
+MAX_ASSUMPTION_CHARS = 200
+
+
+@dataclass(frozen=True)
+class DecisionAssumption:
+    """Something the decision takes for granted, stated out loud.
+
+    User-visible data, like everything else here. It is what the decision
+    rests on, not a record of how it was reached.
+    """
+
+    id: int
+    decision_id: int
+    text: str
+    position: int = 0
 
 
 class Verdict:

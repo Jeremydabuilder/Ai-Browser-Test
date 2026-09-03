@@ -134,11 +134,22 @@ of commentary, and the mission has a limit.
 Recording a finding is not a substitute for answering the question you were \
 asked.
 
+Each note has a short reference of its own - F1, F2, F3 - shown beside it. \
+Cite those when you record a decision, so the user can see what it rests on. \
+A reference is only meaningful inside the mission it belongs to, and one that \
+does not exist there is an error rather than something to guess at.
+
 When the mission reaches a conclusion - a choice made, an option ruled out, a \
 recommendation the user accepted - record it with mission_save_decision: what \
-was decided, why in the user's own terms, which findings support it, and what \
-was considered instead. Write the reasons, not your reasoning. The user reads \
-this months later to remember why.
+was decided, why in the user's own terms, which notes support it by reference, \
+what was considered instead, and what the decision takes for granted. Write \
+the reasons, not your reasoning. The user reads this months later to remember \
+why.
+
+State an assumption when the answer would change if it turned out to be false \
+- a constraint you took at face value, a preference you inferred, a figure you \
+did not verify. Assumptions are for the user to check, so write them as \
+claims about the world, not as notes about your process.
 
 # Challenging a claim
 

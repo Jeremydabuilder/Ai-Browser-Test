@@ -19,6 +19,8 @@ from app.missions.model import (
     MAX_DECISION_CHARS,
     MAX_EVIDENCE,
     MAX_FINDING_CHARS,
+    MAX_ASSUMPTION_CHARS,
+    MAX_ASSUMPTIONS,
     MAX_FINDINGS_PER_MISSION,
     MAX_POINT_CHARS,
     MAX_POINTS,
@@ -26,6 +28,7 @@ from app.missions.model import (
     MAX_TITLE,
     ChallengePoint,
     DecisionAlternative,
+    DecisionAssumption,
     DecisionEvidence,
     Mission,
     MissionChallenge,
@@ -42,6 +45,7 @@ from app.missions.model import (
     clean_finding,
     collapse,
     finding_key,
+    finding_ref,
     is_associable,
     now,
     page_key,
@@ -162,8 +166,8 @@ class MissionStore:
 
         Matching is a case-insensitive substring over the Mission's own title
         and goal, its findings, and its pages' titles and URLs. Ordered by
-        where the match landed - a Mission called "Tennis Shoes" outranks one
-        that merely visited a page about them.
+        where the match landed - a Mission whose title matches outranks one
+        that merely visited a page mentioning the word.
         """
         needle = " ".join((query or "").split()).lower()
         if not needle:
@@ -261,6 +265,32 @@ class MissionStore:
         self._touch_mission(mission_id)
         return self.find_page(mission_id, key)
 
+    def _next_ref(self, mission_id: int) -> int:
+        """Take the next mission-local number, and move the mark on.
+
+        A high-water mark on the mission row, not MAX(ref) over the findings
+        that still exist: deleting the highest-numbered finding would lower
+        that maximum and hand its number to the next finding, so a citation
+        written last month would quietly start pointing at something else.
+        """
+        row = self._db.query_one("SELECT next_ref FROM missions WHERE id = ?",
+                                 (mission_id,))
+        ref = int(row["next_ref"]) if row else 1
+        self._db.execute("UPDATE missions SET next_ref = ? WHERE id = ?",
+                         (ref + 1, mission_id))
+        return ref
+
+    def find_by_ref(self, mission_id: int, ref: int) -> MissionFinding | None:
+        """One finding by its mission-local number, or None.
+
+        Scoped to a mission by the signature. A ref cannot name a finding in
+        another mission because there is nowhere in this call to put one.
+        """
+        row = self._db.query_one(
+            self._FINDING_COLUMNS + "WHERE f.mission_id = ? AND f.ref = ?",
+            (mission_id, int(ref)))
+        return MissionFinding(**dict(row)) if row else None
+
     def pages(self, mission_id: int) -> list[MissionPage]:
         rows = self._db.query(
             "SELECT id, mission_id, url, title, source, note, first_seen, last_seen "
@@ -332,9 +362,9 @@ class MissionStore:
         stamp = now()
         cursor = self._db.execute(
             "INSERT INTO mission_findings "
-            "(mission_id, page_id, text, key, created_at, updated_at) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
-            (mission_id, page_id, text, key, stamp, stamp))
+            "(mission_id, page_id, text, key, ref, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (mission_id, page_id, text, key, self._next_ref(mission_id), stamp, stamp))
         if cursor is None:
             return self.NO_TEXT, None
         self._touch_mission(mission_id)
@@ -371,7 +401,7 @@ class MissionStore:
     #: Every finding, with its source page joined on. A LEFT JOIN because
     #: page_id is nullable by design.
     _FINDING_COLUMNS = (
-        "SELECT f.id, f.mission_id, f.text, f.key, f.page_id, "
+        "SELECT f.id, f.mission_id, f.text, f.key, f.ref, f.page_id, "
         "       f.created_at, f.updated_at, "
         "       COALESCE(p.url, '') AS source_url, "
         "       COALESCE(p.title, '') AS source_title "
@@ -419,7 +449,8 @@ class MissionStore:
 
     def save_decision(self, mission_id: int, decision: str, rationale: str,
                       evidence_ids: list[int] | None = None,
-                      alternatives: list[tuple[str, str]] | None = None
+                      alternatives: list[tuple[str, str]] | None = None,
+                      assumptions: list[str] | None = None
                       ) -> tuple[str, MissionDecision | None]:
         """Record a decision, superseding whatever was decided before.
 
@@ -476,6 +507,12 @@ class MissionStore:
                 "INSERT INTO decision_alternatives "
                 "(decision_id, name, reason, position) VALUES (?, ?, ?, ?)",
                 (decision_id, name, reason, position))
+        for position, text in enumerate((assumptions or [])[:MAX_ASSUMPTIONS]):
+            text = collapse(text)[:MAX_ASSUMPTION_CHARS]
+            if text:
+                self._db.execute(
+                    "INSERT INTO decision_assumptions (decision_id, text, position) "
+                    "VALUES (?, ?, ?)", (decision_id, text, position))
         self._touch_mission(mission_id)
         return self.DECISION_SAVED, self.get_decision(decision_id)
 
@@ -495,10 +532,13 @@ class MissionStore:
             "FROM mission_decisions WHERE id = ?", (decision_id,))
         if row is None:
             return None
+        challenge = self.challenge(TargetKind.DECISION, decision_id)
         return MissionDecision(
             **dict(row),
             alternatives=tuple(self._alternatives(decision_id)),
-            evidence=tuple(self._evidence(decision_id)))
+            evidence=tuple(self._evidence(decision_id)),
+            assumptions=tuple(self._assumptions(decision_id)),
+            verdict=challenge.verdict if challenge is not None else "")
 
     def decision_history(self, mission_id: int) -> list[MissionDecision]:
         """Every decision this Mission has had, newest first.
@@ -527,6 +567,12 @@ class MissionStore:
             "WHERE decision_id = ? ORDER BY position, id", (decision_id,))
         return [DecisionAlternative(**dict(row)) for row in rows]
 
+    def _assumptions(self, decision_id: int) -> list[DecisionAssumption]:
+        rows = self._db.query(
+            "SELECT id, decision_id, text, position FROM decision_assumptions "
+            "WHERE decision_id = ? ORDER BY position, id", (decision_id,))
+        return [DecisionAssumption(**dict(row)) for row in rows]
+
     def _evidence(self, decision_id: int) -> list[DecisionEvidence]:
         """Evidence with the live finding's text alongside the snapshot.
 
@@ -534,11 +580,20 @@ class MissionStore:
         or "this finding is gone" instead of quietly showing one of the two
         and hoping they still agree.
         """
+        # The finding's ref and the verdict of its live challenge ride along,
+        # because "what has happened to this evidence since?" is the question
+        # the graph exists to answer and answering it per row would be a query
+        # per evidence item.
         rows = self._db.query(
             "SELECT e.id, e.decision_id, e.finding_id, e.text, e.source, e.position, "
-            "       f.text AS current_text "
+            "       f.text AS current_text, "
+            "       COALESCE(f.ref, 0) AS ref, "
+            "       COALESCE(c.verdict, '') AS verdict "
             "FROM decision_evidence e "
             "LEFT JOIN mission_findings f ON f.id = e.finding_id "
+            "LEFT JOIN mission_challenges c "
+            "       ON c.target_kind = 'finding' AND c.target_id = f.id "
+            "      AND c.superseded_at = '' "
             "WHERE e.decision_id = ? ORDER BY e.position, e.id", (decision_id,))
         return [DecisionEvidence(**dict(row)) for row in rows]
 

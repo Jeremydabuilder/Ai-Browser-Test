@@ -32,6 +32,8 @@ from app.browser.results import ActionResult
 # store enforces can never drift apart.
 from app.missions.model import (
     MAX_ALTERNATIVES,
+    MAX_ASSUMPTION_CHARS,
+    MAX_ASSUMPTIONS,
     MAX_CHALLENGE_SUMMARY,
     MAX_DECISION_CHARS,
     MAX_EVIDENCE,
@@ -243,10 +245,19 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                          "description": "Why, in terms the user will recognise. "
                                         "The reasons, not the reasoning."},
            "evidence": {"type": "array",
-                        "items": {"type": "integer"},
-                        "description": "Ids of findings on this mission that support "
-                                       f"the decision. At most {MAX_EVIDENCE}. An id "
-                                       "from another mission is an error."},
+                        "items": {"type": "string"},
+                        "description": "References of findings on this mission that "
+                                       "support the decision, as they appear in your "
+                                       f"notes: \"F1\", \"F4\". At most {MAX_EVIDENCE}. "
+                                       "A reference that does not exist on this "
+                                       "mission is an error, not an omission."},
+           "assumptions": {"type": "array",
+                           "items": {"type": "string"},
+                           "description": "What this decision takes for granted, "
+                                          "stated plainly for the user - the things "
+                                          "that would change the answer if they turned "
+                                          f"out to be false. At most {MAX_ASSUMPTIONS}, "
+                                          f"{MAX_ASSUMPTION_CHARS} characters each."},
            "alternatives": {"type": "array",
                             "description": "What was considered and not chosen. "
                                            f"At most {MAX_ALTERNATIVES}.",
@@ -435,10 +446,11 @@ _DECISION_ERRORS: dict[str, tuple[str, str, str]] = {
     "no_text": ("EMPTY_DECISION", "A decision needs both a decision and a rationale.",
                 "Write what was chosen and why, then try again."),
     "unknown_evidence": ("UNKNOWN_EVIDENCE",
-                         "One of those finding ids is not on this mission, so nothing "
-                         "was saved - the decision would have cited evidence from "
-                         "somewhere else.",
-                         "Use ids from this mission's own findings, or omit evidence."),
+                         "One of those references does not name a finding on this "
+                         "mission, so nothing was saved - the decision would have "
+                         "cited evidence that is not there.",
+                         "Use the references shown beside this mission's notes, like "
+                         "\"F1\", or omit evidence."),
 }
 
 
@@ -446,6 +458,9 @@ def _decision_error(result: dict) -> dict:
     code, message, hint = _DECISION_ERRORS.get(
         result.get("status", ""),
         ("DECISION_FAILED", "The decision could not be saved.", "Carry on."))
+    unknown = result.get("unknown")
+    if unknown:
+        message = f"{message} Not found: {', '.join(unknown)}."
     limits = result.get("limits")
     if limits:
         message = (f"{message} Limits: decision {limits['decision']} characters, "
@@ -787,7 +802,10 @@ class ToolRegistry:
                 # because the model just wrote it, and echoing it back would
                 # pay for it twice.
                 immediate={"ok": True, "status": status,
-                           "finding_id": result.get("finding_id"),
+                           # The mission-local reference, not a row id: this is
+                           # how the finding is cited when a decision is
+                           # recorded, and the only handle the model ever sees.
+                           "ref": result.get("ref"),
                            **({"source": source} if source else {})},
                 activity=_finding_activity(text))
         return ToolOutcome(immediate=_finding_error(result), activity="Saving a finding")
@@ -804,8 +822,13 @@ class ToolRegistry:
         rationale = self._string(args, "rationale", required=True)
         evidence = args.get("evidence") or []
         if not isinstance(evidence, list) or not all(
-                isinstance(item, int) and not isinstance(item, bool) for item in evidence):
-            raise ToolError("'evidence' must be a list of finding ids.")
+                isinstance(item, str) for item in evidence):
+            raise ToolError("'evidence' must be a list of finding references "
+                            "like \"F1\".")
+        assumptions = args.get("assumptions") or []
+        if not isinstance(assumptions, list) or not all(
+                isinstance(item, str) for item in assumptions):
+            raise ToolError("'assumptions' must be a list of strings.")
         alternatives = _alternatives_of(args.get("alternatives"))
 
         if self._missions is None:
@@ -814,7 +837,8 @@ class ToolRegistry:
                 hint="Answer the user directly instead."),
                 activity="Recording a decision")
 
-        result = self._missions.save_decision(decision, rationale, evidence, alternatives)
+        result = self._missions.save_decision(decision, rationale, evidence,
+                                              alternatives, assumptions)
         if result.get("status") == "saved":
             return ToolOutcome(
                 immediate={"ok": True, "decision_id": result.get("decision_id"),

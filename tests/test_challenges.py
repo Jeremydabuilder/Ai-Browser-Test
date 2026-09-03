@@ -290,8 +290,12 @@ class PersistenceTests(unittest.TestCase):
         board.close()
 
         conn = sqlite3.connect(path)
-        for table in ("challenge_points", "mission_challenges"):
+        for table in ("challenge_points", "mission_challenges",
+                      "decision_assumptions"):
             conn.execute(f"DROP TABLE IF EXISTS {table}")
+        conn.execute("DROP INDEX IF EXISTS idx_finding_ref")
+        conn.execute("ALTER TABLE mission_findings DROP COLUMN ref")
+        conn.execute("ALTER TABLE missions DROP COLUMN next_ref")
         conn.execute("PRAGMA user_version=5")
         conn.commit()
         conn.close()

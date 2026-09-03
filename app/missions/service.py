@@ -35,6 +35,8 @@ from app.missions.model import (
     MissionChallenge,
     MissionDecision,
     TargetKind,
+    finding_ref,
+    parse_finding_ref,
     MissionFinding,
     MissionPage,
     MissionStatus,
@@ -335,9 +337,31 @@ class MissionService(QObject):
     # user approved a purchase changes exactly nothing about whether a purchase
     # stops for confirmation.
 
+    def resolve_refs(self, refs) -> tuple[list[int], list[str]]:
+        """Mission-local references to finding ids. Returns (ids, unknown).
+
+        Scoped to the active Mission, so "F3" can only ever mean this
+        Mission's F3. A ref that does not resolve - never issued, or issued to
+        a finding since deleted - comes back in ``unknown`` and the caller
+        refuses; it must never quietly become a different finding.
+        """
+        mission = self._active
+        ids: list[int] = []
+        unknown: list[str] = []
+        for raw in refs or []:
+            number = parse_finding_ref(str(raw))
+            finding = (self._store.find_by_ref(mission.id, number)
+                       if number is not None and mission is not None else None)
+            if finding is None:
+                unknown.append(str(raw))
+            else:
+                ids.append(finding.id)
+        return ids, unknown
+
     def save_decision(self, decision: str, rationale: str,
-                      evidence_ids: list[int] | None = None,
-                      alternatives: list[tuple[str, str]] | None = None) -> dict:
+                      evidence_refs=None,
+                      alternatives: list[tuple[str, str]] | None = None,
+                      assumptions: list[str] | None = None) -> dict:
         """Record what was decided on the active Mission.
 
         Never raises; a refusal is a normal outcome the model should read and
@@ -347,8 +371,11 @@ class MissionService(QObject):
         mission = self._active
         if mission is None:
             return {"status": "no_mission"}
+        evidence_ids, unknown = self.resolve_refs(evidence_refs)
+        if unknown:
+            return {"status": "unknown_evidence", "unknown": unknown}
         outcome, saved = self._store.save_decision(
-            mission.id, decision, rationale, evidence_ids, alternatives)
+            mission.id, decision, rationale, evidence_ids, alternatives, assumptions)
         result = {"status": outcome}
         if saved is not None:
             result["decision_id"] = saved.id
@@ -556,7 +583,9 @@ class MissionService(QObject):
         self._announce(mission.id)
         result = {"status": outcome}
         if finding is not None:
-            result["finding_id"] = finding.id
+            # The mission-local reference, never the row id: it is the only
+            # handle the model is given, and the one it cites with.
+            result["ref"] = finding.label
             result["source"] = finding.source_domain
         if outcome == self._store.TOO_LONG:
             result["limit"] = MAX_FINDING_CHARS

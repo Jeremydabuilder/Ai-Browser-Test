@@ -36,6 +36,10 @@ def mission_url(mission_id: int) -> str:
     return f"{LIBRARY_URL}{int(mission_id)}"
 
 
+def evidence_url(mission_id: int) -> str:
+    return f"{LIBRARY_URL}{int(mission_id)}/evidence"
+
+
 @dataclass
 class LibraryData:
     """Everything the page shows, already flattened for JSON."""
@@ -43,6 +47,8 @@ class LibraryData:
     missions: list[dict[str, Any]] = field(default_factory=list)
     #: The Mission being looked at, or None on the list view.
     detail: dict[str, Any] | None = None
+    #: The evidence view of that Mission, when that is what was asked for.
+    evidence: dict[str, Any] | None = None
     query: str = ""
     total: int = 0
 
@@ -50,6 +56,7 @@ class LibraryData:
         payload = json.dumps({
             "missions": self.missions,
             "detail": self.detail,
+            "evidence": self.evidence,
             "query": self.query,
             "total": self.total,
         }, ensure_ascii=False)
@@ -147,6 +154,71 @@ def _challenge(challenge) -> dict[str, Any] | None:
     }
 
 
+def evidence_map(mission) -> dict[str, Any]:
+    """The Mission as an evidence structure.
+
+    A projection, not a store: every row here already exists in
+    mission_findings, decision_evidence, mission_challenges and
+    challenge_points. Nothing is computed and kept - the decision's status in
+    particular is read from the evidence each time, so it cannot go stale.
+    """
+    from app.missions.model import EvidenceState, relative_age
+
+    def source_of(url: str, title: str) -> dict[str, str]:
+        return {"url": url, "title": title}
+
+    roots: list[dict[str, Any]] = []
+    decision = mission.decision
+    if decision is not None:
+        challenge = mission.challenge_of("decision", decision.id)
+        roots.append({
+            "kind": "decision",
+            "id": decision.id,
+            "label": "D",
+            "claim": decision.decision,
+            "detail": decision.rationale,
+            "status": decision.status,
+            "statusLabel": decision.status_label,
+            "age": relative_age(decision.created_at),
+            "supported": [
+                {"label": evidence.label, "text": evidence.text,
+                 "state": evidence.state, "glyph": evidence.glyph,
+                 "note": evidence.note, "source": evidence.source,
+                 "current": evidence.current_text or ""}
+                for evidence in decision.evidence
+            ],
+            "assumptions": [a.text for a in decision.assumptions],
+            "challenge": _challenge(challenge),
+        })
+
+    for finding in mission.findings:
+        challenge = mission.challenge_of("finding", finding.id)
+        roots.append({
+            "kind": "finding",
+            "id": finding.id,
+            "label": finding.label,
+            "claim": finding.text,
+            "detail": "",
+            "status": (challenge.verdict if challenge is not None
+                       else EvidenceState.UNCHALLENGED),
+            "statusLabel": challenge.verdict_label if challenge is not None else "",
+            "age": finding.age,
+            "supported": [],
+            "assumptions": [],
+            "source": source_of(finding.source_url, finding.source_title),
+            "challenge": _challenge(challenge),
+        })
+
+    return {
+        "id": mission.id,
+        "title": mission.title,
+        "goal": mission.goal,
+        "roots": roots,
+        "sources": [{"title": p.display_title, "domain": p.domain, "url": p.url}
+                    for p in mission.pages],
+    }
+
+
 #: Supplied by the window: ``provider(mission_id, query) -> LibraryData``.
 _PROVIDER = None
 
@@ -163,14 +235,16 @@ def _serve(url) -> str:
     """
     from PySide6.QtCore import QUrl, QUrlQuery
 
-    identifier = url.path().strip("/")
-    mission_id = int(identifier) if identifier.isdigit() else None
+    # "/" is the library, "/7" one mission, "/7/evidence" its evidence map.
+    parts = [part for part in url.path().split("/") if part]
+    mission_id = int(parts[0]) if parts and parts[0].isdigit() else None
+    view = parts[1] if len(parts) > 1 else ""
     query = QUrlQuery(url).queryItemValue(
         "q", QUrl.ComponentFormattingOption.FullyDecoded) or ""
     if _PROVIDER is None:
         return render(LibraryData())
     try:
-        data = _PROVIDER(mission_id, query)
+        data = _PROVIDER(mission_id, query, view)
     except Exception:  # noqa: BLE001 - an internal page must not 500
         data = LibraryData()
     return render(data)
@@ -316,6 +390,42 @@ _TEMPLATE = """<!doctype html>
     color: var(--muted); font-size: 12px;
   }
   button.link:hover { color: var(--accent); }
+  /* The evidence map. A structured list, not a node canvas: what matters is
+     that every claim traces to a source and that the state of each piece of
+     support is readable at a glance. Draggable circles would cost that. */
+  .evsum {
+    display: flex; align-items: baseline; gap: 12px; margin: 2px 0 22px;
+    color: var(--muted); font-size: 12px;
+  }
+  .root { margin: 0 0 30px; padding-left: 18px; border-left: 3px solid var(--line); }
+  .root.decision { border-left-color: var(--accent); }
+  .root .ref {
+    font-size: 11px; font-weight: 700; letter-spacing: .06em; color: var(--muted);
+  }
+  .root .claim { font-size: 17px; font-weight: 600; margin: 2px 0 2px; }
+  .root.decision .claim { font-size: 21px; }
+  .root .detail { color: var(--muted); margin-bottom: 10px; }
+  .status {
+    font-size: 10px; font-weight: 700; letter-spacing: .08em; margin-left: 10px;
+  }
+  .status.sound, .status.upheld { color: var(--success); }
+  .status.check, .status.weakened { color: var(--warning); }
+  .status\.needs, .status.contradicted { color: var(--danger); }
+  .status.needs { color: var(--danger); }
+  .status.unresolved { color: var(--muted); }
+  .sect {
+    font-size: 10px; font-weight: 600; letter-spacing: .07em; color: var(--disabled);
+    margin: 12px 0 5px;
+  }
+  .ev { display: flex; gap: 10px; padding: 3px 0; }
+  .ev .g { flex: 0 0 14px; text-align: center; color: var(--muted); }
+  .ev .g.contradicted, .ev .g.missing { color: var(--danger); }
+  .ev .g.weakened { color: var(--warning); }
+  .ev .g.upheld, .ev .g.unchallenged { color: var(--success); }
+  .ev .b { flex: 1; min-width: 0; }
+  .ev .b .m { color: var(--muted); font-size: 12px; }
+  .ev .b .m .flag { font-style: italic; }
+  .ev .r { color: var(--muted); font-size: 11px; font-weight: 700; }
   ul { list-style: none; margin: 0; padding: 0; }
   li.finding { padding: 9px 0 9px 12px; border-left: 2px solid var(--accent);
                margin-bottom: 6px; }
@@ -447,6 +557,24 @@ _TEMPLATE = """<!doctype html>
       act("challenge", { kind: kind, target: id });
     });
     return button;
+  }
+
+  function renderEvidenceSummary(mission) {
+    var counts = { findings: mission.findingList.length, sources: mission.pageList.length,
+                   challenged: 0 };
+    mission.findingList.forEach(function (f) { if (f.challenge) { counts.challenged += 1; } });
+    if (mission.decision && mission.decision.challenge) { counts.challenged += 1; }
+    if (!counts.findings && !mission.decision) { return; }
+
+    var row = el("div", "evsum");
+    var bits = [counts.findings + " claim" + (counts.findings === 1 ? "" : "s"),
+                counts.sources + " source" + (counts.sources === 1 ? "" : "s")];
+    if (counts.challenged) { bits.push(counts.challenged + " challenged"); }
+    row.appendChild(el("span", "c", bits.join(" \u00b7 ")));
+    var open = el("button", "link", "View evidence \u2192");
+    open.addEventListener("click", function () { act("evidence", { id: mission.id }); });
+    row.appendChild(open);
+    body.appendChild(row);
   }
 
   function renderDecision(mission) {
@@ -585,7 +713,102 @@ _TEMPLATE = """<!doctype html>
     document.getElementById("count").textContent = "";
   }
 
-  if (data.detail) {
+  function renderEvidence(map) {
+    search.style.display = "none";
+    var back = el("button", "back", "\u2190 " + map.title);
+    back.addEventListener("click", function () { act("open", { id: map.id }); });
+    body.appendChild(back);
+    body.appendChild(el("h1", null, "Evidence"));
+    body.appendChild(el("div", "detail-goal", map.goal));
+
+    if (!map.roots.length) {
+      body.appendChild(el("p", "empty",
+        "Nothing has been recorded for this mission yet."));
+      return;
+    }
+
+    map.roots.forEach(function (root) {
+      var box = el("div", "root" + (root.kind === "decision" ? " decision" : ""));
+      var head = el("div");
+      head.appendChild(el("span", "ref", root.label));
+      if (root.statusLabel) {
+        head.appendChild(el("span", "status " + root.status.split(" ")[0],
+                            root.statusLabel));
+      }
+      box.appendChild(head);
+      box.appendChild(el("div", "claim", root.claim));
+      if (root.detail) { box.appendChild(el("div", "detail", root.detail)); }
+
+      if (root.supported.length) {
+        box.appendChild(el("div", "sect", "SUPPORTED BY"));
+        root.supported.forEach(function (item) {
+          var row = el("div", "ev");
+          row.appendChild(el("div", "g " + item.state, item.glyph));
+          var b = el("div", "b");
+          var line = el("div");
+          if (item.label) { line.appendChild(el("span", "r", item.label + "  ")); }
+          line.appendChild(document.createTextNode(item.text));
+          b.appendChild(line);
+          var marks = [];
+          if (item.source) { marks.push(item.source); }
+          var meta = el("div", "m", marks.join(" \u00b7 "));
+          if (item.note) {
+            if (marks.length) { meta.appendChild(document.createTextNode(" \u00b7 ")); }
+            meta.appendChild(el("span", "flag", item.note));
+          }
+          b.appendChild(meta);
+          row.appendChild(b);
+          box.appendChild(row);
+        });
+      }
+
+      if (root.challenge) {
+        box.appendChild(el("div", "sect", "CHALLENGED BY"));
+        box.appendChild(challengeBlock(root.challenge));
+      }
+
+      if (root.assumptions.length) {
+        box.appendChild(el("div", "sect", "ASSUMPTIONS"));
+        root.assumptions.forEach(function (text) {
+          var row = el("div", "ev");
+          row.appendChild(el("div", "g", "\u00b7"));
+          row.appendChild(el("div", "b", text));
+          box.appendChild(row);
+        });
+      }
+
+      if (root.kind === "finding" && root.source && root.source.url) {
+        var row = el("div", "ev");
+        row.appendChild(el("div", "g", ""));
+        var b = el("div", "b");
+        var link = el("button", "link", root.source.title || root.source.url);
+        link.addEventListener("click", function () {
+          act("page", { url: root.source.url });
+        });
+        b.appendChild(link);
+        row.appendChild(b);
+        box.appendChild(row);
+      }
+      body.appendChild(box);
+    });
+
+    body.appendChild(el("h2", null, "SOURCES \u00b7 " + map.sources.length));
+    var pages = el("ul");
+    map.sources.forEach(function (page) {
+      var li = el("li", "page");
+      var link = el("a");
+      link.href = "pybrowser://missions/action/page?url=" + encodeURIComponent(page.url);
+      link.appendChild(el("span", "t", page.title));
+      link.appendChild(el("span", "d", page.domain));
+      li.appendChild(link);
+      pages.appendChild(li);
+    });
+    body.appendChild(pages);
+  }
+
+  if (data.evidence) {
+    renderEvidence(data.evidence);
+  } else if (data.detail) {
     // Searching from inside one mission would mean two different scopes on
     // one screen. The way back to the list is the "All missions" link.
     search.style.display = "none";

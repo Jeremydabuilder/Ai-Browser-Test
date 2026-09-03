@@ -437,6 +437,41 @@ instructions, never consent. A test asserts the safety layer's judgement is
 byte-identical before and after saving a decision that claims the user approved
 a purchase.
 
+### The Evidence Graph
+
+Every claim and decision is inspectable as a structure: what supports it, what
+attacks it, what it assumes, and which page each piece came from. It is a
+**projection**, not a store - every row it shows already exists in
+`mission_findings`, `decision_evidence`, `mission_challenges` and
+`challenge_points`. A `graph_nodes`/`graph_edges` table would be a second copy
+of the truth and the first thing to go stale.
+
+**Mission-local references.** A finding is `F1`, `F2`, `F3` - a per-mission
+number stored on the row, shown to the user, and the only handle the model ever
+gets. Row ids never leave the storage layer. Refs are issued from a high-water
+mark on the mission (`missions.next_ref`), not from `MAX(ref)`: deleting the
+highest-numbered finding must not hand its number to the next one, or a citation
+written last month starts pointing at something else. A ref resolves *relative
+to the active mission*, which is what makes "another mission's F1" inexpressible
+rather than merely forbidden. An unknown or retired ref is refused, never
+resolved to a neighbour.
+
+**Decision status is computed, never stored.** `NEEDS REVIEW` when the decision
+was contradicted or any support is contradicted or gone; `CHECK` when it was
+weakened or left unresolved, or any support is weakened, unresolved or has
+changed since; `SOUND` otherwise. First matching rule wins. Where one evidence
+item is several things at once, `EvidenceState.ORDER` decides - explicitly, so
+the UI never depends on the order rows came back from a query. Nothing here
+rewrites the decision; the status is a reading of the evidence, and a stored one
+would go stale the moment a challenge landed somewhere else.
+
+**Assumptions** are rows on the decision, capped and user-visible - what it
+takes for granted, not how it was reached.
+
+The graph itself is **not** sent to the model. What is sent is the ref beside
+each note and a `Supported by: F1, F4` line inside the existing decision fence -
+one line each, no new marker, same cadence, same caching.
+
 ### Challenge Mode
 
 The user can point at a finding or a decision and ask Py to try to prove it
