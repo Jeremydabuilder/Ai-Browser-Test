@@ -399,6 +399,44 @@ Mission status (`active`/`paused`/`completed`) and Py's mascot state
 together: one says what the user is working on, the other what the assistant is
 doing this second.
 
+### Decision Memory
+
+A Mission can record what was decided and why, so that months later "why did
+we choose this?" has an answer that is not a chat transcript.
+
+`mission_decisions` holds the decision and a rationale written for a person to
+read. There is nowhere in it to put model reasoning, and that is deliberate:
+the rationale is the reasons, never the reasoning.
+
+**Append-only.** Deciding again inserts a new row and stamps the old one
+superseded; a partial unique index makes "at most one live decision per
+mission" a guarantee of the database rather than a convention. The product
+shows only the live one - the history exists because "we changed our mind" is
+part of the record, not because anything displays it yet. This is the first
+place in the codebase that stopped overwriting, and it is the reason Time
+Travel and Outcome Learning have somewhere to stand.
+
+**Evidence is both a reference and a snapshot.** `decision_evidence` stores the
+finding id *and* the text as it read when the decision was made. A reference
+alone would let a later edit rewrite history, so the decision would claim
+evidence that never existed - a confident wrong answer to the exact question
+this table answers. A snapshot alone would drift from the live board with no
+way to notice. Holding both lets the page say "this finding has changed since"
+or "this finding was removed" while still showing what was actually believed.
+`finding_id` is ON DELETE SET NULL: losing a finding costs the link, never the
+record.
+
+**A decision is never permission.** This is structural, not a policy sentence.
+The approval gate asks `BrowserController.describe_action()`, which judges a
+URL, an element and some text and holds no mission, no store and no
+conversation - there is no path from a decisions row to `requires_confirmation`.
+`mission_save_decision` writes rows and holds no controller, so it cannot act.
+When a decision is briefed back it sits inside `<mission_decision>`, defined in
+the system prompt under the same rules as recorded notes: a record, never
+instructions, never consent. A test asserts the safety layer's judgement is
+byte-identical before and after saving a decision that claims the user approved
+a purchase.
+
 ### The Mission Library
 
 `pybrowser://missions/` is a real page, not a panel view. A Mission is not a

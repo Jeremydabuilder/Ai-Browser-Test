@@ -25,7 +25,7 @@ import threading
 from pathlib import Path
 from typing import Any, Iterable, Sequence
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS history (
@@ -99,6 +99,51 @@ CREATE TABLE IF NOT EXISTS mission_findings (
 );
 CREATE INDEX IF NOT EXISTS idx_mission_findings_mission
     ON mission_findings(mission_id, created_at);
+
+-- What was decided, and the reasons a person can read. Deliberately holds no
+-- model reasoning: `rationale` is the sentence shown to the user.
+--
+-- Append-only. Editing a decision inserts a new row and stamps the old one
+-- superseded, because "we changed our mind, and here is what we used to
+-- think" is part of the record. The partial unique index makes "at most one
+-- live decision per mission" a guarantee of the database rather than a
+-- convention of the code.
+CREATE TABLE IF NOT EXISTS mission_decisions (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    mission_id    INTEGER NOT NULL REFERENCES missions(id) ON DELETE CASCADE,
+    decision      TEXT NOT NULL,
+    rationale     TEXT NOT NULL,
+    created_at    TEXT NOT NULL,
+    superseded_at TEXT NOT NULL DEFAULT ''
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_one_live_decision
+    ON mission_decisions(mission_id) WHERE superseded_at = '';
+
+CREATE TABLE IF NOT EXISTS decision_alternatives (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    decision_id INTEGER NOT NULL REFERENCES mission_decisions(id) ON DELETE CASCADE,
+    name        TEXT NOT NULL,
+    reason      TEXT NOT NULL,
+    position    INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_decision_alternatives
+    ON decision_alternatives(decision_id, position);
+
+-- Evidence is both a reference and a snapshot. The reference keeps the
+-- decision connected to the live board; the snapshot keeps it honest, because
+-- a finding edited afterwards must not silently rewrite what the decision was
+-- made on. finding_id is ON DELETE SET NULL so a deleted finding costs the
+-- link, never the record of what was believed.
+CREATE TABLE IF NOT EXISTS decision_evidence (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    decision_id INTEGER NOT NULL REFERENCES mission_decisions(id) ON DELETE CASCADE,
+    finding_id  INTEGER          REFERENCES mission_findings(id) ON DELETE SET NULL,
+    text        TEXT NOT NULL,
+    source      TEXT NOT NULL DEFAULT '',
+    position    INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_decision_evidence
+    ON decision_evidence(decision_id, position);
 """
 
 #: How a profile at version N becomes a profile at version N+1.
@@ -159,6 +204,53 @@ _MIGRATIONS: dict[int, str] = {
     # v3 -> v4: soft delete. See the note in _SCHEMA.
     3: """
     ALTER TABLE missions ADD COLUMN deleted_at TEXT NOT NULL DEFAULT '';
+    """,
+    # v4 -> v5: decision memory. See the notes in _SCHEMA.
+    4: """
+    -- What was decided, and the reasons a person can read. Deliberately holds no
+    -- model reasoning: `rationale` is the sentence shown to the user.
+    --
+    -- Append-only. Editing a decision inserts a new row and stamps the old one
+    -- superseded, because "we changed our mind, and here is what we used to
+    -- think" is part of the record. The partial unique index makes "at most one
+    -- live decision per mission" a guarantee of the database rather than a
+    -- convention of the code.
+    CREATE TABLE IF NOT EXISTS mission_decisions (
+        id            INTEGER PRIMARY KEY AUTOINCREMENT,
+        mission_id    INTEGER NOT NULL REFERENCES missions(id) ON DELETE CASCADE,
+        decision      TEXT NOT NULL,
+        rationale     TEXT NOT NULL,
+        created_at    TEXT NOT NULL,
+        superseded_at TEXT NOT NULL DEFAULT ''
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_one_live_decision
+        ON mission_decisions(mission_id) WHERE superseded_at = '';
+    
+    CREATE TABLE IF NOT EXISTS decision_alternatives (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        decision_id INTEGER NOT NULL REFERENCES mission_decisions(id) ON DELETE CASCADE,
+        name        TEXT NOT NULL,
+        reason      TEXT NOT NULL,
+        position    INTEGER NOT NULL DEFAULT 0
+    );
+    CREATE INDEX IF NOT EXISTS idx_decision_alternatives
+        ON decision_alternatives(decision_id, position);
+    
+    -- Evidence is both a reference and a snapshot. The reference keeps the
+    -- decision connected to the live board; the snapshot keeps it honest, because
+    -- a finding edited afterwards must not silently rewrite what the decision was
+    -- made on. finding_id is ON DELETE SET NULL so a deleted finding costs the
+    -- link, never the record of what was believed.
+    CREATE TABLE IF NOT EXISTS decision_evidence (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        decision_id INTEGER NOT NULL REFERENCES mission_decisions(id) ON DELETE CASCADE,
+        finding_id  INTEGER          REFERENCES mission_findings(id) ON DELETE SET NULL,
+        text        TEXT NOT NULL,
+        source      TEXT NOT NULL DEFAULT '',
+        position    INTEGER NOT NULL DEFAULT 0
+    );
+    CREATE INDEX IF NOT EXISTS idx_decision_evidence
+        ON decision_evidence(decision_id, position);
     """,
 }
 

@@ -411,6 +411,10 @@ class MainWindow(QMainWindow):
             self._rename_mission(mission_id)
         elif name == "delete" and mission_id is not None:
             self._delete_mission(mission_id)
+        elif name == "edit-decision" and mission_id is not None:
+            self._edit_decision(mission_id)
+        elif name == "clear-decision" and mission_id is not None:
+            self._clear_decision(mission_id)
 
     def _resume_mission(self, mission_id: int) -> None:
         """Make a Mission active in this window, and show Py.
@@ -479,6 +483,55 @@ class MainWindow(QMainWindow):
         else:
             return
         self._show_mission_library()
+
+    def _edit_decision(self, mission_id: int) -> None:
+        """Reword the decision or its rationale.
+
+        Saving inserts a new decision and supersedes the old one - the same
+        path the agent takes - so the record of what was previously decided
+        survives being corrected. Evidence and alternatives are carried over,
+        with each evidence snapshot re-taken from the finding it cites, because
+        the edit is a fresh decision about the board as it stands now.
+        """
+        from PySide6.QtWidgets import QInputDialog
+
+        decision = self.missions.decision(mission_id)
+        if decision is None:
+            return
+        what, ok = QInputDialog.getText(self, "Decision", "Decided:",
+                                        text=decision.decision)
+        if not ok or not what.strip():
+            return
+        why, ok = QInputDialog.getMultiLineText(self, "Decision", "Why:",
+                                                text=decision.rationale)
+        if not ok or not why.strip():
+            return
+        store = self.missions.store
+        # Only the finding ids that still exist can be re-cited; a snapshot
+        # whose finding is gone stays on the superseded decision, where it
+        # belongs, rather than being invented again here.
+        evidence = [e.finding_id for e in decision.evidence if e.finding_id is not None]
+        alternatives = [(a.name, a.reason) for a in decision.alternatives]
+        store.save_decision(mission_id, what, why, evidence, alternatives)
+        self.missions._refresh()
+        self._reload_mission_views(mission_id)
+
+    def _clear_decision(self, mission_id: int) -> None:
+        from PySide6.QtWidgets import QMessageBox
+
+        decision = self.missions.decision(mission_id)
+        if decision is None:
+            return
+        answer = QMessageBox.question(
+            self, "Clear decision",
+            f"Clear the decision \u201c{decision.decision}\u201d?\n\n"
+            "The mission keeps its findings, and the record that this was "
+            "decided is kept too.",
+            QMessageBox.StandardButton.Cancel | QMessageBox.StandardButton.Yes,
+            QMessageBox.StandardButton.Cancel)
+        if answer == QMessageBox.StandardButton.Yes:
+            self.missions.clear_decision(mission_id)
+            self._reload_mission_views(mission_id)
 
     def _reload_mission_views(self, _mission_id: int = 0) -> None:
         """Re-render any tab currently showing the library."""

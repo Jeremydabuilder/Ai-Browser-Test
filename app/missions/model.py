@@ -170,11 +170,103 @@ class MissionFinding:
     source_title: str = ""
 
     @property
+    def age(self) -> str:
+        return relative_age(self.created_at)
+
+    @property
     def source_domain(self) -> str:
         if not self.source_url:
             return ""
         return MissionPage(id=0, mission_id=self.mission_id,
                            url=self.source_url).domain
+
+
+#: Longest a decision's headline may be. Refused, not truncated - the same
+#: reasoning as MAX_FINDING_CHARS.
+MAX_DECISION_CHARS = 200
+
+#: Longest the user-visible rationale may be. Room for a few sentences of
+#: "why", not room for an essay or for a transcript of how it was reached.
+MAX_RATIONALE_CHARS = 600
+
+#: Alternatives and evidence carried by one decision. A decision that needs
+#: more than this is a research board, not a decision.
+MAX_ALTERNATIVES = 5
+MAX_EVIDENCE = 8
+
+
+@dataclass(frozen=True)
+class DecisionAlternative:
+    """Something that was considered and not chosen, and why not."""
+
+    id: int
+    decision_id: int
+    name: str
+    reason: str
+    position: int = 0
+
+
+@dataclass(frozen=True)
+class DecisionEvidence:
+    """One fact the decision rested on, as it read at the time.
+
+    Both a reference and a snapshot, deliberately. A reference alone would let
+    a later edit rewrite history - the decision would claim evidence that did
+    not exist when it was made, which is a confident wrong answer to the exact
+    question this feature exists to answer. A snapshot alone would drift from
+    the live board with no way to notice.
+    """
+
+    id: int
+    decision_id: int
+    #: The finding this came from, or None once that finding is gone.
+    finding_id: int | None
+    #: What the finding said when the decision was made. Never rewritten.
+    text: str
+    source: str = ""
+    position: int = 0
+    #: What the finding says now, or None if it no longer exists. Filled by the
+    #: store from the live row; not stored.
+    current_text: str | None = None
+
+    @property
+    def missing(self) -> bool:
+        """The finding this cites has been deleted."""
+        return self.finding_id is None or self.current_text is None
+
+    @property
+    def changed(self) -> bool:
+        """The finding still exists but no longer says what it said."""
+        return self.current_text is not None and self.current_text != self.text
+
+
+@dataclass(frozen=True)
+class MissionDecision:
+    """What was decided, and the reasons a person can read.
+
+    Deliberately contains no model reasoning. ``rationale`` is the sentence
+    shown to the user; there is nowhere here to put a chain of thought, and
+    that is the point.
+
+    A saved decision is a record. It is never permission: see
+    app/missions/service.py and the note in app/agent/prompt.py.
+    """
+
+    id: int
+    mission_id: int
+    decision: str
+    rationale: str
+    created_at: str = ""
+    #: Empty while this is the live decision; a timestamp once a later one
+    #: replaced it. Decisions are appended, never overwritten - "we changed our
+    #: mind" is itself part of the record.
+    superseded_at: str = ""
+    alternatives: tuple[DecisionAlternative, ...] = field(default_factory=tuple)
+    evidence: tuple[DecisionEvidence, ...] = field(default_factory=tuple)
+
+    @property
+    def live(self) -> bool:
+        return not self.superseded_at
 
 
 @dataclass(frozen=True)
@@ -190,6 +282,9 @@ class Mission:
     #: Filled by the store when the caller asked for them; empty otherwise.
     pages: tuple[MissionPage, ...] = field(default_factory=tuple)
     findings: tuple[MissionFinding, ...] = field(default_factory=tuple)
+    #: The current decision, if one has been made. Superseded ones are kept in
+    #: the database but never carried here: the product shows one decision.
+    decision: MissionDecision | None = None
 
     @property
     def is_active(self) -> bool:
@@ -334,6 +429,54 @@ def clean_title(title: str) -> str:
 
 def clean_goal(goal: str) -> str:
     return " ".join((goal or "").split())[:MAX_GOAL]
+
+
+def relative_age(stamp: str, *, now_at: datetime | None = None) -> str:
+    """How long ago, in words. Empty when the timestamp cannot be read.
+
+    A finding recorded last month and one recorded a minute ago look identical
+    without this, which matters because Py is told to verify anything before
+    acting on it and cannot judge staleness it cannot see.
+    """
+    if not stamp:
+        return ""
+    try:
+        when = datetime.fromisoformat(stamp)
+    except ValueError:
+        return ""
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=timezone.utc)
+    seconds = ((now_at or datetime.now(timezone.utc)) - when).total_seconds()
+    if seconds < 90:
+        return "just now"
+    minutes = seconds / 60
+    if minutes < 60:
+        return f"{int(minutes)} min ago"
+    hours = minutes / 60
+    if hours < 24:
+        return f"{int(hours)} hour{'' if int(hours) == 1 else 's'} ago"
+    days = hours / 24
+    if days < 7:
+        return f"{int(days)} day{'' if int(days) == 1 else 's'} ago"
+    weeks = days / 7
+    if weeks < 5:
+        return f"{int(weeks)} week{'' if int(weeks) == 1 else 's'} ago"
+    months = days / 30.4
+    if months < 12:
+        return f"{int(months)} month{'' if int(months) == 1 else 's'} ago"
+    years = days / 365.25
+    return f"{int(years)} year{'' if int(years) == 1 else 's'} ago"
+
+
+def collapse(text: str) -> str:
+    """Normalise whitespace and nothing else.
+
+    Deliberately not clean_title(): that one truncates, and a truncating
+    normaliser in front of a length check turns "refuse what is too long" into
+    "silently store a shortened version", which is the failure this whole
+    limit exists to prevent.
+    """
+    return " ".join((text or "").split())
 
 
 def clean_finding(text: str) -> str:

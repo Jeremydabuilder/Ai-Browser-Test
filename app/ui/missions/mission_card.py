@@ -169,11 +169,11 @@ class _FindingRow(QWidget):
         self.text.clicked.connect(lambda: self.edit_requested.emit(self.finding))
         body.addWidget(self.text)
 
-        domain = finding.source_domain
+        domain = " \u00b7 ".join(m for m in (finding.source_domain, finding.age) if m)
         if domain:
             # Secondary by design: the discovery is the content, the source is
             # the footnote.
-            self.source = _ClickableLabel(_elide(domain, 30), self)
+            self.source = _ClickableLabel(_elide(domain, 40), self)
             self.source.setStyleSheet(f"color:{c.muted}; font-size:{m.text_xs}px;")
             self.source.setToolTip(f"{finding.source_title or domain}\n"
                                    f"{finding.source_url}\n\nClick to open this page")
@@ -311,6 +311,18 @@ class MissionCard(QFrame):
 
         # Findings first: the discoveries are what the Mission is for, the
         # pages are how it got them.
+        # One line, not a section. The full record - evidence, alternatives,
+        # what has changed since - lives on the mission's page, where there is
+        # room to read it.
+        self.decision = _ClickableLabel("", self)
+        self.decision.setWordWrap(True)
+        self.decision.setStyleSheet(
+            f"color:{c.text}; font-size:{m.text_sm}px; font-weight:600;")
+        self.decision.setToolTip("Open this mission to see why")
+        self.decision.clicked.connect(self._open_decision)
+        self.decision.hide()
+        outer.addWidget(self.decision)
+
         self.findings_label = QLabel("", self)
         self.findings_label.setStyleSheet(
             f"color:{c.disabled}; font-size:{m.text_xs}px; font-weight:600;"
@@ -387,6 +399,7 @@ class MissionCard(QFrame):
             f"color:{tone}; font-size:{m.text_xs}px; font-weight:700;"
             " letter-spacing:0.08em;")
 
+        self._render_decision(mission)
         self._render_findings(mission)
         self._render_pages(mission)
         self.show()
@@ -399,6 +412,22 @@ class MissionCard(QFrame):
             if widget is not None:
                 widget.setParent(None)
                 widget.deleteLater()
+
+    def _render_decision(self, mission: Mission) -> None:
+        decision = mission.decision
+        if decision is None:
+            self.decision.hide()
+            return
+        self.decision.setText(f"\u2713  {decision.decision}")
+        self.decision.setToolTip(f"{decision.decision}\n{decision.rationale}\n\n"
+                                 "Open this mission to see why")
+        self.decision.show()
+
+    def _open_decision(self) -> None:
+        window = self.window()
+        opener = getattr(window, "_open_mission", None)
+        if callable(opener) and self._mission is not None:
+            opener(self._mission.id)
 
     def _render_findings(self, mission: Mission) -> None:
         self._clear(self._findings_box)

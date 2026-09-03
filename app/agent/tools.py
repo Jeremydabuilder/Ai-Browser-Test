@@ -30,7 +30,13 @@ from app.browser.results import ActionResult
 # Data only - model.py holds no Qt, no database and no browser. The limit is
 # imported rather than restated so the schema the model reads and the rule the
 # store enforces can never drift apart.
-from app.missions.model import MAX_FINDING_CHARS
+from app.missions.model import (
+    MAX_ALTERNATIVES,
+    MAX_DECISION_CHARS,
+    MAX_EVIDENCE,
+    MAX_FINDING_CHARS,
+    MAX_RATIONALE_CHARS,
+)
 
 # ---------------------------------------------------------------------------
 # Untrusted content marking
@@ -213,6 +219,40 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                                      "Omit to use the tab in front. An id that is not "
                                      "open is an error, never a fallback."}},
           ["text"]),
+
+    _tool("mission_save_decision",
+          "Record what the user has decided on the active mission, and why. "
+          "Use it when the research has reached a conclusion - a choice made, an "
+          "option ruled out, a recommendation the user accepted. Write the "
+          "rationale for the user to read months later, in their terms, not as "
+          "an account of how you worked it out. "
+          "Saving a decision RECORDS it; it does not carry it out and it is not "
+          "permission to do anything. Any real action still needs the user to ask "
+          "and still faces the browser's own confirmation. "
+          "Saving again replaces the current decision. "
+          f"Limits: decision {MAX_DECISION_CHARS} characters, rationale "
+          f"{MAX_RATIONALE_CHARS}; longer is refused rather than shortened.",
+          {"decision": {"type": "string",
+                        "description": "What was decided, in a few words."},
+           "rationale": {"type": "string",
+                         "description": "Why, in terms the user will recognise. "
+                                        "The reasons, not the reasoning."},
+           "evidence": {"type": "array",
+                        "items": {"type": "integer"},
+                        "description": "Ids of findings on this mission that support "
+                                       f"the decision. At most {MAX_EVIDENCE}. An id "
+                                       "from another mission is an error."},
+           "alternatives": {"type": "array",
+                            "description": "What was considered and not chosen. "
+                                           f"At most {MAX_ALTERNATIVES}.",
+                            "items": {"type": "object",
+                                      "properties": {
+                                          "name": {"type": "string"},
+                                          "reason": {"type": "string",
+                                                     "description": "Why it was not chosen."}},
+                                      "required": ["name", "reason"],
+                                      "additionalProperties": False}}},
+          ["decision", "rationale"]),
 ]
 
 TOOL_NAMES = {schema["name"] for schema in TOOL_SCHEMAS}
@@ -265,7 +305,7 @@ _UNCLASSIFIED_SAFE = {"browser_select_tab", "browser_close_tab",
 #:
 #: The fail-closed default in `assess` is untouched: a tool in neither this set
 #: nor any other is still treated as a write.
-LOCAL_WRITE_TOOLS = {"mission_save_finding"}
+LOCAL_WRITE_TOOLS = {"mission_save_finding", "mission_save_decision"}
 
 #: Tools that only read. Used to skip confirmation checks entirely.
 READ_ONLY_TOOLS = {
@@ -300,6 +340,61 @@ def _finding_activity(text: str) -> str:
     if len(condensed) > 60:
         condensed = condensed[:59].rstrip() + "\u2026"
     return f'Noting "{condensed}"'
+
+
+def _alternatives_of(raw) -> list[tuple[str, str]]:
+    """Validate the alternatives argument into (name, reason) pairs."""
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
+        raise ToolError("'alternatives' must be a list.")
+    pairs: list[tuple[str, str]] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            raise ToolError("Each alternative must be an object with 'name' and 'reason'.")
+        name, reason = item.get("name"), item.get("reason")
+        if not isinstance(name, str) or not isinstance(reason, str):
+            raise ToolError("An alternative's 'name' and 'reason' must be strings.")
+        if name.strip():
+            pairs.append((name, reason))
+    return pairs
+
+
+def _decision_activity(decision: str) -> str:
+    condensed = " ".join(decision.split())
+    if len(condensed) > 48:
+        condensed = condensed[:47].rstrip() + "\u2026"
+    return f'Recording the decision: "{condensed}"'
+
+
+#: Why a decision was refused, and what to do about it.
+_DECISION_ERRORS: dict[str, tuple[str, str, str]] = {
+    "no_mission": ("NO_ACTIVE_MISSION",
+                   "There is no mission active, so there is nothing to decide on.",
+                   "Answer the user directly. Do not try again."),
+    "too_long": ("DECISION_TOO_LONG",
+                 "The decision or its rationale is over the limit and was NOT saved.",
+                 "Shorten it, keeping the reasons that actually decided it, and "
+                 "call the tool again."),
+    "no_text": ("EMPTY_DECISION", "A decision needs both a decision and a rationale.",
+                "Write what was chosen and why, then try again."),
+    "unknown_evidence": ("UNKNOWN_EVIDENCE",
+                         "One of those finding ids is not on this mission, so nothing "
+                         "was saved - the decision would have cited evidence from "
+                         "somewhere else.",
+                         "Use ids from this mission's own findings, or omit evidence."),
+}
+
+
+def _decision_error(result: dict) -> dict:
+    code, message, hint = _DECISION_ERRORS.get(
+        result.get("status", ""),
+        ("DECISION_FAILED", "The decision could not be saved.", "Carry on."))
+    limits = result.get("limits")
+    if limits:
+        message = (f"{message} Limits: decision {limits['decision']} characters, "
+                   f"rationale {limits['rationale']}.")
+    return _error(code, message, hint=hint)
 
 
 #: Why a save was refused, and what the model should do about it. Each hint is
@@ -513,6 +608,8 @@ class ToolRegistry:
                 return f"Opening {self._string(args, 'url')}"
             if name == "mission_save_finding":
                 return _finding_activity(self._string(args, "text"))
+            if name == "mission_save_decision":
+                return _decision_activity(self._string(args, "decision"))
             if name == "browser_get_page":
                 return "Reading the page"
             if name == "browser_get_page_text":
@@ -598,6 +695,39 @@ class ToolRegistry:
                            **({"source": source} if source else {})},
                 activity=_finding_activity(text))
         return ToolOutcome(immediate=_finding_error(result), activity="Saving a finding")
+
+    def _run_save_decision(self, args: dict) -> ToolOutcome:
+        """Record a decision against the active Mission.
+
+        Writes rows and nothing else. This method holds no controller, so
+        there is no path from here to an action - which is what makes "a saved
+        decision is never permission" a property of the code rather than a
+        promise in a prompt.
+        """
+        decision = self._string(args, "decision", required=True)
+        rationale = self._string(args, "rationale", required=True)
+        evidence = args.get("evidence") or []
+        if not isinstance(evidence, list) or not all(
+                isinstance(item, int) and not isinstance(item, bool) for item in evidence):
+            raise ToolError("'evidence' must be a list of finding ids.")
+        alternatives = _alternatives_of(args.get("alternatives"))
+
+        if self._missions is None:
+            return ToolOutcome(immediate=_error(
+                "NO_MISSION", "Missions are not available in this window.",
+                hint="Answer the user directly instead."),
+                activity="Recording a decision")
+
+        result = self._missions.save_decision(decision, rationale, evidence, alternatives)
+        if result.get("status") == "saved":
+            return ToolOutcome(
+                immediate={"ok": True, "decision_id": result.get("decision_id"),
+                           "evidence": result.get("evidence", 0),
+                           "note": "Recorded. This is a record, not permission - "
+                                   "any action still needs the user."},
+                activity=_decision_activity(decision))
+        return ToolOutcome(immediate=_decision_error(result),
+                           activity="Recording a decision")
 
     def _run_get_page(self, args: dict) -> ToolOutcome:
         return ToolOutcome(future=self._browser.get_page_structure(

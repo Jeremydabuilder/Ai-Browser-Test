@@ -77,9 +77,10 @@ def summarise(mission, *, with_detail: bool = False,
         "pages": len(mission.pages) if pages is None else pages,
     }
     if with_detail:
+        row["decision"] = _decision(mission.decision)
         row["findingList"] = [
             {"id": f.id, "text": f.text, "source": f.source_domain,
-             "url": f.source_url}
+             "url": f.source_url, "age": f.age}
             for f in mission.findings
         ]
         row["pageList"] = [
@@ -87,6 +88,34 @@ def summarise(mission, *, with_detail: bool = False,
             for p in mission.pages
         ]
     return row
+
+
+def _decision(decision) -> dict[str, Any] | None:
+    """The live decision, flattened.
+
+    Evidence carries both what it said when the decision was made and whether
+    the finding it came from has since changed or gone. Showing only one of
+    those would be a confident answer to the wrong question.
+    """
+    if decision is None:
+        return None
+    from app.missions.model import relative_age
+
+    return {
+        "id": decision.id,
+        "decision": decision.decision,
+        "rationale": decision.rationale,
+        "age": relative_age(decision.created_at),
+        "evidence": [
+            {"text": e.text, "source": e.source,
+             "changed": e.changed, "missing": e.missing,
+             "current": e.current_text or ""}
+            for e in decision.evidence
+        ],
+        "alternatives": [
+            {"name": a.name, "reason": a.reason} for a in decision.alternatives
+        ],
+    }
 
 
 #: Supplied by the window: ``provider(mission_id, query) -> LibraryData``.
@@ -213,6 +242,28 @@ _TEMPLATE = """<!doctype html>
   button.act.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
   button.act.primary:hover { color: #fff; opacity: .9; }
   button.act.danger:hover { border-color: var(--danger); color: var(--danger); }
+  /* The decision leads the page and does not look like another card in a row
+     of cards: it is the answer the mission was for. */
+  .decision {
+    border-left: 3px solid var(--accent); padding: 2px 0 2px 18px; margin: 4px 0 30px;
+  }
+  .decision .label {
+    font-size: 11px; font-weight: 600; letter-spacing: .07em; color: var(--accent);
+  }
+  .decision .what { font-size: 21px; font-weight: 600; margin: 4px 0 2px;
+                    letter-spacing: -.01em; }
+  .decision .why { color: var(--muted); font-size: 15px; margin-bottom: 16px; }
+  .decision .when { color: var(--disabled); font-size: 12px; float: right; }
+  .decision .cols { display: flex; gap: 40px; flex-wrap: wrap; }
+  .decision .cols > div { flex: 1 1 240px; min-width: 0; }
+  .decision h3 {
+    font-size: 11px; font-weight: 600; letter-spacing: .07em; color: var(--disabled);
+    margin: 0 0 6px;
+  }
+  .decision li { padding: 3px 0; }
+  .decision .src, .decision .why-not { color: var(--muted); font-size: 12px; }
+  .decision .flag { color: var(--muted); font-size: 11px; font-style: italic; }
+  .decision .acts { margin-top: 18px; }
   ul { list-style: none; margin: 0; padding: 0; }
   li.finding { padding: 9px 0 9px 12px; border-left: 2px solid var(--accent);
                margin-bottom: 6px; }
@@ -315,6 +366,72 @@ _TEMPLATE = """<!doctype html>
     });
   }
 
+  function renderDecision(mission) {
+    // Nothing at all when there is none. A mission still being worked on
+    // should look like one, not like a form with an empty field.
+    var decision = mission.decision;
+    if (!decision) { return; }
+
+    var box = el("div", "decision");
+    var when = el("span", "when", decision.age);
+    box.appendChild(when);
+    box.appendChild(el("div", "label", "DECISION"));
+    box.appendChild(el("div", "what", decision.decision));
+    box.appendChild(el("div", "why", decision.rationale));
+
+    var cols = el("div", "cols");
+    if (decision.evidence.length) {
+      var left = el("div");
+      left.appendChild(el("h3", null, "BECAUSE"));
+      var evidence = el("ul");
+      decision.evidence.forEach(function (item) {
+        var li = el("li");
+        li.appendChild(el("div", null, item.text));
+        var marks = [];
+        if (item.source) { marks.push(item.source); }
+        if (item.missing) { marks.push("finding since removed"); }
+        else if (item.changed) { marks.push("finding has changed since"); }
+        if (marks.length) {
+          // The snapshot is what the decision was made on; the flag says the
+          // board has moved. Both are true and both are shown.
+          li.appendChild(el("div", item.missing || item.changed ? "flag" : "src",
+                            marks.join(" \u00b7 ")));
+        }
+        evidence.appendChild(li);
+      });
+      left.appendChild(evidence);
+      cols.appendChild(left);
+    }
+    if (decision.alternatives.length) {
+      var right = el("div");
+      right.appendChild(el("h3", null, "INSTEAD OF"));
+      var alts = el("ul");
+      decision.alternatives.forEach(function (item) {
+        var li = el("li");
+        li.appendChild(el("div", null, item.name));
+        if (item.reason) { li.appendChild(el("div", "why-not", item.reason)); }
+        alts.appendChild(li);
+      });
+      right.appendChild(alts);
+      cols.appendChild(right);
+    }
+    if (cols.childNodes.length) { box.appendChild(cols); }
+
+    var acts = el("div", "acts");
+    var edit = el("button", "act", "Edit");
+    edit.addEventListener("click", function () {
+      act("edit-decision", { id: mission.id });
+    });
+    acts.appendChild(edit);
+    var clear = el("button", "act danger", "Clear");
+    clear.addEventListener("click", function () {
+      act("clear-decision", { id: mission.id });
+    });
+    acts.appendChild(clear);
+    box.appendChild(acts);
+    body.appendChild(box);
+  }
+
   function renderDetail(mission) {
     var back = el("button", "back", "\\u2190 All missions");
     back.addEventListener("click", function () { act("library", {}); });
@@ -324,6 +441,8 @@ _TEMPLATE = """<!doctype html>
     head.appendChild(el("h1", null, mission.title));
     body.appendChild(head);
     body.appendChild(el("div", "detail-goal", mission.goal));
+
+    renderDecision(mission);
 
     var actions = el("div", "actions");
     var resume = el("button", "act primary",
@@ -346,7 +465,10 @@ _TEMPLATE = """<!doctype html>
       mission.findingList.forEach(function (finding) {
         var li = el("li", "finding");
         li.appendChild(el("div", null, finding.text));
-        if (finding.source) { li.appendChild(el("div", "src", finding.source)); }
+        var marks = [finding.source, finding.age].filter(Boolean);
+        if (marks.length) {
+          li.appendChild(el("div", "src", marks.join(" \u00b7 ")));
+        }
         found.appendChild(li);
       });
       body.appendChild(found);

@@ -26,9 +26,12 @@ from PySide6.QtCore import QObject, Signal
 from app.missions import briefing as briefing_text
 from app.missions.bus import bus
 from app.missions.model import (
+    MAX_DECISION_CHARS,
     MAX_FINDING_CHARS,
     MAX_FINDINGS_PER_MISSION,
+    MAX_RATIONALE_CHARS,
     Mission,
+    MissionDecision,
     MissionFinding,
     MissionPage,
     MissionStatus,
@@ -309,6 +312,57 @@ class MissionService(QObject):
                 return True
         self._tabs.new_tab(page.url)
         return True
+
+    # -- decisions -------------------------------------------------------
+    #
+    # A decision is a record of what was chosen and why. It is never
+    # permission. Nothing here can perform an action, and nothing here is
+    # consulted by the approval gate: that gate asks the browser's safety layer
+    # about the action itself, which has no access to this table, to the
+    # conversation, or to anything the model wrote. A decision that says the
+    # user approved a purchase changes exactly nothing about whether a purchase
+    # stops for confirmation.
+
+    def save_decision(self, decision: str, rationale: str,
+                      evidence_ids: list[int] | None = None,
+                      alternatives: list[tuple[str, str]] | None = None) -> dict:
+        """Record what was decided on the active Mission.
+
+        Never raises; a refusal is a normal outcome the model should read and
+        correct. Saving again supersedes the previous decision rather than
+        overwriting it.
+        """
+        mission = self._active
+        if mission is None:
+            return {"status": "no_mission"}
+        outcome, saved = self._store.save_decision(
+            mission.id, decision, rationale, evidence_ids, alternatives)
+        result = {"status": outcome}
+        if saved is not None:
+            result["decision_id"] = saved.id
+            result["evidence"] = len(saved.evidence)
+        if outcome == self._store.DECISION_TOO_LONG:
+            result["limits"] = {"decision": MAX_DECISION_CHARS,
+                                "rationale": MAX_RATIONALE_CHARS}
+        self._refresh()
+        self._announce(mission.id)
+        return result
+
+    def decision(self, mission_id: int | None = None) -> MissionDecision | None:
+        """The live decision for a Mission, or for the active one."""
+        if mission_id is None:
+            mission_id = self._active.id if self._active is not None else None
+        if mission_id is None:
+            return None
+        return self._store.decision(mission_id)
+
+    def clear_decision(self, mission_id: int) -> bool:
+        cleared = self._store.clear_decision(mission_id)
+        if cleared:
+            self._refresh()
+            self._announce(mission_id)
+            self.missions_changed.emit(self._store.get(mission_id))
+        return cleared
 
     # -- the library -----------------------------------------------------
     def search(self, query: str, limit: int = 200) -> list[Mission]:

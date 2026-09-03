@@ -17,7 +17,7 @@ the prompt names the marker this module owns.
 
 from __future__ import annotations
 
-from app.missions.model import Mission, MissionFinding
+from app.missions.model import Mission, MissionDecision, MissionFinding
 
 #: The fence. Everything board-derived goes inside it - the findings, their
 #: source domains, and the line saying how many were left out. A reader that
@@ -26,6 +26,13 @@ from app.missions.model import Mission, MissionFinding
 #: exceptions for metadata that merely looks harmless.
 FINDINGS_OPEN = "<mission_findings>"
 FINDINGS_CLOSE = "</mission_findings>"
+
+#: The decision fence. A sibling of the findings fence rather than the same
+#: one: what was decided is a different kind of statement from what was
+#: observed, and the model should be able to tell them apart. Same rule for
+#: both - a record, never an instruction, never permission.
+DECISION_OPEN = "<mission_decision>"
+DECISION_CLOSE = "</mission_decision>"
 
 #: Findings carried into a resumed conversation, most recent first. A resumed
 #: Mission is picking up a thread, and the recent end of the board is the
@@ -40,7 +47,7 @@ MAX_BRIEFING_CHARS = 4000
 #: Markers a finding must not be able to forge. The closing marker would end
 #: the fence early and promote the rest to plain conversation; the untrusted
 #: markers would let a finding fake the start or end of page content later on.
-_FORGEABLE = (FINDINGS_OPEN, FINDINGS_CLOSE,
+_FORGEABLE = (FINDINGS_OPEN, FINDINGS_CLOSE, DECISION_OPEN, DECISION_CLOSE,
               "<untrusted_web_page_content>", "</untrusted_web_page_content>")
 
 
@@ -56,9 +63,16 @@ def neutralise(text: str) -> str:
 
 
 def _line(finding: MissionFinding) -> str:
-    domain = finding.source_domain
+    """One finding, with where it came from and how old it is.
+
+    The age is here because the prompt tells Py to verify anything before
+    acting on it consequentially, and it cannot judge staleness it cannot see:
+    a price recorded an hour ago and one recorded last month read identically
+    without it.
+    """
     text = " ".join(finding.text.split())
-    return f"- {text}  ({domain})" if domain else f"- {text}"
+    marks = [mark for mark in (finding.source_domain, finding.age) if mark]
+    return f"- {text}  ({', '.join(marks)})" if marks else f"- {text}"
 
 
 def selected(findings) -> tuple[list[MissionFinding], int]:
@@ -96,12 +110,37 @@ def findings_block(findings) -> str:
     return f"{FINDINGS_OPEN}\n{body}\n{FINDINGS_CLOSE}"
 
 
+def decision_block(decision: MissionDecision | None) -> str:
+    """The fenced record of what was decided, or "".
+
+    Evidence snapshots are deliberately left out: they are the same sentences
+    as the findings already in the briefing, and sending both pays twice for
+    one set of facts.
+    """
+    if decision is None:
+        return ""
+    lines = [f"Decided: {decision.decision}", f"Because: {decision.rationale}"]
+    for alternative in decision.alternatives:
+        lines.append(f"Not chosen: {alternative.name} - {alternative.reason}")
+    if decision.created_at:
+        from app.missions.model import relative_age
+
+        age = relative_age(decision.created_at)
+        if age:
+            lines.append(f"(decided {age})")
+    body = "\n".join(neutralise(line) for line in lines)
+    return f"{DECISION_OPEN}\n{body}\n{DECISION_CLOSE}"
+
+
 def compose(mission: Mission | None) -> str:
     """The whole briefing for one Mission, or "" when none is active."""
     if mission is None:
         return ""
     parts = [f'I am working on a mission called "{mission.title}". '
              f"My goal: {mission.goal}"]
+    decided = decision_block(mission.decision)
+    if decided:
+        parts.append("What was decided on this mission before:\n" + decided)
     block = findings_block(mission.findings)
     if block:
         parts.append("Notes I recorded earlier on this mission:\n" + block)

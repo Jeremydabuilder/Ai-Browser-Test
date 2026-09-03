@@ -93,7 +93,7 @@ class MissionPicker(QWidget):
         outer.addWidget(prompt)
 
         self.goal = QLineEdit(self)
-        self.goal.setPlaceholderText("Find the best tennis shoes under $140…")
+        self.goal.setPlaceholderText("Compare options and pick one\u2026")
         self.goal.setAccessibleName("Mission goal")
         self.goal.setMinimumHeight(m.control)
         self.goal.returnPressed.connect(self._start)

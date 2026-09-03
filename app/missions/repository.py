@@ -14,10 +14,17 @@ the one hot path, and it is still only as frequent as the agent's actions.
 from __future__ import annotations
 
 from app.missions.model import (
+    MAX_ALTERNATIVES,
+    MAX_DECISION_CHARS,
+    MAX_EVIDENCE,
     MAX_FINDING_CHARS,
     MAX_FINDINGS_PER_MISSION,
+    MAX_RATIONALE_CHARS,
     MAX_TITLE,
+    DecisionAlternative,
+    DecisionEvidence,
     Mission,
+    MissionDecision,
     MissionFinding,
     MissionPage,
     MissionStatus,
@@ -25,6 +32,7 @@ from app.missions.model import (
     clean_goal,
     clean_title,
     clean_finding,
+    collapse,
     finding_key,
     is_associable,
     now,
@@ -77,7 +85,8 @@ class MissionStore:
             return None
         pages = tuple(self.pages(mission_id)) if with_pages else ()
         found = tuple(self.findings(mission_id)) if with_pages else ()
-        return Mission(**dict(row), pages=pages, findings=found)
+        decision = self.decision(mission_id) if with_pages else None
+        return Mission(**dict(row), pages=pages, findings=found, decision=decision)
 
     def recent(self, limit: int = 20, *, with_pages: bool = False) -> list[Mission]:
         """Missions, most recently touched first."""
@@ -87,7 +96,8 @@ class MissionStore:
         return [
             Mission(**dict(row),
                     pages=tuple(self.pages(row["id"])) if with_pages else (),
-                    findings=tuple(self.findings(row["id"])) if with_pages else ())
+                    findings=tuple(self.findings(row["id"])) if with_pages else (),
+                    decision=self.decision(row["id"]) if with_pages else None)
             for row in rows
         ]
 
@@ -167,7 +177,8 @@ class MissionStore:
         return [
             Mission(**dict(row),
                     pages=tuple(self.pages(row["id"])) if with_pages else (),
-                    findings=tuple(self.findings(row["id"])) if with_pages else ())
+                    findings=tuple(self.findings(row["id"])) if with_pages else (),
+                    decision=self.decision(row["id"]) if with_pages else None)
             for row in rows
         ]
 
@@ -383,6 +394,143 @@ class MissionStore:
         cursor = self._db.execute("DELETE FROM mission_findings WHERE id = ?",
                                   (finding_id,))
         return bool(cursor is not None and cursor.rowcount)
+
+    # -- decisions -------------------------------------------------------
+    #
+    # Append-only. `save_decision` inserts and supersedes; nothing here ever
+    # rewrites a decision in place, because the question this table exists to
+    # answer - "what did we decide, and on what?" - is a question about the
+    # past.
+
+    DECISION_SAVED = "saved"
+    DECISION_TOO_LONG = "too_long"
+    DECISION_NO_TEXT = "no_text"
+    DECISION_UNKNOWN_EVIDENCE = "unknown_evidence"
+
+    def save_decision(self, mission_id: int, decision: str, rationale: str,
+                      evidence_ids: list[int] | None = None,
+                      alternatives: list[tuple[str, str]] | None = None
+                      ) -> tuple[str, MissionDecision | None]:
+        """Record a decision, superseding whatever was decided before.
+
+        Evidence ids are checked against this Mission's findings and a
+        stranger is refused, not dropped: a decision citing evidence from
+        somewhere else is worse than one citing none.
+        """
+        # collapse(), not clean_title(): clean_title truncates, and truncating
+        # before a length check would silently store a shortened decision.
+        decision = collapse(decision)
+        rationale = collapse(rationale)
+        if not decision or not rationale:
+            return self.DECISION_NO_TEXT, None
+        if len(decision) > MAX_DECISION_CHARS or len(rationale) > MAX_RATIONALE_CHARS:
+            return self.DECISION_TOO_LONG, None
+
+        cited = list(dict.fromkeys(evidence_ids or []))[:MAX_EVIDENCE]
+        findings = {f.id: f for f in self.findings(mission_id)}
+        unknown = [i for i in cited if i not in findings]
+        if unknown:
+            return self.DECISION_UNKNOWN_EVIDENCE, None
+
+        stamp = now()
+        current = self.decision(mission_id)
+        if current is not None:
+            self._db.execute(
+                "UPDATE mission_decisions SET superseded_at = ? WHERE id = ?",
+                (stamp, current.id))
+        cursor = self._db.execute(
+            "INSERT INTO mission_decisions "
+            "(mission_id, decision, rationale, created_at, superseded_at) "
+            "VALUES (?, ?, ?, ?, '')",
+            (mission_id, decision, rationale, stamp))
+        if cursor is None:
+            return self.DECISION_NO_TEXT, None
+        decision_id = int(cursor.lastrowid)
+
+        for position, finding_id in enumerate(cited):
+            finding = findings[finding_id]
+            # The snapshot is taken here and never rewritten. This line is the
+            # whole historical-accuracy guarantee.
+            self._db.execute(
+                "INSERT INTO decision_evidence "
+                "(decision_id, finding_id, text, source, position) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (decision_id, finding_id, finding.text, finding.source_domain, position))
+        for position, (name, reason) in enumerate(
+                (alternatives or [])[:MAX_ALTERNATIVES]):
+            name = collapse(name)[:MAX_DECISION_CHARS]
+            reason = collapse(reason)[:MAX_RATIONALE_CHARS]
+            if not name:
+                continue
+            self._db.execute(
+                "INSERT INTO decision_alternatives "
+                "(decision_id, name, reason, position) VALUES (?, ?, ?, ?)",
+                (decision_id, name, reason, position))
+        self._touch_mission(mission_id)
+        return self.DECISION_SAVED, self.get_decision(decision_id)
+
+    def decision(self, mission_id: int) -> MissionDecision | None:
+        """The live decision for a Mission, or None.
+
+        Superseded rows are never returned: the product shows one decision.
+        """
+        row = self._db.query_one(
+            "SELECT id FROM mission_decisions "
+            "WHERE mission_id = ? AND superseded_at = ''", (mission_id,))
+        return self.get_decision(int(row["id"])) if row else None
+
+    def get_decision(self, decision_id: int) -> MissionDecision | None:
+        row = self._db.query_one(
+            "SELECT id, mission_id, decision, rationale, created_at, superseded_at "
+            "FROM mission_decisions WHERE id = ?", (decision_id,))
+        if row is None:
+            return None
+        return MissionDecision(
+            **dict(row),
+            alternatives=tuple(self._alternatives(decision_id)),
+            evidence=tuple(self._evidence(decision_id)))
+
+    def decision_history(self, mission_id: int) -> list[MissionDecision]:
+        """Every decision this Mission has had, newest first.
+
+        Not shown anywhere in the product. It exists because the rows do, and
+        because a record nobody can read is not a record.
+        """
+        rows = self._db.query(
+            "SELECT id FROM mission_decisions WHERE mission_id = ? "
+            "ORDER BY created_at DESC, id DESC", (mission_id,))
+        return [self.get_decision(int(row["id"])) for row in rows]
+
+    def clear_decision(self, mission_id: int) -> bool:
+        """Unset the current decision, keeping the record that it was made."""
+        current = self.decision(mission_id)
+        if current is None:
+            return False
+        self._db.execute("UPDATE mission_decisions SET superseded_at = ? WHERE id = ?",
+                         (now(), current.id))
+        self._touch_mission(mission_id)
+        return True
+
+    def _alternatives(self, decision_id: int) -> list[DecisionAlternative]:
+        rows = self._db.query(
+            "SELECT id, decision_id, name, reason, position FROM decision_alternatives "
+            "WHERE decision_id = ? ORDER BY position, id", (decision_id,))
+        return [DecisionAlternative(**dict(row)) for row in rows]
+
+    def _evidence(self, decision_id: int) -> list[DecisionEvidence]:
+        """Evidence with the live finding's text alongside the snapshot.
+
+        The LEFT JOIN is what lets the UI say "this finding has changed since"
+        or "this finding is gone" instead of quietly showing one of the two
+        and hoping they still agree.
+        """
+        rows = self._db.query(
+            "SELECT e.id, e.decision_id, e.finding_id, e.text, e.source, e.position, "
+            "       f.text AS current_text "
+            "FROM decision_evidence e "
+            "LEFT JOIN mission_findings f ON f.id = e.finding_id "
+            "WHERE e.decision_id = ? ORDER BY e.position, e.id", (decision_id,))
+        return [DecisionEvidence(**dict(row)) for row in rows]
 
     def _touch_mission(self, mission_id: int) -> None:
         self._db.execute("UPDATE missions SET updated_at = ? WHERE id = ?",
