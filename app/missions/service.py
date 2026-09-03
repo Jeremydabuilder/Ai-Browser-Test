@@ -24,6 +24,7 @@ from __future__ import annotations
 from PySide6.QtCore import QObject, Signal
 
 from app.missions import briefing as briefing_text
+from app.missions.bus import bus
 from app.missions.model import (
     MAX_FINDING_CHARS,
     MAX_FINDINGS_PER_MISSION,
@@ -87,6 +88,12 @@ class MissionService(QObject):
         self._briefing = ""
         if controller is not None:
             controller.action_completed.connect(self._on_action)
+        # Every window hears about every Mission change, including its own.
+        # Without this, deleting a Mission in one window leaves another window
+        # holding rows that are gone.
+        self._bus = bus()
+        self._bus.changed.connect(self._on_external_change)
+        self._bus.deleted.connect(self._on_external_delete)
 
     # -- state -----------------------------------------------------------
     @property
@@ -115,6 +122,7 @@ class MissionService(QObject):
         if mission is None:
             return None
         self.missions_changed.emit(mission)
+        self._announce(mission.id)
         self._set_active(mission)
         return self._active
 
@@ -151,6 +159,7 @@ class MissionService(QObject):
             return
         self._store.set_status(mission.id, status)
         self.missions_changed.emit(self._store.get(mission.id))
+        self._announce(mission.id)
         self._set_active(None)
 
     def rename(self, mission_id: int, title: str) -> bool:
@@ -161,6 +170,7 @@ class MissionService(QObject):
         if self._active is not None and self._active.id == mission_id:
             self._active = updated
             self.active_changed.emit(self._active)
+        self._announce(mission_id)
         return True
 
     @property
@@ -176,6 +186,22 @@ class MissionService(QObject):
         else:
             self._briefing = ""
         self.active_changed.emit(mission)
+
+    # -- other windows ---------------------------------------------------
+    def _on_external_change(self, mission_id: int) -> None:
+        """Someone changed a Mission. Re-read ours if it is the same one."""
+        if self._active is not None and self._active.id == mission_id:
+            self._refresh()
+
+    def _on_external_delete(self, mission_id: int) -> None:
+        """A Mission was deleted anywhere. Let go if we were holding it."""
+        if self._active is not None and self._active.id == mission_id:
+            self._set_active(None)
+        self.missions_changed.emit(None)
+
+    def _announce(self, mission_id: int, *, deleted: bool = False) -> None:
+        signal = self._bus.deleted if deleted else self._bus.changed
+        signal.emit(int(mission_id))
 
     def _refresh(self) -> None:
         """Re-read the active Mission, so callers see current pages."""
@@ -284,6 +310,39 @@ class MissionService(QObject):
         self._tabs.new_tab(page.url)
         return True
 
+    # -- the library -----------------------------------------------------
+    def search(self, query: str, limit: int = 200) -> list[Mission]:
+        """Missions matching a query. One method, one corpus - see the store."""
+        return self._store.search(query, limit)
+
+    def delete(self, mission_id: int, *, permanent: bool = False) -> bool:
+        """Remove a Mission from the library.
+
+        Soft by default. A Mission is the record of a decision and the reasons
+        behind it, and "why did we rule that out?" is a question people ask
+        months later; answering it with silence because a row was dropped is
+        not a trade worth making. `permanent=True` is the separate, explicit
+        act for someone who means it.
+        """
+        if permanent:
+            self._store.delete(mission_id)
+            removed = True
+        else:
+            removed = self._store.soft_delete(mission_id)
+        if removed:
+            if self._active is not None and self._active.id == mission_id:
+                self._set_active(None)
+            self._announce(mission_id, deleted=True)
+            self.missions_changed.emit(None)
+        return removed
+
+    def restore(self, mission_id: int) -> bool:
+        restored = self._store.restore(mission_id)
+        if restored:
+            self._announce(mission_id)
+            self.missions_changed.emit(self._store.get(mission_id))
+        return restored
+
     # -- findings --------------------------------------------------------
     #
     # The one thing the agent may write. Everything about how it is written is
@@ -332,6 +391,7 @@ class MissionService(QObject):
 
         outcome, finding = self._store.add_finding(mission.id, text, page_id)
         self._refresh()
+        self._announce(mission.id)
         result = {"status": outcome}
         if finding is not None:
             result["finding_id"] = finding.id

@@ -62,10 +62,17 @@ class MissionStore:
         return Mission(id=int(cursor.lastrowid), title=title, goal=goal,
                        status=MissionStatus.ACTIVE, created_at=stamp, updated_at=stamp)
 
+    #: Columns every Mission read selects, and the clause that hides deleted
+    #: ones. Written once so a new query cannot forget the filter - which is
+    #: the failure mode of soft delete everywhere it has ever been done badly.
+    _MISSION_COLUMNS = ("SELECT id, title, goal, status, created_at, updated_at "
+                        "FROM missions ")
+    _ALIVE = "deleted_at = ''"
+
     def get(self, mission_id: int, *, with_pages: bool = True) -> Mission | None:
         row = self._db.query_one(
-            "SELECT id, title, goal, status, created_at, updated_at "
-            "FROM missions WHERE id = ?", (mission_id,))
+            self._MISSION_COLUMNS + f"WHERE id = ? AND {self._ALIVE}",
+            (mission_id,))
         if row is None:
             return None
         pages = tuple(self.pages(mission_id)) if with_pages else ()
@@ -75,8 +82,8 @@ class MissionStore:
     def recent(self, limit: int = 20, *, with_pages: bool = False) -> list[Mission]:
         """Missions, most recently touched first."""
         rows = self._db.query(
-            "SELECT id, title, goal, status, created_at, updated_at "
-            "FROM missions ORDER BY updated_at DESC, id DESC LIMIT ?", (limit,))
+            self._MISSION_COLUMNS + f"WHERE {self._ALIVE} "
+            "ORDER BY updated_at DESC, id DESC LIMIT ?", (limit,))
         return [
             Mission(**dict(row),
                     pages=tuple(self.pages(row["id"])) if with_pages else (),
@@ -109,12 +116,81 @@ class MissionStore:
         return self._touch(mission_id, "goal = ?", (goal,))
 
     def delete(self, mission_id: int) -> None:
-        # mission_pages cascades: PRAGMA foreign_keys is ON (see database.py).
+        """Destroy a Mission and everything under it. Irreversible.
+
+        Reached only from an explicit "delete permanently" - `soft_delete` is
+        what the Delete button does.
+        """
+        # mission_pages and mission_findings cascade: PRAGMA foreign_keys is ON
+        # (see database.py).
         self._db.execute("DELETE FROM missions WHERE id = ?", (mission_id,))
 
     def count(self) -> int:
-        row = self._db.query_one("SELECT COUNT(*) AS n FROM missions")
+        row = self._db.query_one(
+            f"SELECT COUNT(*) AS n FROM missions WHERE {self._ALIVE}")
         return int(row["n"]) if row else 0
+
+    # -- the library -----------------------------------------------------
+    def search(self, query: str, limit: int = 200, *,
+               with_pages: bool = False) -> list[Mission]:
+        """Missions matching ``query`` across their goal and their contents.
+
+        One method, because the Library, and later anything that wants to ask
+        "what do we know about X?", must query the same corpus the same way.
+        Swapping this for FTS5 when Mission counts justify it is then a change
+        to one query rather than a hunt through the UI.
+
+        Matching is a case-insensitive substring over the Mission's own title
+        and goal, its findings, and its pages' titles and URLs. Ordered by
+        where the match landed - a Mission called "Tennis Shoes" outranks one
+        that merely visited a page about them.
+        """
+        needle = " ".join((query or "").split()).lower()
+        if not needle:
+            return self.recent(limit, with_pages=with_pages)
+        like = f"%{needle}%"
+        rows = self._db.query(
+            self._MISSION_COLUMNS.replace("SELECT", "SELECT DISTINCT") +
+            f"""WHERE {self._ALIVE} AND (
+                    LOWER(title) LIKE ? OR LOWER(goal) LIKE ?
+                 OR id IN (SELECT mission_id FROM mission_findings
+                            WHERE LOWER(text) LIKE ?)
+                 OR id IN (SELECT mission_id FROM mission_pages
+                            WHERE LOWER(title) LIKE ? OR LOWER(url) LIKE ?))
+                ORDER BY
+                  CASE WHEN LOWER(title) LIKE ? THEN 0
+                       WHEN LOWER(goal) LIKE ? THEN 1
+                       ELSE 2 END,
+                  updated_at DESC, id DESC
+                LIMIT ?""",
+            (like, like, like, like, like, like, like, limit))
+        return [
+            Mission(**dict(row),
+                    pages=tuple(self.pages(row["id"])) if with_pages else (),
+                    findings=tuple(self.findings(row["id"])) if with_pages else ())
+            for row in rows
+        ]
+
+    def soft_delete(self, mission_id: int) -> bool:
+        """Hide a Mission without destroying it.
+
+        The default meaning of "delete" here, because a Mission is the record
+        of a decision and the reasons behind it. See the schema note.
+        """
+        cursor = self._db.execute(
+            f"UPDATE missions SET deleted_at = ? WHERE id = ? AND {self._ALIVE}",
+            (now(), mission_id))
+        return bool(cursor is not None and cursor.rowcount)
+
+    def restore(self, mission_id: int) -> bool:
+        cursor = self._db.execute(
+            "UPDATE missions SET deleted_at = '' WHERE id = ?", (mission_id,))
+        return bool(cursor is not None and cursor.rowcount)
+
+    def is_deleted(self, mission_id: int) -> bool:
+        row = self._db.query_one("SELECT deleted_at FROM missions WHERE id = ?",
+                                 (mission_id,))
+        return bool(row and row["deleted_at"])
 
     def _touch(self, mission_id: int, assignment: str, params: tuple) -> bool:
         """Apply one column change and refresh updated_at in the same statement."""

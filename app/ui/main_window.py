@@ -63,6 +63,9 @@ class MainWindow(QMainWindow):
         # The new-tab page reads history and bookmarks through this callback;
         # the profile itself stays ignorant of SQLite.
         profile.set_new_tab_provider(self._new_tab_data)
+        # The Mission Library is a real page, not a panel: a Mission needs room
+        # and a URL, and everything it will grow into needs somewhere to live.
+        profile.set_mission_provider(self._mission_library_data)
         # The supported programmatic interface to this window. The UI does not
         # need it, but keeping one audited control surface (rather than letting
         # callers poke at widgets) is what Phase 2 will build on.
@@ -173,6 +176,9 @@ class MainWindow(QMainWindow):
             tools_menu, "Show &AI Agent", "Ctrl+Shift+A", self._toggle_agent_panel)
         self._agent_action.setCheckable(True)
         self._add_action(tools_menu, "&Configure AI Agent…", None, self._configure_agent)
+        tools_menu.addSeparator()
+        self._add_action(tools_menu, "&Mission Library", "Ctrl+Shift+M",
+                         self._show_mission_library)
 
         help_menu: QMenu = menubar.addMenu("&Help")
         self._add_action(help_menu, f"&About {APP_NAME}", None, self._show_about)
@@ -303,13 +309,17 @@ class MainWindow(QMainWindow):
         return not self._agent_unavailable
 
     def _on_internal_action(self, name: str, params: dict) -> None:
-        """Act on a request from the new-tab page.
+        """Act on a request from one of our own pages.
 
-        The page can only ask for these five things, and each is something the
-        user could already do from a menu. It never navigates by itself: the
-        URL-or-search decision below is the same code path the address bar
-        uses, so the two cannot drift apart.
+        A page can only ask; this decides. Every action here is something the
+        user could already do from a menu, and names are namespaced by page
+        (`missions:open`) so one internal page cannot trigger another's.
+        It never navigates by itself: the URL-or-search decision below is the
+        same code path the address bar uses, so the two cannot drift apart.
         """
+        if name.startswith("missions:"):
+            self._on_mission_action(name.split(":", 1)[1], params)
+            return
         if name == "search":
             query = (params.get("q") or "").strip()
             if query:
@@ -324,6 +334,159 @@ class MainWindow(QMainWindow):
             self._show_history()
         elif name == "bookmarks":
             self._show_bookmarks()
+
+    # ------------------------------------------------------------------
+    # The Mission Library
+    # ------------------------------------------------------------------
+    def _mission_library_data(self, mission_id, query: str):
+        """What the library page shows. Reads; never writes."""
+        from app.browser.missions_page import LibraryData, summarise
+
+        try:
+            if mission_id is not None:
+                mission = self.missions.store.get(int(mission_id))
+                if mission is None:
+                    return LibraryData(total=self.missions.store.count())
+                return LibraryData(detail=summarise(mission, with_detail=True),
+                                   total=self.missions.store.count())
+            found = self.missions.search(query)
+            store = self.missions.store
+            return LibraryData(
+                missions=[summarise(m,
+                                    findings=store.finding_count(m.id),
+                                    pages=store.page_count(m.id))
+                          for m in found],
+                query=query, total=store.count())
+        except Exception:  # noqa: BLE001 - a page must not take the window down
+            return LibraryData()
+
+    def _show_mission_library(self) -> None:
+        from app.browser.missions_page import LIBRARY_URL
+
+        tab = self._current()
+        if tab is not None and tab.url().toString().startswith(LIBRARY_URL):
+            tab.reload()
+            return
+        self.tabs.new_tab(LIBRARY_URL)
+
+    def _open_mission(self, mission_id: int) -> None:
+        from app.browser.missions_page import mission_url
+
+        tab = self._current()
+        if tab is not None:
+            tab.navigate(mission_url(mission_id))
+        else:
+            self.tabs.new_tab(mission_url(mission_id))
+
+    def _on_mission_action(self, name: str, params: dict) -> None:
+        """One request from the Mission Library page.
+
+        Five verbs, each of them something the user could do from a menu.
+        Destructive ones confirm in Qt, never in the page: a confirmation
+        rendered by the thing being confirmed is not a confirmation.
+        """
+        from app.browser.missions_page import LIBRARY_URL
+
+        identifier = (params.get("id") or "").strip()
+        mission_id = int(identifier) if identifier.isdigit() else None
+
+        if name == "library":
+            if tab := self._current():
+                tab.navigate(LIBRARY_URL)
+        elif name == "search":
+            query = (params.get("q") or "").strip()
+            url = LIBRARY_URL + (f"?q={QUrl.toPercentEncoding(query).data().decode()}"
+                                 if query else "")
+            if tab := self._current():
+                tab.navigate(url)
+        elif name == "open" and mission_id is not None:
+            self._open_mission(mission_id)
+        elif name == "page":
+            target = (params.get("url") or "").strip()
+            if target and (tab := self._current()):
+                tab.navigate(target)
+        elif name == "resume" and mission_id is not None:
+            self._resume_mission(mission_id)
+        elif name == "rename" and mission_id is not None:
+            self._rename_mission(mission_id)
+        elif name == "delete" and mission_id is not None:
+            self._delete_mission(mission_id)
+
+    def _resume_mission(self, mission_id: int) -> None:
+        """Make a Mission active in this window, and show Py.
+
+        Resuming is a different act from opening: opening looks at a Mission,
+        resuming hands it to Py. Doing both on one click would hijack the
+        agent's context every time someone browsed their own library.
+        """
+        mission = self.missions.resume(mission_id)
+        if mission is None:
+            self._show_status("That mission is no longer available.")
+            return
+        if self._side_panel is None:
+            self._toggle_agent_panel()
+        self._show_status(f"Mission resumed: {mission.title}")
+
+    def _rename_mission(self, mission_id: int) -> None:
+        from PySide6.QtWidgets import QInputDialog
+
+        mission = self.missions.store.get(mission_id)
+        if mission is None:
+            return
+        title, ok = QInputDialog.getText(self, "Rename mission", "Mission name:",
+                                         text=mission.title)
+        if ok and title.strip():
+            self.missions.rename(mission_id, title)
+            self._reload_mission_views(mission_id)
+
+    def _delete_mission(self, mission_id: int) -> None:
+        """Delete, with permanent deletion as a deliberate second choice.
+
+        The default hides the Mission and keeps the record, because a Mission
+        is the reasoning behind a decision and people ask about those months
+        later. Someone who actually wants the data gone gets a button that
+        says so.
+        """
+        from PySide6.QtWidgets import QMessageBox
+
+        mission = self.missions.store.get(mission_id)
+        if mission is None:
+            return
+        box = QMessageBox(self)
+        box.setWindowTitle("Delete mission")
+        box.setText(f"Delete \u201c{mission.title}\u201d?")
+        box.setInformativeText(
+            "It is removed from your library. Its findings and pages are kept, "
+            "so it can be brought back.")
+        delete = box.addButton("Delete", QMessageBox.ButtonRole.AcceptRole)
+        forever = box.addButton("Delete permanently", QMessageBox.ButtonRole.DestructiveRole)
+        box.addButton(QMessageBox.StandardButton.Cancel)
+        box.exec()
+
+        clicked = box.clickedButton()
+        if clicked is delete:
+            self.missions.delete(mission_id)
+        elif clicked is forever:
+            confirm = QMessageBox.warning(
+                self, "Delete permanently",
+                f"Permanently delete \u201c{mission.title}\u201d and everything "
+                "recorded in it? This cannot be undone.",
+                QMessageBox.StandardButton.Cancel | QMessageBox.StandardButton.Yes,
+                QMessageBox.StandardButton.Cancel)
+            if confirm != QMessageBox.StandardButton.Yes:
+                return
+            self.missions.delete(mission_id, permanent=True)
+        else:
+            return
+        self._show_mission_library()
+
+    def _reload_mission_views(self, _mission_id: int = 0) -> None:
+        """Re-render any tab currently showing the library."""
+        from app.browser.missions_page import LIBRARY_URL
+
+        for tab in self.tabs.tabs():
+            if tab.url().toString().startswith(LIBRARY_URL):
+                tab.reload()
 
     def _open_agent_with(self, text: str) -> None:
         """Open the AI panel, carrying whatever was typed on the new-tab page.

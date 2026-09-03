@@ -103,7 +103,7 @@ class BrowserPage(QWebEnginePage):
         permit from a web origin - and even if one did, every action below is
         something the user could do from the menus anyway.
         """
-        from app.browser.newtab import parse_action
+        from app.browser.internal import parse_action
 
         action = parse_action(url)
         if action is not None and is_main_frame:

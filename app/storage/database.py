@@ -25,7 +25,7 @@ import threading
 from pathlib import Path
 from typing import Any, Iterable, Sequence
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS history (
@@ -53,13 +53,19 @@ CREATE TABLE IF NOT EXISTS settings (
 -- Pages are addressed by URL, never by tab id: a tab id is an in-memory
 -- counter that means nothing after a restart, and holding one would make a
 -- mission corruptible by closing a tab.
+-- deleted_at is a soft delete, and it is not bookkeeping: a Mission is the
+-- record of a decision, and "why did we rule that out?" is a question people
+-- ask months later. Deleting rows on request would answer it with silence.
+-- Users who genuinely want the data gone get a separate, explicit permanent
+-- delete.
 CREATE TABLE IF NOT EXISTS missions (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     title      TEXT NOT NULL,
     goal       TEXT NOT NULL,
     status     TEXT NOT NULL DEFAULT 'active',
     created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
+    updated_at TEXT NOT NULL,
+    deleted_at TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_missions_updated ON missions(updated_at DESC);
 
@@ -149,6 +155,10 @@ _MIGRATIONS: dict[int, str] = {
     );
     CREATE INDEX IF NOT EXISTS idx_mission_findings_mission
         ON mission_findings(mission_id, created_at);
+    """,
+    # v3 -> v4: soft delete. See the note in _SCHEMA.
+    3: """
+    ALTER TABLE missions ADD COLUMN deleted_at TEXT NOT NULL DEFAULT '';
     """,
 }
 

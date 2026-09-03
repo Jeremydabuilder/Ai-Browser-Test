@@ -132,6 +132,17 @@ class MissionPicker(QWidget):
         self._recent_box.setSpacing(0)
         outer.addLayout(self._recent_box)
 
+        # The panel shows the last few; the library shows all of them, with
+        # search, in a page with room to read.
+        self.all_button = QPushButton("All missions", self)
+        self.all_button.setProperty("kind", "quiet")
+        self.all_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.all_button.setStyleSheet(
+            f"QPushButton {{ background:transparent; border:none; color:{c.accent};"
+            f" font-size:{m.text_sm}px; text-align:left; padding:{m.space_1}px 0; }}")
+        self.all_button.clicked.connect(self._open_library)
+        outer.addWidget(self.all_button)
+
         self.refresh()
 
     # -- rendering -------------------------------------------------------
@@ -148,6 +159,7 @@ class MissionPicker(QWidget):
         shown = bool(missions)
         self.rule.setVisible(shown)
         self.recent_label.setVisible(shown)
+        self.all_button.setVisible(shown)
         for mission in missions:
             row = _RecentRow(mission, self)
             row.clicked.connect(lambda _checked=False, m=mission: self._resume(m.id))
@@ -170,6 +182,14 @@ class MissionPicker(QWidget):
             return
         self.goal.clear()
         self.started.emit(mission)
+
+    def _open_library(self) -> None:
+        """Show the Mission Library. Found by walking up to the window rather
+        than by holding a reference, so this widget stays a view."""
+        window = self.window()
+        opener = getattr(window, "_show_mission_library", None)
+        if callable(opener):
+            opener()
 
     def _resume(self, mission_id: int) -> None:
         mission = self._service.resume(mission_id)

@@ -90,10 +90,14 @@ def display_text(url: QUrl) -> str:
     Blank for a new tab: `pybrowser://newtab/` is browser UI, not a place you
     went, and showing its address would only invite the user to select and
     delete it before typing.
+
+    Other internal pages are shown. The Mission Library *is* somewhere you
+    went - it has a URL, it works with back and forward, and hiding its address
+    would make navigating to a mission feel like nothing happened.
     """
     if url.isEmpty() or url.toString() == "about:blank":
         return ""
-    if url.scheme() == "pybrowser":
+    if url.scheme() == "pybrowser" and url.host() == "newtab":
         return ""
     return url.toString()
 

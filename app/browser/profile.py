@@ -24,7 +24,8 @@ from PySide6.QtWebEngineCore import (
 )
 
 from app.browser.downloads import DownloadManager
-from app.browser.newtab import NewTabData, claim_scheme
+from app.browser import missions_page, newtab
+from app.browser.internal import claim_scheme
 from app.config import cache_path, downloads_path, profile_storage_path
 
 # Opt-in override for the rare case where a user needs a different UA. We do
@@ -55,20 +56,29 @@ class BrowserProfile(QObject):
 
     # -- internal pages --------------------------------------------------
     def _install_new_tab_handler(self) -> None:
-        """Serve pybrowser://newtab/ from this profile.
+        """Serve `pybrowser://` from this profile.
 
-        The provider is swapped in later by the window, which owns the history
-        and bookmark stores. Until then the page still renders - with empty
-        sections - so a profile built without a database (the tests, the
-        automation scripts) is not a special case.
+        One handler for every internal page; each page registers its own host
+        at import time (see app/browser/internal.py). Importing the page
+        modules here is what registers them, and is why they are imported for
+        their side effect rather than for a name.
+
+        Providers are swapped in later by the window, which owns the stores.
+        Until then the pages still render - empty - so a profile built without
+        a database (the tests, the automation scripts) is not a special case.
         """
+        assert newtab.HOST and missions_page.HOST      # imported for the routes
         # Only one profile in the process can serve pybrowser:// - see
         # claim_scheme(), which also explains what happens if you ignore that.
-        self._new_tab_handler = claim_scheme(self._profile, NewTabData)
+        self._scheme_handler = claim_scheme(self._profile)
 
     def set_new_tab_provider(self, provider) -> None:
         """Point the new-tab page at real history and bookmarks."""
-        self._new_tab_handler.set_provider(provider or NewTabData)
+        newtab.set_provider(provider or newtab.NewTabData)
+
+    def set_mission_provider(self, provider) -> None:
+        """Point the Mission Library at this window's Mission store."""
+        missions_page.set_provider(provider)
 
     # -- storage ---------------------------------------------------------
     def _configure_storage(self) -> None:

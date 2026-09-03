@@ -6,6 +6,7 @@ from PySide6.QtCore import QSize, QTimer, QUrl, Qt, Signal
 from PySide6.QtWidgets import QTabBar, QTabWidget, QToolButton, QWidget
 
 from app.browser.profile import BrowserProfile
+from app.browser.newtab import is_new_tab
 from app.browser.tab import BrowserTab
 
 # Tab labels get elided so one long page title cannot eat the whole strip.
@@ -362,7 +363,11 @@ class TabManager(QTabWidget):
         index = self.indexOf(tab)
         if index == -1:
             return
-        if tab.url().scheme() == "pybrowser":
+        if is_new_tab(tab.url()):
+            # The new-tab page is a blank slate, whatever its <title> says.
+            # Other internal pages are real destinations and keep their own
+            # names - a Mission Library tab labelled "New Tab" is unfindable
+            # once three of them are open.
             self.setTabText(index, "New Tab")
             self.setTabToolTip(index, "New Tab")
             self._reposition_soon()

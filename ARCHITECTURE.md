@@ -399,11 +399,53 @@ Mission status (`active`/`paused`/`completed`) and Py's mascot state
 together: one says what the user is working on, the other what the assistant is
 doing this second.
 
+### The Mission Library
+
+`pybrowser://missions/` is a real page, not a panel view. A Mission is not a
+saved tab group: it has a URL, it works with back and forward, and it has room.
+Everything a Mission is going to grow into needs room, and a page is what makes
+a Mission a *place* rather than a widget.
+
+`app/browser/internal.py` owns the scheme now - registration, host routing, and
+the action channel - because a second internal page arrived and the plumbing was
+tangled with the new-tab page's content. Each page registers a host and supplies
+a renderer; `newtab.py`'s own content, including its escaping discipline, did not
+change.
+
+The page renders and never acts. Everything it can ask for is an action URL that
+`BrowserPage.acceptNavigationRequest` intercepts, refuses to render, and turns
+into `internal_action` for the window to decide on. Action names are namespaced
+by host (`missions:delete`), so one internal page cannot trigger another's, and
+`parse_action` returns None for anything that is not `pybrowser://` - which is
+the entire boundary against a web page minting one, and has its own test.
+
+Mission titles and goals are the user's words, but finding text is written by
+the model about web pages and page titles come from the web directly. This is a
+privileged page, so it inherits the new-tab page's rules exactly: JSON with `<`
+escaped against a `</script>` break-out, and `textContent` everywhere.
+Destructive confirmations are Qt dialogs, never page UI - a confirmation
+rendered by the thing being confirmed is not a confirmation.
+
+**Delete is soft.** `missions.deleted_at` hides a Mission and keeps its record,
+because a Mission is the reasoning behind a decision and "why did we rule that
+out?" gets asked months later. Permanent deletion is a separate, explicit act
+for someone who means it. Every Mission read goes through one `_ALIVE` clause,
+so a new query cannot forget the filter.
+
+**Opening is not resuming.** Open looks at a Mission; resume hands it to Py and
+starts a new activation. Browsing your own library must not hijack the agent's
+context.
+
+`app/missions/bus.py` is a process-wide announcement channel: a Mission deleted
+in one window must not stay live in another. It carries an id and nothing else -
+listeners re-read from the store, which is the only place the truth lives.
+
 ### Database migrations
 
 `app/storage/database.py` keeps `_SCHEMA` (what a new profile gets) and
 `_MIGRATIONS` (how an existing one catches up), applied by `user_version`.
-Missions were the first step, v1 -> v2; findings the second, v2 -> v3. Each step is idempotent, runs in one
+Missions were the first step, v1 -> v2; findings the second, v2 -> v3;
+soft delete the third, v3 -> v4. Each step is idempotent, runs in one
 transaction, and is never edited once shipped - a mistake is fixed by adding
 the next step, because someone's profile has already run the old one. A profile
 stamped *newer* than this build is left alone rather than downgraded.
