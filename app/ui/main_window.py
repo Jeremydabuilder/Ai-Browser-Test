@@ -368,7 +368,8 @@ class MainWindow(QMainWindow):
                         mission, with_detail=True,
                         routines=self.routines.for_mission(mission.id),
                         children=self.missions.children(mission.id),
-                        parent=self.missions.parent_of(mission.id)),
+                        parent=self.missions.parent_of(mission.id),
+                        ghost_runs=self.missions.ghost_runs(mission.id)),
                     total=self.missions.store.count())
             found = self.missions.search(query)
             store = self.missions.store
@@ -442,6 +443,10 @@ class MainWindow(QMainWindow):
             identifier = (params.get("id") or "").strip()
             if identifier.isdigit():
                 self.run_routine(int(identifier))
+        elif name == "ghost-run-clear":
+            identifier = (params.get("id") or "").strip()
+            if identifier.isdigit():
+                self._clear_ghost_run(int(identifier))
         elif name == "evidence" and mission_id is not None:
             from app.browser.missions_page import evidence_url
 
@@ -568,6 +573,12 @@ class MainWindow(QMainWindow):
         if answer == QMessageBox.StandardButton.Yes:
             self.missions.clear_decision(mission_id)
             self._reload_mission_views(mission_id)
+
+    def _clear_ghost_run(self, ghost_run_id: int) -> None:
+        """Remove one prediction. No confirmation: it never did anything, so
+        there is nothing a confirmation would be protecting."""
+        if self.missions.clear_ghost_run(ghost_run_id):
+            self._reload_mission_views()
 
     def challenge_claim(self, target_kind: str, target_id: int) -> None:
         """Ask Py to try to prove one claim wrong.

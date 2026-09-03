@@ -27,8 +27,12 @@ from app.missions.model import (
     MAX_RATIONALE_CHARS,
     MAX_TITLE,
     ChallengePoint,
+    Confidence,
     DecisionAlternative,
     DecisionAssumption,
+    EffectKind,
+    GhostRun,
+    GhostRunEffect,
     DecisionEvidence,
     Mission,
     MissionChallenge,
@@ -44,6 +48,9 @@ from app.missions.model import (
     clean_title,
     clean_finding,
     collapse,
+    MAX_GHOST_RUN_EFFECT_CHARS,
+    MAX_GHOST_RUN_EFFECTS,
+    MAX_GHOST_RUN_OPTION_CHARS,
     finding_key,
     finding_ref,
     is_associable,
@@ -772,6 +779,80 @@ class MissionStore:
             "LEFT JOIN mission_pages p ON p.id = c.page_id "
             "WHERE c.challenge_id = ? ORDER BY c.position, c.id", (challenge_id,))
         return [ChallengePoint(**dict(row)) for row in rows]
+
+    # -- ghost runs ---------------------------------------------------
+    #
+    # Predictions, not records: unlike a Decision, several ghost runs coexist
+    # for one Mission - one per option being weighed - and none of them is
+    # "the truth" the way a saved Decision is. So no append-only/supersede
+    # machinery here; a ghost run is simply cleared when it has served its
+    # purpose.
+
+    GHOST_RUN_SAVED = "saved"
+    GHOST_RUN_TOO_LONG = "too_long"
+    GHOST_RUN_NO_TEXT = "no_text"
+    GHOST_RUN_BAD_CONFIDENCE = "bad_confidence"
+    GHOST_RUN_BAD_KIND = "bad_kind"
+
+    def save_ghost_run(self, mission_id: int, option: str, confidence: str,
+                       effects: list[tuple[str, str]] | None = None
+                       ) -> tuple[str, GhostRun | None]:
+        """Record a prediction. Writes rows only - see the note on GhostRun:
+        this never performs the option it describes."""
+        option = collapse(option)
+        if not option:
+            return self.GHOST_RUN_NO_TEXT, None
+        if len(option) > MAX_GHOST_RUN_OPTION_CHARS:
+            return self.GHOST_RUN_TOO_LONG, None
+        if confidence not in Confidence.ALL:
+            return self.GHOST_RUN_BAD_CONFIDENCE, None
+
+        cleaned: list[tuple[str, str]] = []
+        for kind, text in (effects or [])[:MAX_GHOST_RUN_EFFECTS]:
+            if kind not in EffectKind.ALL:
+                return self.GHOST_RUN_BAD_KIND, None
+            text = collapse(text)
+            if not text:
+                continue
+            if len(text) > MAX_GHOST_RUN_EFFECT_CHARS:
+                return self.GHOST_RUN_TOO_LONG, None
+            cleaned.append((kind, text))
+
+        cursor = self._db.execute(
+            "INSERT INTO mission_ghost_runs (mission_id, option, confidence, created_at) "
+            "VALUES (?, ?, ?, ?)", (mission_id, option, confidence, now()))
+        if cursor is None:
+            return self.GHOST_RUN_NO_TEXT, None
+        ghost_run_id = int(cursor.lastrowid)
+        for position, (kind, text) in enumerate(cleaned):
+            self._db.execute(
+                "INSERT INTO ghost_run_effects (ghost_run_id, text, kind, position) "
+                "VALUES (?, ?, ?, ?)", (ghost_run_id, text, kind, position))
+        self._touch_mission(mission_id)
+        return self.GHOST_RUN_SAVED, self.get_ghost_run(ghost_run_id)
+
+    def ghost_runs(self, mission_id: int) -> list[GhostRun]:
+        rows = self._db.query(
+            "SELECT id FROM mission_ghost_runs WHERE mission_id = ? "
+            "ORDER BY created_at, id", (mission_id,))
+        return [self.get_ghost_run(int(row["id"])) for row in rows]
+
+    def get_ghost_run(self, ghost_run_id: int) -> GhostRun | None:
+        row = self._db.query_one(
+            "SELECT id, mission_id, option, confidence, created_at "
+            "FROM mission_ghost_runs WHERE id = ?", (ghost_run_id,))
+        if row is None:
+            return None
+        effect_rows = self._db.query(
+            "SELECT id, ghost_run_id, text, kind, position FROM ghost_run_effects "
+            "WHERE ghost_run_id = ? ORDER BY position, id", (ghost_run_id,))
+        return GhostRun(**dict(row),
+                        effects=tuple(GhostRunEffect(**dict(r)) for r in effect_rows))
+
+    def clear_ghost_run(self, ghost_run_id: int) -> bool:
+        cursor = self._db.execute("DELETE FROM mission_ghost_runs WHERE id = ?",
+                                  (ghost_run_id,))
+        return bool(cursor is not None and cursor.rowcount)
 
     def _touch_mission(self, mission_id: int) -> None:
         self._db.execute("UPDATE missions SET updated_at = ? WHERE id = ?",

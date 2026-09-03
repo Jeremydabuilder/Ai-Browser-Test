@@ -32,6 +32,7 @@ from app.missions.model import (
     MAX_FINDINGS_PER_MISSION,
     MAX_RATIONALE_CHARS,
     Mission,
+    GhostRun,
     MissionChallenge,
     MissionDecision,
     TargetKind,
@@ -498,6 +499,35 @@ class MissionService(QObject):
         if not url or not is_associable(url):
             return None
         return self._store.add_page(mission.id, url, title, PageSource.READ)
+
+    # -- ghost runs ---------------------------------------------------
+    #
+    # A prediction, written before anything is done. This method - like the
+    # store method it calls - never touches the browser: it has no controller
+    # and cannot perform the option it describes. "Simulate first, execute
+    # second" is enforced structurally: there is no tool that both predicts
+    # and acts.
+
+    def save_ghost_run(self, option: str, confidence: str,
+                       effects: list[tuple[str, str]] | None = None) -> dict:
+        mission = self._active
+        if mission is None:
+            return {"status": "no_mission"}
+        outcome, saved = self._store.save_ghost_run(mission.id, option, confidence, effects)
+        result = {"status": outcome}
+        if saved is not None:
+            result["ghost_run_id"] = saved.id
+        self._announce(mission.id)
+        return result
+
+    def ghost_runs(self, mission_id: int) -> list[GhostRun]:
+        return self._store.ghost_runs(mission_id)
+
+    def clear_ghost_run(self, ghost_run_id: int, mission_id: int | None = None) -> bool:
+        cleared = self._store.clear_ghost_run(ghost_run_id)
+        if cleared and mission_id is not None:
+            self._announce(mission_id)
+        return cleared
 
     # -- branching --------------------------------------------------------
     def branch(self, mission_id: int, branch_name: str) -> Mission | None:

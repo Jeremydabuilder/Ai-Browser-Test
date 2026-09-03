@@ -68,7 +68,8 @@ class LibraryData:
 
 def summarise(mission, *, with_detail: bool = False,
               findings: int | None = None, pages: int | None = None,
-              routines=None, children=None, parent=None) -> dict[str, Any]:
+              routines=None, children=None, parent=None,
+              ghost_runs=None) -> dict[str, Any]:
     """One Mission as the page wants it.
 
     The counts are passed in for the list view, where Missions are read without
@@ -111,7 +112,23 @@ def summarise(mission, *, with_detail: bool = False,
              "status": child.status}
             for child in (children or [])
         ]
+        row["ghostRunList"] = [_ghost_run(g) for g in (ghost_runs or [])]
     return row
+
+
+def _ghost_run(ghost_run) -> dict[str, Any]:
+    """A prediction, flattened. Never anything the page could mistake for a
+    real outcome - see the note on GhostRun in app/missions/model.py."""
+    return {
+        "id": ghost_run.id,
+        "option": ghost_run.option,
+        "confidence": ghost_run.confidence,
+        "confidenceLabel": ghost_run.confidence_label,
+        "effects": [
+            {"text": e.text, "kind": e.kind, "glyph": e.glyph}
+            for e in ghost_run.effects
+        ],
+    }
 
 
 def _decision(decision) -> dict[str, Any] | None:
@@ -453,6 +470,10 @@ _TEMPLATE = """<!doctype html>
   li.page .d { margin-left: auto; color: var(--muted); font-size: 12px; }
   .tag { font-size: 10px; font-weight: 700; letter-spacing: .08em;
          color: var(--accent); }
+  ul.ghost-effects { padding-left: 12px; margin-bottom: 4px; }
+  ul.ghost-effects li { font-size: 12px; padding: 2px 0; color: var(--muted); }
+  ul.ghost-effects li.ghost-benefit { color: var(--success); }
+  ul.ghost-effects li.ghost-risk { color: var(--danger); }
 </style>
 </head>
 <body>
@@ -776,6 +797,34 @@ _TEMPLATE = """<!doctype html>
         routines.appendChild(li);
       });
       body.appendChild(routines);
+    }
+
+    if (mission.ghostRunList && mission.ghostRunList.length) {
+      body.appendChild(el("h2", null, "GHOST RUNS · " + mission.ghostRunList.length));
+      var ghostRuns = el("ul");
+      mission.ghostRunList.forEach(function (ghost) {
+        var li = el("li", "page");
+        var row = el("div", "root-row");
+        row.appendChild(el("span", "t", ghost.option));
+        row.appendChild(el("span", "tag", ghost.confidenceLabel));
+        var clear = el("button", "link", "Clear");
+        clear.addEventListener("click", function () {
+          act("ghost-run-clear", { id: ghost.id });
+        });
+        row.appendChild(clear);
+        li.appendChild(row);
+        if (ghost.effects.length) {
+          var effects = el("ul", "ghost-effects");
+          ghost.effects.forEach(function (effect) {
+            var el2 = el("li", "ghost-" + effect.kind,
+                        effect.glyph + " " + effect.text);
+            effects.appendChild(el2);
+          });
+          li.appendChild(effects);
+        }
+        ghostRuns.appendChild(li);
+      });
+      body.appendChild(ghostRuns);
     }
     document.getElementById("count").textContent = "";
   }

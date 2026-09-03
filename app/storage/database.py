@@ -25,7 +25,7 @@ import threading
 from pathlib import Path
 from typing import Any, Iterable, Sequence
 
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 10
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS history (
@@ -236,6 +236,30 @@ CREATE TABLE IF NOT EXISTS routine_steps (
     description TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_routine_steps ON routine_steps(routine_id, position);
+-- A written prediction of what choosing one option would lead to, made
+-- BEFORE anything is done - so options can be compared before one is picked.
+-- Simulate first, execute second: this table is the simulation. Writing one
+-- never performs the option it describes and is never evidence of
+-- permission - see the trust note in app/agent/prompt.py.
+CREATE TABLE IF NOT EXISTS mission_ghost_runs (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    mission_id INTEGER NOT NULL REFERENCES missions(id) ON DELETE CASCADE,
+    option     TEXT NOT NULL,
+    confidence TEXT NOT NULL DEFAULT 'medium',
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_ghost_runs_mission
+    ON mission_ghost_runs(mission_id, created_at);
+
+CREATE TABLE IF NOT EXISTS ghost_run_effects (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    ghost_run_id INTEGER NOT NULL REFERENCES mission_ghost_runs(id) ON DELETE CASCADE,
+    text         TEXT NOT NULL,
+    kind         TEXT NOT NULL DEFAULT 'neutral',
+    position     INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_ghost_run_effects
+    ON ghost_run_effects(ghost_run_id, position);
 """
 
 #: How a profile at version N becomes a profile at version N+1.
@@ -297,6 +321,33 @@ _MIGRATIONS: dict[int, str] = {
     3: """
     ALTER TABLE missions ADD COLUMN deleted_at TEXT NOT NULL DEFAULT '';
     """,
+    # v9 -> v10: ghost runs (Reality Engine).
+    9: """
+-- A written prediction of what choosing one option would lead to, made
+-- BEFORE anything is done - so options can be compared before one is picked.
+-- Simulate first, execute second: this table is the simulation. Writing one
+-- never performs the option it describes and is never evidence of
+-- permission - see the trust note in app/agent/prompt.py.
+CREATE TABLE IF NOT EXISTS mission_ghost_runs (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    mission_id INTEGER NOT NULL REFERENCES missions(id) ON DELETE CASCADE,
+    option     TEXT NOT NULL,
+    confidence TEXT NOT NULL DEFAULT 'medium',
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_ghost_runs_mission
+    ON mission_ghost_runs(mission_id, created_at);
+
+CREATE TABLE IF NOT EXISTS ghost_run_effects (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    ghost_run_id INTEGER NOT NULL REFERENCES mission_ghost_runs(id) ON DELETE CASCADE,
+    text         TEXT NOT NULL,
+    kind         TEXT NOT NULL DEFAULT 'neutral',
+    position     INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_ghost_run_effects
+    ON ghost_run_effects(ghost_run_id, position);
+""",
     # v8 -> v9: branching. parent_id/branch_name on missions.
     8: """
     ALTER TABLE missions ADD COLUMN parent_id INTEGER REFERENCES missions(id) ON DELETE SET NULL;
@@ -325,6 +376,30 @@ CREATE TABLE IF NOT EXISTS routine_steps (
     description TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_routine_steps ON routine_steps(routine_id, position);
+-- A written prediction of what choosing one option would lead to, made
+-- BEFORE anything is done - so options can be compared before one is picked.
+-- Simulate first, execute second: this table is the simulation. Writing one
+-- never performs the option it describes and is never evidence of
+-- permission - see the trust note in app/agent/prompt.py.
+CREATE TABLE IF NOT EXISTS mission_ghost_runs (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    mission_id INTEGER NOT NULL REFERENCES missions(id) ON DELETE CASCADE,
+    option     TEXT NOT NULL,
+    confidence TEXT NOT NULL DEFAULT 'medium',
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_ghost_runs_mission
+    ON mission_ghost_runs(mission_id, created_at);
+
+CREATE TABLE IF NOT EXISTS ghost_run_effects (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    ghost_run_id INTEGER NOT NULL REFERENCES mission_ghost_runs(id) ON DELETE CASCADE,
+    text         TEXT NOT NULL,
+    kind         TEXT NOT NULL DEFAULT 'neutral',
+    position     INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_ghost_run_effects
+    ON ghost_run_effects(ghost_run_id, position);
 """,
     # v6 -> v7: the evidence graph - finding refs and decision assumptions.
     #

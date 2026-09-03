@@ -459,6 +459,32 @@ Branching is a UI-only, local, reversible action - no new agent tool. It
 changes no Mission's active/inactive state: forking from the library must not
 hijack Py's context, the same reasoning as "open is not resume".
 
+### Ghost Run ("Reality Engine")
+
+A prediction of what one option would lead to, written down **before** it is
+chosen - `mission_ghost_runs` and `ghost_run_effects`, each effect marked
+benefit, risk or neutral with a confidence level on the run as a whole.
+Several predictions can sit side by side on one Mission, since the point is
+comparing options before picking one; unlike a Decision there is no supersede
+semantics and no single live row - clearing one is a plain, permanent delete,
+because a prediction that was never acted on has no history worth keeping.
+
+**A prediction is never permission**, for the same structural reason a
+Decision is not: `MissionService.save_ghost_run` and
+`MissionStore.save_ghost_run` write rows and never reference a browser
+controller, so there is no code path from calling this tool to anything
+happening in the browser. `mission_save_ghost_run` is a local write tool -
+no confirmation, because it sends nothing anywhere and is one click to undo -
+and the tool result says so explicitly: "Recorded as a prediction, not
+carried out. Nothing was done and nothing was approved." A test asserts the
+approval gate's judgement on an unrelated action is byte-identical before and
+after saving a ghost run that claims pre-approval, and a second asserts the
+save path never calls `BrowserController.describe_action` at all.
+
+Ghost Run adds one agent tool (`mission_save_ghost_run`) and one Mission
+Library section; it does not touch Warm Resume, briefing, or any existing
+table.
+
 ### Routines (Teach Py)
 
 A Routine is a taught sequence of the agent's own tool calls, saved while

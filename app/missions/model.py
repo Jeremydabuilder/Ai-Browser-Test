@@ -453,6 +453,71 @@ class DecisionAssumption:
     position: int = 0
 
 
+class Confidence:
+    """How sure Py is about a predicted effect. User-visible, never hidden."""
+
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
+    ALL = (LOW, MEDIUM, HIGH)
+    LABELS = {LOW: "LOW CONFIDENCE", MEDIUM: "MEDIUM CONFIDENCE", HIGH: "HIGH CONFIDENCE"}
+
+
+class EffectKind:
+    """How one predicted effect reads at a glance - a plus, a caution, or
+    neither. Closed set, same reasoning as PointKind: the UI groups by it."""
+
+    BENEFIT = "benefit"
+    RISK = "risk"
+    NEUTRAL = "neutral"
+    ALL = (BENEFIT, RISK, NEUTRAL)
+    GLYPHS = {BENEFIT: "+", RISK: "!", NEUTRAL: "\u00b7"}
+
+
+#: Limits, refused rather than truncated - the same reasoning as everywhere
+#: else data crosses from the agent into storage.
+MAX_GHOST_RUN_OPTION_CHARS = 120
+MAX_GHOST_RUN_EFFECTS = 8
+MAX_GHOST_RUN_EFFECT_CHARS = 160
+
+
+@dataclass(frozen=True)
+class GhostRunEffect:
+    """One predicted consequence of choosing an option, before it is chosen."""
+
+    id: int
+    ghost_run_id: int
+    text: str
+    kind: str = EffectKind.NEUTRAL
+    position: int = 0
+
+    @property
+    def glyph(self) -> str:
+        return EffectKind.GLYPHS.get(self.kind, "\u00b7")
+
+
+@dataclass(frozen=True)
+class GhostRun:
+    """A written prediction of what choosing one option would lead to -
+    written BEFORE anything is done, so options can be compared before one is
+    picked. Simulate first, execute second: this table is the simulation, and
+    it never performs the option it describes. Nothing here is - or can ever
+    become - permission to act; see app/agent/tools.py and the trust note in
+    app/agent/prompt.py.
+    """
+
+    id: int
+    mission_id: int
+    option: str
+    confidence: str = Confidence.MEDIUM
+    created_at: str = ""
+    effects: tuple[GhostRunEffect, ...] = field(default_factory=tuple)
+
+    @property
+    def confidence_label(self) -> str:
+        return Confidence.LABELS.get(self.confidence, self.confidence.upper())
+
+
 class Verdict:
     """How a claim stood up to being attacked.
 

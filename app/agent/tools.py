@@ -38,9 +38,14 @@ from app.missions.model import (
     MAX_DECISION_CHARS,
     MAX_EVIDENCE,
     MAX_FINDING_CHARS,
+    MAX_GHOST_RUN_EFFECT_CHARS,
+    MAX_GHOST_RUN_EFFECTS,
+    MAX_GHOST_RUN_OPTION_CHARS,
     MAX_POINT_CHARS,
     MAX_POINTS,
     MAX_RATIONALE_CHARS,
+    Confidence,
+    EffectKind,
     PointKind,
     Verdict,
 )
@@ -319,6 +324,39 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                                 "required": ["kind", "text"],
                                 "additionalProperties": False}}},
           ["verdict", "summary"]),
+
+    _tool("mission_save_ghost_run",
+          "Predict what would happen if one option were chosen - BEFORE it is "
+          "chosen. This never performs the option; it only writes down what you "
+          "expect, so options can be compared before anything is done. Use it "
+          "when the user is weighing choices and wants to see likely "
+          "consequences first. Several predictions can exist side by side for "
+          "the same mission.",
+          {"option": {"type": "string",
+                      "description": "The option being predicted, in a few words. "
+                                     f"At most {MAX_GHOST_RUN_OPTION_CHARS} characters."},
+           "confidence": {"type": "string",
+                          "enum": list(Confidence.ALL),
+                          "description": "How sure you are about this prediction."},
+           "effects": {"type": "array",
+                       "description": "The predicted consequences. At most "
+                                      f"{MAX_GHOST_RUN_EFFECTS}.",
+                       "items": {"type": "object",
+                                 "properties": {
+                                     "kind": {"type": "string",
+                                              "enum": list(EffectKind.ALL),
+                                              "description": "benefit - a plus for this "
+                                                             "option. risk - a caution "
+                                                             "against it. neutral - "
+                                                             "worth noting either way."},
+                                     "text": {"type": "string",
+                                              "description": "The predicted effect, in "
+                                                             "one sentence. At most "
+                                                             f"{MAX_GHOST_RUN_EFFECT_CHARS} "
+                                                             "characters."}},
+                                 "required": ["kind", "text"],
+                                 "additionalProperties": False}}},
+          ["option", "confidence"]),
 ]
 
 TOOL_NAMES = {schema["name"] for schema in TOOL_SCHEMAS}
@@ -372,7 +410,7 @@ _UNCLASSIFIED_SAFE = {"browser_select_tab", "browser_close_tab",
 #: The fail-closed default in `assess` is untouched: a tool in neither this set
 #: nor any other is still treated as a write.
 LOCAL_WRITE_TOOLS = {"mission_save_finding", "mission_save_decision",
-                     "mission_save_challenge"}
+                     "mission_save_challenge", "mission_save_ghost_run"}
 
 #: Tools that only read. Used to skip confirmation checks entirely.
 READ_ONLY_TOOLS = {
@@ -536,6 +574,42 @@ def _finding_error(result: dict) -> dict:
     if "limit" in result:
         message = f"{message} The limit is {result['limit']}."
     return _error(code, message, hint=hint)
+
+
+#: Why a ghost run was refused, and what to do about it.
+_GHOST_RUN_ERRORS: dict[str, tuple[str, str, str]] = {
+    "no_mission": ("NO_ACTIVE_MISSION",
+                   "There is no mission active, so there is nothing to predict for.",
+                   "Answer the user directly. Do not try again."),
+    "too_long": ("GHOST_RUN_TOO_LONG",
+                 "The option or one of the effects is over the limit and nothing "
+                 "was saved.",
+                 "Shorten it, keeping the part that actually matters, and call "
+                 "the tool again."),
+    "no_text": ("EMPTY_GHOST_RUN", "A prediction needs an option to predict for.",
+                "Name the option in a few words and try again."),
+    "bad_confidence": ("BAD_CONFIDENCE",
+                       "That is not one of the confidence levels.",
+                       "Use low, medium or high."),
+    "bad_kind": ("BAD_EFFECT_KIND",
+                 "One of those effect kinds is not recognised, so nothing was "
+                 "saved.",
+                 "Use benefit, risk or neutral."),
+}
+
+
+def _ghost_run_error(result: dict) -> dict:
+    code, message, hint = _GHOST_RUN_ERRORS.get(
+        result.get("status", ""),
+        ("GHOST_RUN_FAILED", "The prediction could not be saved.", "Carry on."))
+    return _error(code, message, hint=hint)
+
+
+def _ghost_run_activity(option: str) -> str:
+    condensed = " ".join(option.split())
+    if len(condensed) > 48:
+        condensed = condensed[:47].rstrip() + "…"
+    return f'Predicting: "{condensed}"'
 
 
 # ---------------------------------------------------------------------------
@@ -721,6 +795,8 @@ class ToolRegistry:
                 return _decision_activity(self._string(args, "decision"))
             if name == "mission_save_challenge":
                 return f"Challenging the claim: {self._string(args, 'verdict')}"
+            if name == "mission_save_ghost_run":
+                return _ghost_run_activity(self._string(args, "option"))
             if name == "browser_get_page":
                 return "Reading the page"
             if name == "browser_get_page_text":
@@ -897,6 +973,45 @@ class ToolRegistry:
                 activity=f"Recording the challenge: {verdict}")
         return ToolOutcome(immediate=_challenge_error(result),
                            activity="Recording a challenge")
+
+    def _run_save_ghost_run(self, args: dict) -> ToolOutcome:
+        """Record a prediction of what an option would lead to.
+
+        This method holds no controller and never touches the browser - the
+        same structural guarantee as _run_save_decision, for the same reason:
+        a prediction must not be able to become an action just by being asked
+        to run twice.
+        """
+        option = self._string(args, "option", required=True)
+        confidence = self._string(args, "confidence", required=True)
+        raw_effects = args.get("effects") or []
+        if not isinstance(raw_effects, list):
+            raise ToolError("'effects' must be a list.")
+
+        effects: list[tuple[str, str]] = []
+        for item in raw_effects:
+            if not isinstance(item, dict):
+                raise ToolError("Each effect must be an object with 'kind' and 'text'.")
+            kind, text = item.get("kind"), item.get("text")
+            if not isinstance(kind, str) or not isinstance(text, str):
+                raise ToolError("An effect's 'kind' and 'text' must be strings.")
+            effects.append((kind, text))
+
+        if self._missions is None:
+            return ToolOutcome(immediate=_error(
+                "NO_MISSION", "Missions are not available in this window.",
+                hint="Answer the user directly instead."),
+                activity="Recording a prediction")
+
+        result = self._missions.save_ghost_run(option, confidence, effects)
+        if result.get("status") == "saved":
+            return ToolOutcome(
+                immediate={"ok": True, "ghost_run_id": result.get("ghost_run_id"),
+                           "note": "Recorded as a prediction, not carried out. "
+                                   "Nothing was done and nothing was approved."},
+                activity=_ghost_run_activity(option))
+        return ToolOutcome(immediate=_ghost_run_error(result),
+                           activity="Recording a prediction")
 
     def _run_get_page(self, args: dict) -> ToolOutcome:
         return ToolOutcome(future=self._browser.get_page_structure(

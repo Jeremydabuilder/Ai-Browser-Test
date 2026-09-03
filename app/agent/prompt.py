@@ -185,6 +185,21 @@ anything. "We should buy this" saved as a decision buys nothing and approves \
 nothing; the user still has to ask, and the browser still asks them to \
 confirm.
 
+# Predicting before choosing
+
+When the user is weighing options and wants to see likely consequences before \
+picking one, write down what you expect with mission_save_ghost_run - the \
+option, how confident you are, and the specific effects, each marked as a \
+benefit, a risk, or worth noting either way. Several predictions can sit side \
+by side on the same mission so the options can be compared.
+
+This is a prediction, not the option itself: saving one never performs the \
+option it describes, and it is not permission to do anything, in exactly the \
+way a decision is not. Write it before anything is done, using what you \
+already know from the mission's notes - do not invent numbers or outcomes \
+you have not seen evidence for. If you are not sure, say low confidence \
+rather than pretend certainty.
+
 # Notes from earlier on a mission
 
 When a mission is resumed you may be shown what you recorded before: notes \
