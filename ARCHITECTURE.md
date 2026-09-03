@@ -437,6 +437,35 @@ instructions, never consent. A test asserts the safety layer's judgement is
 byte-identical before and after saving a decision that claims the user approved
 a purchase.
 
+### Routines (Teach Py)
+
+A Routine is a taught sequence of the agent's own tool calls, saved while
+"Teach Py" is on and replayed later with different inputs. Scope, stated
+plainly: it records the agent's semantic actions (navigate, click a named
+element, type into a named field) issued through chat while recording is
+active - not raw mouse clicks in the page. Manual browsing never goes through
+`BrowserController`, so there is nowhere today to observe a click the user
+made by hand; teaching Py means directing it while recording, not watching over
+its shoulder.
+
+**Playback shares the whole execution path with a live model turn.**
+`AgentSession.run_routine()` feeds the same `(tool_name, args)` pairs through
+`_pending`/`_next_tool`/`_execute` that a model's `tool_calls` would take -
+`assess()`, the confirmation prompt when the safety layer asks for one, then
+execution. Nothing about a step being "a Routine" skips that: a step that
+needed approval when it was recorded needs it again every time it runs. The
+only difference from a normal task is that when the queue empties, playback
+finishes instead of sending a message to the model - there is no live
+conversation to have.
+
+**Variables are the arguments as recorded, editable per step.** No fuzzy
+inference of "this looks like a city name" - every string argument (except
+`ref`/`tab_id`/`snapshot_id`, which are coordinates into a specific page
+snapshot, not inputs a person meant to vary) is offered back for editing before
+a run, pre-filled with what was taught. Resolving a Routine only ever
+substitutes a value already present; it cannot add an argument that was not
+recorded.
+
 ### The Evidence Graph
 
 Every claim and decision is inspectable as a structure: what supports it, what

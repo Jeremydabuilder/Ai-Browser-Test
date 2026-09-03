@@ -25,7 +25,7 @@ import threading
 from pathlib import Path
 from typing import Any, Iterable, Sequence
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS history (
@@ -207,6 +207,27 @@ CREATE TABLE IF NOT EXISTS challenge_points (
 );
 CREATE INDEX IF NOT EXISTS idx_challenge_points
     ON challenge_points(challenge_id, position);
+-- A taught sequence of the agent's own tool calls, saved while "Teach Py" was
+-- active, so it can be replayed later with different inputs. Belongs to a
+-- Mission, like everything else the agent produces.
+CREATE TABLE IF NOT EXISTS routines (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    mission_id INTEGER NOT NULL REFERENCES missions(id) ON DELETE CASCADE,
+    name       TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_routines_mission ON routines(mission_id, created_at);
+
+CREATE TABLE IF NOT EXISTS routine_steps (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    routine_id  INTEGER NOT NULL REFERENCES routines(id) ON DELETE CASCADE,
+    position    INTEGER NOT NULL DEFAULT 0,
+    tool_name   TEXT NOT NULL,
+    args        TEXT NOT NULL DEFAULT '{}',
+    description TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_routine_steps ON routine_steps(routine_id, position);
 """
 
 #: How a profile at version N becomes a profile at version N+1.
@@ -268,6 +289,30 @@ _MIGRATIONS: dict[int, str] = {
     3: """
     ALTER TABLE missions ADD COLUMN deleted_at TEXT NOT NULL DEFAULT '';
     """,
+    # v7 -> v8: routines (Teach Py).
+    7: """
+-- A taught sequence of the agent's own tool calls, saved while "Teach Py" was
+-- active, so it can be replayed later with different inputs. Belongs to a
+-- Mission, like everything else the agent produces.
+CREATE TABLE IF NOT EXISTS routines (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    mission_id INTEGER NOT NULL REFERENCES missions(id) ON DELETE CASCADE,
+    name       TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_routines_mission ON routines(mission_id, created_at);
+
+CREATE TABLE IF NOT EXISTS routine_steps (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    routine_id  INTEGER NOT NULL REFERENCES routines(id) ON DELETE CASCADE,
+    position    INTEGER NOT NULL DEFAULT 0,
+    tool_name   TEXT NOT NULL,
+    args        TEXT NOT NULL DEFAULT '{}',
+    description TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_routine_steps ON routine_steps(routine_id, position);
+""",
     # v6 -> v7: the evidence graph - finding refs and decision assumptions.
     #
     # The backfill numbers existing findings per mission in created_at order,

@@ -27,6 +27,7 @@ from PySide6.QtWidgets import (
 from app import APP_NAME
 from app.browser.controller import BrowserController
 from app.missions import MissionService, MissionStore
+from app.routines import RoutineService, RoutineStore
 from app.browser.load_error import ErrorCategory, LoadError
 from app.browser.profile import BrowserProfile
 from app.browser.tab_manager import TabManager
@@ -79,6 +80,10 @@ class MainWindow(QMainWindow):
         # drives it; see app/missions/service.py.
         self.missions = MissionService(
             MissionStore(database), self.controller, self.tabs, self)
+        #: Taught sequences of the agent's own actions. Owned alongside
+        #: Missions for the same reason: it must outlive the panel and the
+        #: agent session, both of which are rebuilt.
+        self.routines = RoutineService(RoutineStore(database))
 
         # A dismissible strip above the tabs for things the status bar is too
         # quiet for: blocked certificates, failed loads, crashed renderers.
@@ -179,6 +184,11 @@ class MainWindow(QMainWindow):
         tools_menu.addSeparator()
         self._add_action(tools_menu, "&Mission Library", "Ctrl+Shift+M",
                          self._show_mission_library)
+        self._teach_action = self._add_action(
+            tools_menu, "&Teach Py", "Ctrl+Shift+T", self._toggle_teaching)
+        self._teach_action.setCheckable(True)
+        self._teach_action.setToolTip(
+            "Record what Py does next as a reusable Routine on the active mission")
 
         help_menu: QMenu = menubar.addMenu("&Help")
         self._add_action(help_menu, f"&About {APP_NAME}", None, self._show_about)
@@ -353,8 +363,10 @@ class MainWindow(QMainWindow):
                 mission = self.missions.store.get(int(mission_id))
                 if mission is None:
                     return LibraryData(total=self.missions.store.count())
-                return LibraryData(detail=summarise(mission, with_detail=True),
-                                   total=self.missions.store.count())
+                return LibraryData(
+                    detail=summarise(mission, with_detail=True,
+                                     routines=self.routines.for_mission(mission.id)),
+                    total=self.missions.store.count())
             found = self.missions.search(query)
             store = self.missions.store
             return LibraryData(
@@ -421,6 +433,10 @@ class MainWindow(QMainWindow):
             self._edit_decision(mission_id)
         elif name == "clear-decision" and mission_id is not None:
             self._clear_decision(mission_id)
+        elif name == "routine-run":
+            identifier = (params.get("id") or "").strip()
+            if identifier.isdigit():
+                self.run_routine(int(identifier))
         elif name == "evidence" and mission_id is not None:
             from app.browser.missions_page import evidence_url
 
@@ -582,6 +598,75 @@ class MainWindow(QMainWindow):
         ask = getattr(panel, "ask", None)
         if callable(ask):
             ask(text)
+
+    def _toggle_teaching(self) -> None:
+        """Start or stop recording the agent's next actions as a Routine.
+
+        Recording is a property of the live session, not of the Mission row:
+        it captures whatever browser_* tools the agent runs from this point,
+        through the same panel the user is already talking to Py in. Nothing
+        about a step being recorded changes how it runs - it goes through the
+        ordinary approval gate exactly as it would unrecorded.
+        """
+        mission = self.missions.active
+        if mission is None:
+            self._teach_action.setChecked(False)
+            self._show_status("Start a mission before teaching Py a routine.")
+            return
+        if self.routines.is_recording:
+            count = self.routines.recorded_count
+            self._teach_action.setChecked(False)
+            if not count:
+                self.routines.discard_recording()
+                self._show_status("Nothing was recorded.")
+                return
+            from PySide6.QtWidgets import QInputDialog
+
+            name, ok = QInputDialog.getText(
+                self, "Save routine", f"Name this routine ({count} step"
+                f"{'s' if count != 1 else ''}):")
+            if ok and name.strip():
+                self.routines.stop_recording(name)
+                self._show_status(f"Routine saved: {name.strip()}")
+            else:
+                self.routines.discard_recording()
+                self._show_status("Routine discarded.")
+            self._reload_mission_views(mission.id)
+            return
+        if self.routines.begin_recording(mission.id):
+            self._teach_action.setChecked(True)
+            if self._side_panel is None:
+                self._toggle_agent_panel()
+            self._show_status(
+                "Teaching Py - ask it to do the task, then stop teaching to save it.")
+
+    def run_routine(self, routine_id: int) -> None:
+        """Run a saved Routine, filling in any variables first.
+
+        Goes through AgentSession.run_routine, which shares its whole
+        execution path with an ordinary model-issued tool call - the approval
+        gate applies exactly as it would if the user had asked for each step
+        by name.
+        """
+        from app.ui.routine_dialog import RoutineRunDialog
+
+        routine = self.routines.get(routine_id)
+        if routine is None:
+            self._show_status("That routine is no longer available.")
+            return
+        if self._agent_session is None or self._agent_session.busy:
+            self._show_status("Py is busy or not set up; cannot run a routine right now.")
+            return
+        overrides = RoutineRunDialog.ask(self, routine)
+        if overrides is None:
+            return
+        if self._side_panel is None:
+            self._toggle_agent_panel()
+        panel = self._side_panel
+        begin = getattr(panel, "begin_routine_run", None)
+        if callable(begin):
+            begin(routine.name)
+        self._agent_session.run_routine(routine.resolve(overrides))
 
     def _reload_mission_views(self, _mission_id: int = 0) -> None:
         """Re-render any tab currently showing the library."""
@@ -864,6 +949,7 @@ class MainWindow(QMainWindow):
             else:
                 self._agent_unavailable = False
                 self._agent_session.briefing_provider = self.missions.briefing
+                self._agent_session.step_recorder = self.routines.record_step
                 credential = self._current_credential()
                 self._credential_id = credential.fingerprint if credential else ""
         self.set_side_panel(AgentPanel(self._agent_session, self, self.missions))

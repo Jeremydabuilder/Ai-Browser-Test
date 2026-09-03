@@ -204,6 +204,8 @@ class AgentSession(QObject):
     finished = Signal()                          # task over (done or stopped)
     confirmation_required = Signal(object)       # ConfirmationRequest
     usage_updated = Signal(object)               # Usage for the current task
+    #: A routine run finished. Carries the tool_result payloads, in step order.
+    routine_finished = Signal(list)
     #: A fragment of the answer as it is generated, before assistant_message.
     assistant_delta = Signal(str)
     #: The conversation was reset.
@@ -246,6 +248,16 @@ class AgentSession(QObject):
         #: The briefing already in this conversation, so it goes in once
         #: rather than in front of every task.
         self._briefing_sent = ""
+        #: Optional callable(tool_name, args, description) invoked after a
+        #: browser tool succeeds - how Routines are taught. See
+        #: app/routines/service.py. Never invoked during routine playback
+        #: itself, so running a Routine cannot record a second copy of it.
+        self.step_recorder = None
+        #: True while running a Routine rather than answering the model. The
+        #: two share the whole execution pipeline - assess(), confirmation,
+        #: _execute(), _advance() - on purpose: a step that needed the user's
+        #: approval when it was recorded still needs it every time it runs.
+        self._routine_mode = False
 
         # -- what this is costing ----------------------------------------
         #: Tokens for the task in progress, reset on every `send()`.
@@ -391,6 +403,7 @@ class AgentSession(QObject):
         self._results.clear()
         self._confirmation = None
         self._confirming_call = None
+        self._routine_mode = False
         self.activity.emit("Stopped.")
         self._finish()
 
@@ -504,11 +517,37 @@ class AgentSession(QObject):
             self.error_detail.emit(error.api_message)
         self._finish()
 
+    def run_routine(self, steps: list[tuple[str, dict]]) -> bool:
+        """Play back a taught sequence. Returns False if the agent is busy.
+
+        Every step goes through the same gate a model-issued call does:
+        assess(), the confirmation prompt when the safety layer asks for one,
+        then _execute(). Nothing about being "a Routine" skips that - a step
+        that needed approval when it was recorded needs it again here.
+        """
+        if not steps or self.busy:
+            return False
+        self._cancelled = False
+        self._routine_mode = True
+        self._turns = 0
+        self._tool_calls_made = 0
+        self._steps = []
+        self.trace.record(tracing.TASK_STARTED, chars=0)
+        self._pending = [ToolCall(id=f"routine-{index}", name=name, arguments=dict(args))
+                         for index, (name, args) in enumerate(steps)]
+        self._results = []
+        self._set_state(AgentState.ACTING)
+        self._next_tool()
+        return True
+
     def _next_tool(self) -> None:
         """Take the next pending tool call, or send the batch of results back."""
         if self._cancelled:
             return
         if not self._pending:
+            if self._routine_mode:
+                self._finish_routine()
+                return
             self._messages.append({"role": "user", "content": self._results})
             self._results = []
             self._trim_history()
@@ -618,6 +657,7 @@ class AgentSession(QObject):
                                   .replace("_", " ") or "refused")
             else:
                 self._update_step(StepState.DONE)
+                self._record_step(call, description)
             self._record_result(call.id, json.dumps(outcome.immediate, ensure_ascii=False),
                                 tool_name=call.name)
             self._advance()
@@ -637,6 +677,7 @@ class AgentSession(QObject):
                     self.trace.record(tracing.TOOL_SUCCEEDED, tool=call.name,
                                       result_chars=len(payload) if isinstance(payload, str) else None)
                     self._update_step(StepState.DONE)
+                    self._record_step(call, description)
                 else:
                     code = result.error.code if result.error else "failed"
                     self.trace.record(tracing.TOOL_FAILED, tool=call.name, reason=code)
@@ -652,6 +693,28 @@ class AgentSession(QObject):
         if self._cancelled:
             return
         self._next_tool()
+
+    def _finish_routine(self) -> None:
+        results = list(self._results)
+        self._results = []
+        self._routine_mode = False
+        self._finish()
+        self.routine_finished.emit(results)
+
+    def _record_step(self, call: ToolCall, description: str) -> None:
+        """Offer a successful tool call to the Routine recorder, if any.
+
+        Never called during routine playback: replaying a Routine must not
+        silently record a second copy of it. Recording is also never
+        consulted here for *whether* to record - that judgement (browser_*
+        only, recording currently on) belongs entirely to RoutineService.
+        """
+        if self._routine_mode or self.step_recorder is None:
+            return
+        try:
+            self.step_recorder(call.name, call.arguments, description)
+        except Exception:  # noqa: BLE001 - teaching a Routine must not break a task
+            pass
 
     def _describe_submission(self, call: ToolCall) -> tuple[list[str], bool]:
         """Which fields a form submission would send. Names only, never values.

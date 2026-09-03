@@ -393,6 +393,7 @@ class AgentPanel(QWidget):
         session.assistant_delta.connect(self._on_delta)
         session.cleared.connect(self._on_cleared)
         session.step_changed.connect(self._on_step)
+        session.routine_finished.connect(self._on_routine_finished)
         self.mascot.state_changed.connect(self._on_mascot_state)
 
     def _show_empty_state(self) -> None:
@@ -715,6 +716,16 @@ class AgentPanel(QWidget):
         self.confirmation.hide()
         self.status.setText("")
         self.input.setFocus()
+
+    def begin_routine_run(self, name: str) -> None:
+        """Announce a routine starting, in the same transcript as everything
+        else Py does - a routine run is not a separate kind of session."""
+        self._begin_conversation()
+        self._append("system", f"Running routine \u201c{name}\u201d\u2026")
+
+    def _on_routine_finished(self, _results: list) -> None:
+        self._append("system", "Routine finished.")
+        self._on_finished()
 
     # -- transcript ------------------------------------------------------
     def _append(self, kind: str, text: str) -> None:

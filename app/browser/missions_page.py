@@ -67,7 +67,8 @@ class LibraryData:
 
 
 def summarise(mission, *, with_detail: bool = False,
-              findings: int | None = None, pages: int | None = None) -> dict[str, Any]:
+              findings: int | None = None, pages: int | None = None,
+              routines=None) -> dict[str, Any]:
     """One Mission as the page wants it.
 
     The counts are passed in for the list view, where Missions are read without
@@ -97,6 +98,10 @@ def summarise(mission, *, with_detail: bool = False,
         row["pageList"] = [
             {"id": p.id, "title": p.display_title, "domain": p.domain, "url": p.url}
             for p in mission.pages
+        ]
+        row["routineList"] = [
+            {"id": routine.id, "name": routine.name, "steps": len(routine.steps)}
+            for routine in (routines or [])
         ]
     return row
 
@@ -432,6 +437,9 @@ _TEMPLATE = """<!doctype html>
   li.finding .src { color: var(--muted); font-size: 12px; }
   li.page a { display: flex; gap: 12px; padding: 7px 0; color: inherit;
               text-decoration: none; align-items: baseline; }
+  .root-row { display: flex; gap: 12px; padding: 7px 0; align-items: baseline; }
+  .root-row .t { font-weight: 500; }
+  .root-row .d { margin-left: auto; color: var(--muted); font-size: 12px; }
   li.page a:hover .t { color: var(--accent); }
   li.page .d { margin-left: auto; color: var(--muted); font-size: 12px; }
   .tag { font-size: 10px; font-weight: 700; letter-spacing: .08em;
@@ -710,6 +718,26 @@ _TEMPLATE = """<!doctype html>
       pages.appendChild(li);
     });
     body.appendChild(pages);
+
+    if (mission.routineList && mission.routineList.length) {
+      body.appendChild(el("h2", null, "ROUTINES \u00b7 " + mission.routineList.length));
+      var routines = el("ul");
+      mission.routineList.forEach(function (routine) {
+        var li = el("li", "page");
+        var row = el("div", "root-row");
+        row.appendChild(el("span", "t", routine.name));
+        row.appendChild(el("span", "d", routine.steps + " step" +
+                           (routine.steps === 1 ? "" : "s")));
+        var run = el("button", "link", "Run");
+        run.addEventListener("click", function () {
+          act("routine-run", { id: routine.id });
+        });
+        row.appendChild(run);
+        li.appendChild(row);
+        routines.appendChild(li);
+      });
+      body.appendChild(routines);
+    }
     document.getElementById("count").textContent = "";
   }
 
