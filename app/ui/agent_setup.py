@@ -84,6 +84,7 @@ class ApiKeyDialog(QDialog):
         layout.addWidget(options)
 
         layout.addWidget(self._cost_section(body))
+        layout.addWidget(self._workspace_section(body))
 
         explanation = QLabel(
             "<hr><b>Or paste an API key.</b> It is stored in your operating "
@@ -168,6 +169,61 @@ class ApiKeyDialog(QDialog):
             lambda: self._save_preferences(KEY_AGENT_MODEL, KEY_AGENT_EFFORT))
         column.addWidget(apply_button)
         return box
+
+    # -- which workspace a request acts in --------------------------------
+    def _workspace_section(self, parent: QWidget) -> QWidget:
+        """The Anthropic Workspace ID - only needed for an identity-linked key.
+
+        Not a secret: it names which workspace a request acts in, and shows
+        up in the Anthropic Console. Stored as an ordinary preference, same
+        as model and effort - never in the keyring, never treated as the API
+        key is.
+        """
+        from app.agent.config import AgentConfig
+
+        current = AgentConfig.from_environment(self._settings)
+
+        box = QWidget(parent)
+        column = QVBoxLayout(box)
+        column.setContentsMargins(0, 0, 0, 0)
+
+        heading = QLabel(
+            "<hr><b>Anthropic Workspace ID</b><br>"
+            "<span style='color:#555'>Only needed if this key is an "
+            "“identity-linked” API key - Claude will say so with a "
+            "400 error naming <code>anthropic-workspace-id</code> if it "
+            "applies to you. Not a secret; find it in the Anthropic Console "
+            "under this workspace's settings. Leave blank otherwise.</span>",
+            box)
+        heading.setWordWrap(True)
+        heading.setTextFormat(Qt.TextFormat.RichText)
+        column.addWidget(heading)
+
+        self.workspace_field = QLineEdit(box)
+        self.workspace_field.setPlaceholderText("leave blank if not required")
+        self.workspace_field.setText(current.workspace_id)
+        column.addWidget(self.workspace_field)
+
+        save = QPushButton("Save workspace ID", box)
+        save.clicked.connect(self._save_workspace_id)
+        column.addWidget(save)
+        return box
+
+    def _save_workspace_id(self) -> None:
+        if self._settings is None:
+            QMessageBox.warning(
+                self, "Configure AI Agent",
+                "Settings are unavailable, so this cannot be remembered. "
+                "Set ANTHROPIC_WORKSPACE_ID instead.")
+            return
+        from app.agent.config import KEY_AGENT_WORKSPACE_ID
+
+        self._settings.set(KEY_AGENT_WORKSPACE_ID, self.workspace_field.text().strip())
+        self.saved.emit()
+        QMessageBox.information(
+            self, "Configure AI Agent",
+            "Saved. Py picks this up as soon as you close this dialog, "
+            "which begins a fresh conversation.")
 
     def _update_model_note(self) -> None:
         from app.agent.config import describe_model

@@ -282,6 +282,12 @@ class AgentConfig:
     #: One of EFFORT_LEVELS. Pinned for the life of a session - changing it
     #: mid-conversation invalidates the message cache.
     effort: str = DEFAULT_EFFORT
+    #: Not a secret - which Anthropic workspace this request acts in. Only
+    #: needed for an "identity-linked" API key, which the API refuses to run
+    #: without one (400, anthropic-workspace-id required). Sent as the
+    #: `anthropic-workspace-id` header; empty means "send nothing", which is
+    #: correct for every ordinary key. See ClaudeClient._build_client.
+    workspace_id: str = ""
     cache: CacheSettings = field(default_factory=CacheSettings)
     context: ContextManagement = field(default_factory=ContextManagement)
     #: Wall-clock cap on a single Claude request.
@@ -321,6 +327,8 @@ class AgentConfig:
                 stored_effort = settings.get(KEY_AGENT_EFFORT, DEFAULT_EFFORT)
                 if stored_effort in _EFFORT_IDS:
                     config.effort = stored_effort
+                config.workspace_id = (
+                    settings.get(KEY_AGENT_WORKSPACE_ID, "") or "").strip()
             except Exception:  # noqa: BLE001 - preferences are never load-bearing
                 pass
 
@@ -330,6 +338,9 @@ class AgentConfig:
         effort = (os.environ.get(ENV_EFFORT) or "").strip().lower()
         if effort in _EFFORT_IDS:
             config.effort = effort
+        workspace_id = (os.environ.get(ENV_WORKSPACE_ID) or "").strip()
+        if workspace_id:
+            config.workspace_id = workspace_id
         cache = (os.environ.get(ENV_CACHE) or "").strip().lower()
         if cache in ("0", "off", "false", "no"):
             # An escape hatch for debugging, not a recommendation: turning
@@ -341,9 +352,14 @@ class AgentConfig:
 ENV_MODEL = "PYBROWSER_AGENT_MODEL"
 ENV_EFFORT = "PYBROWSER_AGENT_EFFORT"
 ENV_CACHE = "PYBROWSER_AGENT_CACHE"
+#: Same name the Anthropic SDK itself reads for Workload Identity Federation,
+#: reused deliberately - one environment variable, one meaning, everywhere
+#: this codebase and the SDK agree a workspace needs naming.
+ENV_WORKSPACE_ID = "ANTHROPIC_WORKSPACE_ID"
 
-#: Settings-table keys. Model and effort are preferences, not secrets, so they
-#: belong in the ordinary settings table - unlike the API key, which never
-#: touches SQLite.
+#: Settings-table keys. Model, effort and workspace id are preferences, not
+#: secrets, so they belong in the ordinary settings table - unlike the API
+#: key, which never touches SQLite.
 KEY_AGENT_MODEL = "agent_model"
 KEY_AGENT_EFFORT = "agent_effort"
+KEY_AGENT_WORKSPACE_ID = "agent_workspace_id"

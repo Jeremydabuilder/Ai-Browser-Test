@@ -151,11 +151,25 @@ class ClaudeClient:
         self._unsupported: set[str] = set()
 
     def _build_client(self, anthropic, credential):
-        """Construct whichever SDK client this credential calls for."""
+        """Construct whichever SDK client this credential calls for.
+
+        ``anthropic-workspace-id`` rides along as a plain request header via
+        the SDK's own ``default_headers`` - there is no dedicated constructor
+        argument for it. It only means anything to the first-party API
+        surface (``anthropic.Anthropic``), so it is attached for every way of
+        reaching that surface - a stored key, an env-var key, a bearer token,
+        or a CLI-signed profile - and left off Bedrock and Vertex, which are
+        not Anthropic-workspace-scoped at all. Sending an empty header would
+        be indistinguishable from an empty one the server rejects, so it is
+        included only when the user actually set something.
+        """
         from app.agent.credentials import Mode
 
         common = {"timeout": self.config.request_timeout_s,
                   "max_retries": self.config.max_retries}
+        workspace_id = (self.config.workspace_id or "").strip()
+        if workspace_id:
+            common["default_headers"] = {"anthropic-workspace-id": workspace_id}
         try:
             if credential.mode in (Mode.KEYRING, Mode.ENV_KEY):
                 return anthropic.Anthropic(api_key=credential.secret, **common)
@@ -165,6 +179,7 @@ class ClaudeClient:
                 # No secret passed: the SDK reads the profile written by
                 # `ant auth login` and refreshes the token itself.
                 return anthropic.Anthropic(**common)
+            common.pop("default_headers", None)
             if credential.mode == Mode.BEDROCK:
                 return anthropic.AnthropicBedrockMantle(
                     aws_region=credential.region, **common)
@@ -429,14 +444,34 @@ class ClaudeClient:
             ) from exc
         except anthropic.APIStatusError as exc:
             retryable = exc.status_code >= 500
+            api_message = api_message_of(exc)
+            if exc.status_code == 400 and self._names_missing_workspace(api_message):
+                raise ClaudeError(
+                    "This Anthropic API key is linked to a workspace. Add "
+                    "your Anthropic Workspace ID in AI Settings.",
+                    detail=str(exc), api_message=api_message,
+                ) from exc
             raise ClaudeError(
                 "Claude returned a server error." if retryable
                 else f"Claude rejected the request ({exc.status_code}).",
                 retryable=retryable, detail=str(exc),
-                api_message=api_message_of(exc),
+                api_message=api_message,
             ) from exc
 
         return self._normalise(response)
+
+    @staticmethod
+    def _names_missing_workspace(api_message: str) -> bool:
+        """Is this the specific 400 an identity-linked key gets with no
+        workspace configured?
+
+        Matched on the header name the API's own error message names
+        (``anthropic-workspace-id is required when authenticating with an
+        identity-linked API key``), not on a looser "workspace" substring -
+        an unrelated 400 that happens to mention a workspace for some other
+        reason must not be relabelled as this one.
+        """
+        return "anthropic-workspace-id" in api_message.lower()
 
     @staticmethod
     def _normalise(response: Any) -> AgentResponse:

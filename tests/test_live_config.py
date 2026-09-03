@@ -85,6 +85,7 @@ class LiveReconfigurationTests(unittest.TestCase):
         # would otherwise decide the starting point of the next one.
         self.window.settings.set("agent_model", "")
         self.window.settings.set("agent_effort", "")
+        self.window.settings.set("agent_workspace_id", "")
         self.window.resize(1100, 800)
         self.window.show()
         self._original_env = os.environ.get("ANTHROPIC_API_KEY")
@@ -169,6 +170,23 @@ class LiveReconfigurationTests(unittest.TestCase):
         _app.processEvents()
         self.assertIsNot(self.window._agent_session, session)
         self.assertEqual(self.window._agent_session.config.model, "claude-sonnet-5")
+
+    def test_changing_the_workspace_id_rebuilds_the_session(self) -> None:
+        os.environ["ANTHROPIC_API_KEY"] = FAKE_KEY
+        self.open_panel()
+        session = self.window._agent_session
+        self.assertIsNotNone(session)
+        self.assertEqual(session.config.workspace_id, "", "unexpected start state")
+        self.window.settings.set("agent_workspace_id", "wrkspc_abc123")
+        self.window._apply_agent_settings()
+        _app.processEvents()
+        self.assertIsNot(self.window._agent_session, session,
+                         "a changed workspace id must rebuild the client, not reuse it")
+        self.assertEqual(self.window._agent_session.config.workspace_id, "wrkspc_abc123")
+        transport = self.window._agent_session._worker._transport
+        self.assertEqual(
+            transport._client.default_headers.get("anthropic-workspace-id"),
+            "wrkspc_abc123")
 
     def test_a_busy_agent_is_not_torn_down_underneath_the_user(self) -> None:
         os.environ["ANTHROPIC_API_KEY"] = FAKE_KEY

@@ -382,6 +382,15 @@ your OS keyring. That dialog shows every option and which one is currently in
 use. Nothing is ever written to the database, the repository, or any config
 file. Details: [`docs/ai_agent.md`](docs/ai_agent.md) §3.
 
+**"Identity-linked" API keys.** Some Anthropic API keys are scoped to a
+person rather than a workspace, and the API refuses a request from one of
+those with a 400 unless it is told which workspace the request acts in. If
+that happens, the browser says so plainly; add the workspace id (not a
+secret — the same dialog, **Tools → Configure AI Agent…**) and it is sent as
+the `anthropic-workspace-id` header on every request. An ordinary key needs
+none of this and nothing changes for it. `ANTHROPIC_WORKSPACE_ID` sets the
+same thing from the environment.
+
 Open the panel with **Ctrl+Shift+A** (or Tools → Show AI Agent).
 
 Sensitive actions — purchases, deletion, sending messages, credentials, payment

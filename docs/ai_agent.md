@@ -101,6 +101,40 @@ hypothetical — a broken keyring backend once raised a Rust panic (a
 Bedrock namespaces its model ids, so the model becomes `anthropic.claude-opus-5`
 there and stays `claude-opus-5` everywhere else.
 
+### Workspace id — for identity-linked keys only
+
+Some Anthropic API keys are scoped to a person rather than a workspace; the
+API refuses a request from one of those with a 400 naming
+`anthropic-workspace-id` unless the request says which workspace it acts in.
+An ordinary key never hits this and needs nothing here.
+
+The workspace id is **not a secret** — it names a workspace, not a
+credential — so it is not stored in the OS keyring the way an API key is.
+It lives beside the model and effort preferences in the ordinary settings
+table (`AgentConfig.workspace_id`, settings key `agent_workspace_id`, set from
+**Tools → Configure AI Agent…**), with `ANTHROPIC_WORKSPACE_ID` overriding it
+from the environment, the same precedence as model and effort.
+
+`ClaudeClient._build_client` attaches it as a plain request header via the
+SDK's own `default_headers={"anthropic-workspace-id": ...}` — there is no
+dedicated constructor argument for it. It rides along for every way of
+reaching the first-party API (a stored key, an env-var key, a bearer token, a
+CLI-signed profile) and is left off entirely for Bedrock and Vertex, which
+are not Anthropic-workspace-scoped. Nothing is sent when the field is empty,
+so an ordinary key's requests are byte-identical to before this existed.
+
+If the API still returns the workspace-required 400 — wrong or missing id —
+`ClaudeClient.send` recognises that specific message (matched on the header
+name it names, not a loose "workspace" substring, so an unrelated 400 is
+never relabelled) and raises: *"This Anthropic API key is linked to a
+workspace. Add your Anthropic Workspace ID in AI Settings."* Every other 400
+keeps its ordinary message.
+
+`scripts/api_preflight.py` builds its config with
+`AgentConfig.from_environment(None)`, so it picks up `ANTHROPIC_WORKSPACE_ID`
+exactly as the browser's settings-backed config would — the same path an
+identity-linked key needs to succeed against the real API.
+
 ## 4. Tools
 
 19 tools, each mapping to exactly one `BrowserController` method:

@@ -59,8 +59,12 @@ def check(model_id: str, credential) -> bool:
     print(f"\n{model_id}  {DIM}{label}{OFF}")
 
     # A real client, so the request is assembled by the code under test rather
-    # than by a copy of it here.
-    config = AgentConfig(model=model_id, max_tokens=1024)
+    # than by a copy of it here. from_environment(None) picks up
+    # ANTHROPIC_WORKSPACE_ID exactly as the browser's settings-backed config
+    # would - the same path an identity-linked key needs to succeed here too.
+    config = AgentConfig.from_environment(None)
+    config.model = model_id
+    config.max_tokens = 1024
     client = ClaudeClient(credential, config)
 
     sent = []
@@ -156,6 +160,9 @@ def main() -> int:
               "browser under Tools -> Configure AI Agent.")
         return 2
     print(f"credential: {credential.describe()}")
+    workspace_id = (os.environ.get("ANTHROPIC_WORKSPACE_ID") or "").strip()
+    if workspace_id:
+        print(f"workspace: {workspace_id} (from ANTHROPIC_WORKSPACE_ID)")
 
     wanted = args.models or [choice.model_id for choice in MODELS]
     results = {model_id: check(model_id, credential) for model_id in wanted}

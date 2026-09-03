@@ -164,5 +164,172 @@ class ClientConstructionTests(unittest.TestCase):
                              "claude-opus-5")
 
 
+class WorkspaceIdTests(unittest.TestCase):
+    """anthropic-workspace-id: required by identity-linked keys, harmless
+    otherwise, and never a secret."""
+
+    # -- a plain key needs nothing new -------------------------------------
+    def test_a_normal_key_with_no_workspace_id_still_works(self):
+        client = ClaudeClient(
+            creds.Credential(creds.Mode.ENV_KEY, "env key", secret="sk-ant-test"),
+            AgentConfig())
+        self.assertNotIn("anthropic-workspace-id", client._client.default_headers)
+
+    def test_no_workspace_id_is_the_default(self):
+        self.assertEqual(AgentConfig().workspace_id, "")
+
+    # -- an identity-linked key sends the header ---------------------------
+    def test_a_configured_workspace_id_sends_the_header(self):
+        client = ClaudeClient(
+            creds.Credential(creds.Mode.ENV_KEY, "env key", secret="sk-ant-test"),
+            AgentConfig(workspace_id="wrkspc_01Abc"))
+        self.assertEqual(
+            client._client.default_headers.get("anthropic-workspace-id"), "wrkspc_01Abc")
+
+    def test_the_workspace_id_rides_along_for_every_anthropic_api_credential_mode(self):
+        for mode, kwargs in (
+            (creds.Mode.KEYRING, {"secret": "sk-ant-test"}),
+            (creds.Mode.ENV_KEY, {"secret": "sk-ant-test"}),
+            (creds.Mode.AUTH_TOKEN, {"secret": "abc"}),
+            (creds.Mode.OAUTH_PROFILE, {}),
+        ):
+            with self.subTest(mode=mode):
+                client = ClaudeClient(
+                    creds.Credential(mode, mode, **kwargs),
+                    AgentConfig(workspace_id="wrkspc_01Abc"))
+                self.assertEqual(
+                    client._client.default_headers.get("anthropic-workspace-id"),
+                    "wrkspc_01Abc")
+
+    def test_bedrock_and_vertex_ignore_the_workspace_id(self):
+        """Not an Anthropic-workspace-scoped surface; the header means nothing there."""
+        bedrock = ClaudeClient(
+            creds.Credential(creds.Mode.BEDROCK, "bedrock", region="us-east-1"),
+            AgentConfig(workspace_id="wrkspc_01Abc"))
+        self.assertFalse(hasattr(bedrock._client, "default_headers")
+                         and bedrock._client.default_headers.get("anthropic-workspace-id"))
+        vertex = ClaudeClient(
+            creds.Credential(creds.Mode.VERTEX, "vertex", project="p", region="global"),
+            AgentConfig(workspace_id="wrkspc_01Abc"))
+        self.assertFalse(hasattr(vertex._client, "default_headers")
+                         and vertex._client.default_headers.get("anthropic-workspace-id"))
+
+    # -- the specific clean error -------------------------------------------
+    def test_the_workspace_required_error_is_surfaced_cleanly(self):
+        """Without a configured workspace id, the real 400 becomes the exact
+        user-facing sentence this feature exists to show."""
+        import anthropic
+
+        client = ClaudeClient(
+            creds.Credential(creds.Mode.ENV_KEY, "env key", secret="sk-ant-test"),
+            AgentConfig())
+
+        response = mock.Mock()
+        response.headers = {}
+        response.status_code = 400
+        exc = anthropic.BadRequestError(
+            message="anthropic-workspace-id is required when authenticating with an "
+                    "identity-linked API key; send the id of the workspace this "
+                    "request acts in.",
+            response=response,
+            body={"error": {"message": "anthropic-workspace-id is required when "
+                                       "authenticating with an identity-linked API "
+                                       "key; send the id of the workspace this "
+                                       "request acts in."}},
+        )
+        client._create = mock.Mock(side_effect=exc)
+
+        with self.assertRaises(ClaudeError) as ctx:
+            client.send(system="s", messages=[], tools=[])
+        self.assertIn("linked to a workspace", ctx.exception.message)
+        self.assertIn("Anthropic Workspace ID in AI Settings", ctx.exception.message)
+
+    def test_an_unrelated_400_is_not_mislabelled_as_the_workspace_error(self):
+        import anthropic
+
+        client = ClaudeClient(
+            creds.Credential(creds.Mode.ENV_KEY, "env key", secret="sk-ant-test"),
+            AgentConfig())
+
+        response = mock.Mock()
+        response.headers = {}
+        response.status_code = 400
+        exc = anthropic.BadRequestError(
+            message="max_tokens: field required",
+            response=response,
+            body={"error": {"message": "max_tokens: field required"}},
+        )
+        client._create = mock.Mock(side_effect=exc)
+
+        with self.assertRaises(ClaudeError) as ctx:
+            client.send(system="s", messages=[], tools=[])
+        self.assertNotIn("linked to a workspace", ctx.exception.message)
+
+    def test_a_configured_workspace_id_does_not_change_ordinary_errors(self):
+        """Requirement 5: existing behaviour must continue working without one -
+        and configuring one must not turn unrelated errors into this one."""
+        import anthropic
+
+        client = ClaudeClient(
+            creds.Credential(creds.Mode.ENV_KEY, "env key", secret="sk-ant-test"),
+            AgentConfig(workspace_id="wrkspc_01Abc"))
+
+        response = mock.Mock()
+        response.headers = {}
+        response.status_code = 400
+        exc = anthropic.BadRequestError(
+            message="max_tokens: field required",
+            response=response,
+            body={"error": {"message": "max_tokens: field required"}},
+        )
+        client._create = mock.Mock(side_effect=exc)
+
+        with self.assertRaises(ClaudeError) as ctx:
+            client.send(system="s", messages=[], tools=[])
+        self.assertNotIn("linked to a workspace", ctx.exception.message)
+
+
+class WorkspaceIdConfigTests(unittest.TestCase):
+    """Where the workspace id comes from: settings, then the environment."""
+
+    def setUp(self):
+        self._saved = os.environ.pop("ANTHROPIC_WORKSPACE_ID", None)
+
+    def tearDown(self):
+        os.environ.pop("ANTHROPIC_WORKSPACE_ID", None)
+        if self._saved is not None:
+            os.environ["ANTHROPIC_WORKSPACE_ID"] = self._saved
+
+    def test_not_a_secret_so_it_reads_from_settings(self):
+        from app.agent.config import KEY_AGENT_WORKSPACE_ID
+
+        store = {}
+
+        class _Settings:
+            def get(self, key, default=""):
+                return store.get(key, default)
+
+        _Settings().get(KEY_AGENT_WORKSPACE_ID)  # sanity: no exception
+        store[KEY_AGENT_WORKSPACE_ID] = "wrkspc_from_settings"
+        config = AgentConfig.from_environment(_Settings())
+        self.assertEqual(config.workspace_id, "wrkspc_from_settings")
+
+    def test_the_environment_overrides_the_stored_preference(self):
+        from app.agent.config import KEY_AGENT_WORKSPACE_ID
+
+        store = {KEY_AGENT_WORKSPACE_ID: "wrkspc_from_settings"}
+
+        class _Settings:
+            def get(self, key, default=""):
+                return store.get(key, default)
+
+        os.environ["ANTHROPIC_WORKSPACE_ID"] = "wrkspc_from_env"
+        config = AgentConfig.from_environment(_Settings())
+        self.assertEqual(config.workspace_id, "wrkspc_from_env")
+
+    def test_no_settings_and_no_env_leaves_it_empty(self):
+        self.assertEqual(AgentConfig.from_environment(None).workspace_id, "")
+
+
 if __name__ == "__main__":
     unittest.main()
