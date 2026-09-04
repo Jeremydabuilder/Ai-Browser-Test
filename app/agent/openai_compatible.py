@@ -195,6 +195,22 @@ def _looks_like_tool_unsupported(api_message: str) -> bool:
                                   or "no tool" in lowered)
 
 
+def _looks_like_unrecognized_param(api_message: str, param_name: str) -> bool:
+    """Is this 400 the API refusing to recognise one specific request field?
+
+    Deliberately narrow - matched on the field name actually appearing next
+    to a rejection word - so a message that happens to mention "max_tokens"
+    for an unrelated reason (e.g. quoting it back inside a longer sentence
+    about something else) is not mistaken for this specific failure.
+    """
+    lowered = api_message.lower()
+    if param_name.lower() not in lowered:
+        return False
+    return any(word in lowered for word in
+              ("unrecognized", "unsupported", "unknown parameter", "not supported",
+               "invalid parameter", "not allowed"))
+
+
 def pretty_label(model_id: str) -> str:
     """A human-readable label for a raw model id, with the id kept visible.
 
@@ -256,32 +272,55 @@ class OpenAICompatibleClient:
             headers=self._headers(),
             transport=transport,
         )
+        #: See send()'s docstring - starts with the classic name, falls back
+        #: to the replacement at most once per client lifetime.
+        self._max_tokens_param = "max_tokens"
 
     def _headers(self) -> dict[str, str]:
         return {"Authorization": f"Bearer {self._api_key}", "Content-Type": "application/json"}
 
     # -- the protocol -------------------------------------------------------
-    def send(self, *, system: str, messages: list[dict[str, Any]], tools: list[dict[str, Any]],
-             on_text=None) -> AgentResponse:
-        """One round-trip. ``on_text`` is accepted for protocol compatibility
-        but unused - streaming is a fast-follow, not required for the agent
-        loop to work; AgentSession already falls back to blocking calls for
-        any transport that doesn't stream (see ``_accepts_streaming``)."""
-        body: dict[str, Any] = {
-            "model": self._model,
-            "messages": messages_param(system, messages),
-            "max_tokens": self.config.max_tokens,
-        }
-        if tools:
-            body["tools"] = tools_param(tools)
+    def _post(self, body: dict[str, Any]) -> "httpx.Response":
         try:
-            response = self._client.post("/chat/completions", json=body)
+            return self._client.post("/chat/completions", json=body)
         except httpx.TimeoutException as exc:
             raise ClaudeError(f"{self.label} took too long to respond.",
                               retryable=True, detail=str(exc)) from exc
         except httpx.HTTPError as exc:
             raise ClaudeError(f"Could not reach {self.label}. Check the network connection.",
                               retryable=True, detail=str(exc)) from exc
+
+    def send(self, *, system: str, messages: list[dict[str, Any]], tools: list[dict[str, Any]],
+             on_text=None) -> AgentResponse:
+        """One round-trip. ``on_text`` is accepted for protocol compatibility
+        but unused - streaming is a fast-follow, not required for the agent
+        loop to work; AgentSession already falls back to blocking calls for
+        any transport that doesn't stream (see ``_accepts_streaming``).
+
+        Retries exactly once, on exactly one thing: some models behind these
+        gateways only accept the newer ``max_completion_tokens`` name and
+        reject the classic ``max_tokens`` outright (OpenAI deprecated it for
+        its own reasoning models; a router that proxies to one of those
+        inherits the rejection). Trying the classic name first costs nothing
+        when it works, which is every model this browser seeds by default -
+        and self-heals rather than failing outright on one that does not,
+        the same shape as ClaudeClient's drop-and-retry for Anthropic-side
+        parameter rejections.
+        """
+        body: dict[str, Any] = {
+            "model": self._model,
+            "messages": messages_param(system, messages),
+            self._max_tokens_param: self.config.max_tokens,
+        }
+        if tools:
+            body["tools"] = tools_param(tools)
+        response = self._post(body)
+        if (response.status_code == 400 and self._max_tokens_param == "max_tokens"
+                and _looks_like_unrecognized_param(error_message(response), "max_tokens")):
+            self._max_tokens_param = "max_completion_tokens"
+            body.pop("max_tokens", None)
+            body["max_completion_tokens"] = self.config.max_tokens
+            response = self._post(body)
         return self._handle_response(response)
 
     def _handle_response(self, response: "httpx.Response") -> AgentResponse:
@@ -373,6 +412,16 @@ class OpenAICompatibleClient:
                               headers={"Authorization": f"Bearer {key}",
                                        "Content-Type": "application/json"}) as client:
                 response = client.post("/chat/completions", json=body)
+                # Same self-healing fallback as send() - a model that only
+                # accepts max_completion_tokens must not fail Test Connection
+                # over a parameter name mismatch that has nothing to do with
+                # whether tool calling actually works.
+                if (response.status_code == 400
+                        and _looks_like_unrecognized_param(error_message(response), "max_tokens")):
+                    body = dict(body)
+                    body.pop("max_tokens", None)
+                    body["max_completion_tokens"] = 16
+                    response = client.post("/chat/completions", json=body)
         except Exception as exc:  # noqa: BLE001 - reported to the user, not raised
             return False, f"Could not reach {cls.label}: {exc}"
         if response.status_code == 200:

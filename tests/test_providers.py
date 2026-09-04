@@ -169,6 +169,85 @@ class ClientTests(unittest.TestCase):
         response = client.send(system="s", messages=[{"role": "user", "content": "hi"}], tools=[])
         self.assertEqual(response.text, "Hi there.")
 
+    def test_max_tokens_is_used_by_default(self):
+        def handler(request):
+            body = json.loads(request.content)
+            self.assertIn("max_tokens", body)
+            self.assertNotIn("max_completion_tokens", body)
+            return httpx.Response(200, json={"choices": [{"message": {"content": "hi"},
+                                                          "finish_reason": "stop"}]})
+
+        client = GroqClient("k", AgentConfig(), transport=httpx.MockTransport(handler))
+        client.send(system="s", messages=[], tools=[])
+
+    def test_a_model_that_rejects_max_tokens_falls_back_to_max_completion_tokens(self):
+        calls = []
+
+        def handler(request):
+            body = json.loads(request.content)
+            calls.append(body)
+            if "max_tokens" in body:
+                return httpx.Response(400, json={"error": {"message":
+                    "Unrecognized request argument supplied: max_tokens"}})
+            return httpx.Response(200, json={"choices": [{"message": {"content": "hi"},
+                                                          "finish_reason": "stop"}]})
+
+        client = GroqClient("k", AgentConfig(), transport=httpx.MockTransport(handler))
+        response = client.send(system="s", messages=[], tools=[])
+        self.assertEqual(response.text, "hi")
+        self.assertEqual(len(calls), 2)
+        self.assertIn("max_tokens", calls[0])
+        self.assertIn("max_completion_tokens", calls[1])
+        self.assertNotIn("max_tokens", calls[1])
+
+    def test_the_fallback_is_remembered_for_the_rest_of_the_client_lifetime(self):
+        calls = []
+
+        def handler(request):
+            body = json.loads(request.content)
+            calls.append(body)
+            if "max_tokens" in body:
+                return httpx.Response(400, json={"error": {"message":
+                    "Unrecognized request argument supplied: max_tokens"}})
+            return httpx.Response(200, json={"choices": [{"message": {"content": "hi"},
+                                                          "finish_reason": "stop"}]})
+
+        client = GroqClient("k", AgentConfig(), transport=httpx.MockTransport(handler))
+        client.send(system="s", messages=[], tools=[])   # triggers the one-time fallback
+        client.send(system="s", messages=[], tools=[])   # must go straight to the new name
+        self.assertEqual(len(calls), 3)
+        self.assertIn("max_completion_tokens", calls[2])
+
+    def test_an_unrelated_400_does_not_trigger_the_max_tokens_fallback(self):
+        calls = []
+
+        def handler(request):
+            calls.append(json.loads(request.content))
+            return httpx.Response(400, json={"error": {"message": "invalid model id"}})
+
+        client = GroqClient("k", AgentConfig(), transport=httpx.MockTransport(handler))
+        with self.assertRaises(ClaudeError):
+            client.send(system="s", messages=[], tools=[])
+        self.assertEqual(len(calls), 1, "no retry for a 400 unrelated to max_tokens")
+
+    def test_test_connection_also_falls_back_to_max_completion_tokens(self):
+        calls = []
+
+        def handler(request):
+            body = json.loads(request.content)
+            calls.append(body)
+            if "max_tokens" in body:
+                return httpx.Response(400, json={"error": {"message":
+                    "Unrecognized request argument supplied: max_tokens"}})
+            return httpx.Response(200, json={"choices": [{"message": {"content": "ready"},
+                                                          "finish_reason": "stop"}]})
+
+        ok, message = GroqClient.test_connection(
+            "k", "some-model", transport=httpx.MockTransport(handler))
+        self.assertTrue(ok, message)
+        self.assertEqual(len(calls), 2)
+        self.assertIn("max_completion_tokens", calls[1])
+
     def test_an_empty_key_is_refused_before_any_request(self):
         with self.assertRaises(ClaudeError):
             GroqClient("", AgentConfig())
