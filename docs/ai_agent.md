@@ -175,28 +175,58 @@ providers can never see or clobber another provider's stored key -
 `CredentialIsolationTests` in `tests/test_providers.py` asserts this
 directly.
 
-**Model capability.** PyBrowser's agent depends on tool calling for every
-action, so a model that cannot do that reliably must never be picked
-silently. Model ids and their free-tier status change often enough that a
-hardcoded catalogue would go stale, so **Tools → Configure AI Agent** fetches
-each provider's live `/models` endpoint (`OpenAICompatibleClient.list_models`)
-rather than trusting a fixed list. OpenRouter reports tool-calling support
-per model (`supported_parameters`); Groq's listing does not, so
-`GroqClient.capability_of` only rules out the obviously-non-chat entries
-(audio/moderation models) by name and otherwise says plainly that support is
-unconfirmed. The dialog's **Test Connection** button
-(`OpenAICompatibleClient.test_connection`) is the actual proof either way: a
-real, minimal tool-calling round trip against the configured key and model,
-reporting success or the provider's own words on why not - the same method
-`scripts/api_preflight.py --provider groq <model>` calls from the terminal.
+**Model selection.** Switching to Groq or OpenRouter in the dialog populates
+the model dropdown immediately from a small offline seed list, then - with no
+button click needed - tries a live fetch from the provider's own `/models`
+endpoint if a key is already configured, replacing the seed list with
+whatever that provider currently reports. Typing a model id by hand still
+works (`_other_model_box` stays editable) but is the fallback, not the normal
+path; it still goes through the same capability check and **Test Connection**
+as anything picked from the list. Each provider remembers its own
+last-chosen model separately (`config.model_settings_key`, settings keys
+`agent_model_groq` / `agent_model_openrouter`) - switching providers and back
+never overwrites one provider's choice with another's, and Anthropic keeps
+its original `agent_model` key unchanged.
 
-**Errors.** `OpenAICompatibleClient._handle_response` translates the common
-failures into the same `ClaudeError` shape Anthropic errors use - invalid
-key, no permission for this model, model not found, rate limited, free quota
-exhausted (detected from the provider's own error text), a server error, and
-the model-does-not-support-tools case specifically. The provider's own
-sentence is preserved as `api_message`; the raw response body never reaches
-the UI, and the API key is never included in any raised message.
+**Model capability.** PyBrowser's agent depends on tool calling for every
+action, so a model that cannot do that reliably must never be presented as a
+normal compatible choice. Three layers, in order of certainty:
+
+1. **A denylist**, checked first and unconditionally - `GroqClient.DENYLIST`
+   / `OpenRouterClient.DENYLIST` name specific model families known to run
+   their own server-side tool loop and reject a caller-supplied schema
+   outright (Groq's `compound` / `compound-mini`, on both providers, since
+   OpenRouter can route to the same models). A denylisted model is filtered
+   out of `list_models()` entirely and out of the seed list; if typed by hand
+   anyway, `_selected_other_model_supported()` still refuses it before Save
+   or Test Connection ever runs a request.
+2. **Provider-reported metadata**, where it exists - OpenRouter's
+   `supported_parameters` names `"tools"` when a model accepts function
+   calling; Groq's listing carries no such field, so `GroqClient.capability_of`
+   only rules out the obviously-non-chat entries (audio/moderation models) by
+   name.
+3. **Test Connection** (`OpenAICompatibleClient.test_connection`) - the actual
+   proof either way, for everything metadata cannot settle: a real, minimal
+   tool-calling round trip against the configured key and model. The same
+   method `scripts/api_preflight.py --provider groq <model>` calls from the
+   terminal.
+
+A model that fails the denylist or the metadata check is still shown in the
+dropdown - never silently hidden - but disabled (`QStandardItem.setEnabled`
+via a role flag `_populate_model_combo` sets on each item) so it cannot be
+selected from the list; tool-capable models sort first.
+
+**Errors.** `OpenAICompatibleClient._handle_response` and `test_connection`
+translate the common failures into the same `ClaudeError` shape Anthropic
+errors use - invalid key, no permission for this model, model not found,
+rate limited, free quota exhausted (detected from the provider's own error
+text), a server error, and the model-does-not-support-tools case
+specifically, which both surface as the exact sentence
+`openai_compatible.TOOL_UNSUPPORTED_MESSAGE`
+("This model does not support the custom tools PyBrowser requires. Choose
+another model.") rather than the raw 400. The provider's own sentence is
+preserved as `api_message`; the raw response body never reaches the UI, and
+the API key is never included in any raised message.
 
 ## 4. Tools
 

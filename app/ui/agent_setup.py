@@ -245,9 +245,85 @@ class ApiKeyDialog(QDialog):
         provider_id = provider_id or self._current_other_provider()
         return {"groq": GroqClient, "openrouter": OpenRouterClient}[provider_id]
 
+    def _remembered_other_model(self, provider_id: str) -> str:
+        from app.agent.config import model_settings_key
+
+        if self._settings is None:
+            return ""
+        try:
+            return (self._settings.get(model_settings_key(provider_id), "") or "").strip()
+        except Exception:  # noqa: BLE001 - a preference read is never load-bearing
+            return ""
+
+    def _key_for_listing(self, provider_id: str) -> str:
+        """The key to use for a live fetch: the field if something is typed
+        (so testing a not-yet-saved key works), else whatever is stored."""
+        typed = self._other_field.text().strip()
+        if typed:
+            return typed
+        from app.agent.credentials import resolve_for
+
+        return resolve_for(provider_id).secret or ""
+
+    def _populate_model_combo(self, provider_id: str, entries: list[dict],
+                              preferred_model: str = "") -> None:
+        """Fill the model dropdown from a list of {"id": ...} entries.
+
+        Tool-capable models sort first; a model this client already knows
+        cannot support PyBrowser's custom tool interface (the denylist, or a
+        provider-reported "no tools" flag) is still shown - so its absence
+        never looks like a bug - but disabled in the popup and refused by
+        _selected_other_model_supported() even if chosen by typing its id.
+        """
+        from app.agent.openai_compatible import pretty_label
+
+        client_class = self._other_client_class(provider_id)
+        rows = []
+        for entry in entries:
+            model_id = (entry.get("id") or "").strip()
+            if not model_id:
+                continue
+            supported, note = client_class.capability_of(entry)
+            rows.append((model_id, supported, note))
+        rows.sort(key=lambda row: 0 if row[1] else 1)
+
+        self._other_model_box.clear()
+        for model_id, supported, note in rows:
+            label = pretty_label(model_id) if supported else f"{model_id} — {note}"
+            self._other_model_box.addItem(label, model_id)
+            index = self._other_model_box.count() - 1
+            self._other_model_box.setItemData(index, supported, Qt.ItemDataRole.UserRole + 1)
+            if not supported:
+                item = self._other_model_box.model().item(index)
+                if item is not None:
+                    item.setEnabled(False)
+
+        target = preferred_model or ""
+        picked = self._other_model_box.findData(target) if target else -1
+        if picked < 0 and target:
+            # A remembered or manually-entered model this listing does not
+            # (yet) contain - kept selectable rather than silently dropped,
+            # with its support left unconfirmed rather than guessed.
+            self._other_model_box.addItem(pretty_label(target), target)
+            picked = self._other_model_box.count() - 1
+            self._other_model_box.setItemData(picked, True, Qt.ItemDataRole.UserRole + 1)
+        if picked < 0:
+            # Nothing remembered: land on the first tool-capable entry, if any.
+            picked = next((i for i in range(self._other_model_box.count())
+                          if self._other_model_box.itemData(i, Qt.ItemDataRole.UserRole + 1)
+                          is not False), 0 if self._other_model_box.count() else -1)
+        if picked >= 0:
+            self._other_model_box.setCurrentIndex(picked)
+
     def _refresh_other_section(self, provider_id: str) -> None:
-        """Repopulate the shared section for whichever provider is selected."""
-        from app.agent.config import AgentConfig, describe_provider
+        """Repopulate the shared section for whichever provider is selected.
+
+        Populates the dropdown immediately from the seed list, then - without
+        requiring a button click - tries a live fetch if a key is already
+        available, so the normal path is "pick from what's actually
+        available" rather than "type a model id and hope."
+        """
+        from app.agent.config import describe_provider
         from app.agent.credentials import resolve_for
 
         info = describe_provider(provider_id)
@@ -260,65 +336,70 @@ class ApiKeyDialog(QDialog):
         self._other_clear_button.setVisible(credential.mode == "keyring")
         self._other_result.setText("")
 
-        self._other_model_box.clear()
-        current_model = AgentConfig.from_environment(self._settings).model
         client_class = self._other_client_class(provider_id)
-        for entry in client_class.seed_models():
-            self._other_model_box.addItem(entry.get("id", ""), entry.get("id", ""))
-        if self.provider_box.currentData() == provider_id:
-            if self._other_model_box.findData(current_model) < 0 and current_model:
-                self._other_model_box.addItem(current_model, current_model)
-            index = self._other_model_box.findData(current_model)
-            if index >= 0:
-                self._other_model_box.setCurrentIndex(index)
-            else:
-                self._other_model_box.setCurrentText(current_model)
+        remembered = self._remembered_other_model(provider_id)
+        self._populate_model_combo(provider_id, client_class.seed_models(), remembered)
+
+        key = credential.secret or ""
+        if key:
+            models = client_class.list_models(key)
+            if models:
+                self._populate_model_combo(provider_id, models, remembered)
 
     def _refresh_other_models(self) -> None:
         provider_id = self._current_other_provider()
         client_class = self._other_client_class(provider_id)
-        key = self._other_field.text().strip()
-        if not key:
-            from app.agent.credentials import resolve_for
-
-            credential = resolve_for(provider_id)
-            key = credential.secret or ""
+        key = self._key_for_listing(provider_id)
         if not key:
             QMessageBox.warning(self, "Configure AI Agent",
                                 "Enter (or save) an API key first, then refresh.")
             return
+        current = self._selected_other_model()
         models = client_class.list_models(key)
         if not models:
             QMessageBox.warning(
                 self, "Configure AI Agent",
                 f"Could not load {client_class.label}'s model list. Check the key "
-                "and your network connection, or enter a model id directly.")
+                "and your network connection. The seed list and manual entry "
+                "still work as a fallback.")
             return
-        current_text = self._other_model_box.currentText()
-        self._other_model_box.clear()
-        for entry in models:
-            model_id = entry.get("id", "")
-            if not model_id:
-                continue
-            supports_tools, note = client_class.capability_of(entry)
-            label = model_id if supports_tools else f"{model_id} — unsupported: {note}"
-            self._other_model_box.addItem(label, model_id)
-            if not supports_tools:
-                self._other_model_box.setItemData(
-                    self._other_model_box.count() - 1, False, Qt.ItemDataRole.UserRole + 1)
-        if current_text:
-            index = self._other_model_box.findData(current_text)
-            if index >= 0:
-                self._other_model_box.setCurrentIndex(index)
+        self._populate_model_combo(provider_id, models, current)
 
     def _selected_other_model(self) -> str:
+        """The model id currently selected or typed.
+
+        ``currentIndex()`` on an editable combobox does NOT reset to -1 when
+        the user types over the displayed text of a real selection - it
+        keeps pointing at the old item, so trusting it unconditionally would
+        silently ignore anything typed that doesn't happen to end in a fresh
+        selection. Comparing the displayed text against that item's own
+        label is what actually detects "the user typed something else."
+        """
         index = self._other_model_box.currentIndex()
-        data = self._other_model_box.itemData(index) if index >= 0 else None
-        return data or self._other_model_box.currentText().strip()
+        text = self._other_model_box.currentText().strip()
+        if index >= 0 and self._other_model_box.itemText(index) == self._other_model_box.currentText():
+            data = self._other_model_box.itemData(index)
+            if data:
+                return data
+        return text
 
     def _selected_other_model_supported(self) -> bool:
+        """Whether the currently selected/typed model may be saved.
+
+        Checked two ways, because a model can reach this method by either
+        path: chosen from the populated list (its capability flag already
+        set by _populate_model_combo), or typed by hand into the editable
+        field - which must still be refused if it names a model this client
+        already knows cannot do PyBrowser's custom tool calling, even though
+        typing bypasses the list entirely. This is what keeps manual entry
+        from silently overriding the denylist.
+        """
+        model_id = self._selected_other_model()
+        if self._other_client_class().is_denylisted(model_id):
+            return False
         index = self._other_model_box.currentIndex()
-        if index < 0:
+        if index < 0 or self._other_model_box.itemData(index) != model_id:
+            # Typed text with no matching list entry - unconfirmed, not refused.
             return True
         supported = self._other_model_box.itemData(index, Qt.ItemDataRole.UserRole + 1)
         return supported is not False
@@ -368,18 +449,23 @@ class ApiKeyDialog(QDialog):
         return ApiKeyStore(account=account)
 
     def _save_other_model(self) -> None:
-        from app.agent.config import KEY_AGENT_MODEL
+        from app.agent.config import model_settings_key
 
         model = self._selected_other_model()
         if not model:
             QMessageBox.warning(self, "Configure AI Agent", "Choose or enter a model first.")
             return
         if not self._selected_other_model_supported():
+            client_class = self._other_client_class()
+            if client_class.is_denylisted(model):
+                reason = client_class.DENYLIST_REASON
+            else:
+                reason = ("does not report support for tool calling, which "
+                         "PyBrowser's agent needs for every action")
             QMessageBox.warning(
                 self, "Configure AI Agent",
-                "This model does not report support for tool calling, which "
-                "PyBrowser's agent needs for every action. Choose a different "
-                "model, or use Test Connection if you believe this is wrong.")
+                f"This model {reason}. Choose a different model, or use Test "
+                "Connection if you believe this is wrong.")
             return
         if self._settings is None:
             QMessageBox.warning(
@@ -388,7 +474,7 @@ class ApiKeyDialog(QDialog):
             return
         provider_id = self._current_other_provider()
         self._set_active_provider(provider_id)
-        self._settings.set(KEY_AGENT_MODEL, model)
+        self._settings.set(model_settings_key(provider_id), model)
         self.saved.emit()
         QMessageBox.information(
             self, "Configure AI Agent",
@@ -402,16 +488,21 @@ class ApiKeyDialog(QDialog):
             self._settings.set(KEY_AGENT_PROVIDER, provider_id)
 
     def _test_other_connection(self) -> None:
+        """Even a manually typed model id goes through this real round trip -
+        Test Connection is never skipped just because the model came from
+        the free-text fallback rather than the populated list."""
         provider_id = self._current_other_provider()
         client_class = self._other_client_class(provider_id)
-        key = self._other_field.text().strip()
-        if not key:
-            from app.agent.credentials import resolve_for
-
-            key = resolve_for(provider_id).secret or ""
+        key = self._key_for_listing(provider_id)
         model = self._selected_other_model()
+        if client_class.is_denylisted(model):
+            self._show_other_result(False, f"This model {client_class.DENYLIST_REASON}.")
+            return
         self._other_result.setText("Testing…")
         ok, message = client_class.test_connection(key, model)
+        self._show_other_result(ok, message)
+
+    def _show_other_result(self, ok: bool, message: str) -> None:
         prefix = "✓ " if ok else "✗ "
         color = "#2a8f4e" if ok else "#c0392b"
         self._other_result.setTextFormat(Qt.TextFormat.RichText)

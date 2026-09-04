@@ -175,6 +175,45 @@ def error_message(response: "httpx.Response") -> str:
     return ""
 
 
+#: The friendly sentence shown for a request an API rejected specifically
+#: because the model does not do tool calling - as opposed to a bad key, a
+#: missing model, or a rate limit, which get their own messages.
+TOOL_UNSUPPORTED_MESSAGE = ("This model does not support the custom tools PyBrowser "
+                            "requires. Choose another model.")
+
+
+def _looks_like_tool_unsupported(api_message: str) -> bool:
+    """Is this 400 the provider saying it cannot do tool/function calling?
+
+    Matched on the words a rejection like this actually uses, not on a
+    provider-specific error code - Groq and OpenRouter (and whatever they
+    proxy to) do not agree on one.
+    """
+    lowered = api_message.lower()
+    return "tool" in lowered and ("not support" in lowered or "does not support" in lowered
+                                  or "unsupported" in lowered or "cannot" in lowered
+                                  or "no tool" in lowered)
+
+
+def pretty_label(model_id: str) -> str:
+    """A human-readable label for a raw model id, with the id kept visible.
+
+    Deliberately mechanical - splitting on ``/`` and ``-`` and title-casing
+    words - rather than a hand-maintained name-to-label table, which would
+    either miss every model added after this code was written or invent
+    marketing names nobody confirmed. The exact id always follows, so the
+    guess costs nothing if it reads oddly.
+    """
+    if "/" in model_id:
+        _vendor, _, rest = model_id.partition("/")
+    else:
+        rest = model_id
+    words = [w.upper() if w.isalpha() and len(w) <= 3 else w.capitalize()
+            for w in rest.replace("_", "-").split("-") if w]
+    friendly = " ".join(words) if words else model_id
+    return f"{friendly} — {model_id}"
+
+
 class OpenAICompatibleClient:
     """One HTTP client, subclassed per provider for base_url and labelling.
 
@@ -188,6 +227,20 @@ class OpenAICompatibleClient:
     #: Overridden by each subclass.
     base_url: str = ""
     label: str = "OpenAI-compatible provider"
+
+    #: model ids known not to support PyBrowser's custom tool interface,
+    #: regardless of what a provider's own /models listing claims - e.g.
+    #: Groq's "compound" models run their own internal tool-use loop server
+    #: side and reject a caller-supplied tool schema outright. Checked before
+    #: any other capability logic, and filtered out of both the seed list and
+    #: the live list entirely - not merely disabled - because a model in this
+    #: set is not a normal compatible choice under any circumstance.
+    DENYLIST: frozenset[str] = frozenset()
+    DENYLIST_REASON = "does not support the custom tool interface PyBrowser requires"
+
+    @classmethod
+    def is_denylisted(cls, model_id: str) -> bool:
+        return (model_id or "").strip().lower() in cls.DENYLIST
 
     def __init__(self, api_key: str, config, *, transport: "httpx.BaseTransport | None" = None) -> None:
         key = (api_key or "").strip()
@@ -258,13 +311,9 @@ class OpenAICompatibleClient:
                               retryable=True, detail=response.text[:1000])
         if status >= 400:
             api_message = error_message(response)
-            lowered = api_message.lower()
-            if "tool" in lowered and ("not support" in lowered or "does not support" in lowered):
-                raise ClaudeError(
-                    "The selected model does not support tool calling, which "
-                    "PyBrowser's agent requires. Choose a different model in "
-                    "Tools → Configure AI Agent.",
-                    detail=response.text[:1000], api_message=api_message)
+            if _looks_like_tool_unsupported(api_message):
+                raise ClaudeError(TOOL_UNSUPPORTED_MESSAGE,
+                                  detail=response.text[:1000], api_message=api_message)
             raise ClaudeError(
                 f"{self.label} rejected the request ({status}).",
                 detail=response.text[:1000], api_message=api_message)
@@ -289,7 +338,10 @@ class OpenAICompatibleClient:
                 if response.status_code != 200:
                     return []
                 data = response.json().get("data", [])
-                return data if isinstance(data, list) else []
+                if not isinstance(data, list):
+                    return []
+                return [entry for entry in data
+                       if not cls.is_denylisted(entry.get("id", ""))]
         except Exception:  # noqa: BLE001 - a listing failure is not fatal
             return []
 
@@ -325,7 +377,10 @@ class OpenAICompatibleClient:
             return False, f"Could not reach {cls.label}: {exc}"
         if response.status_code == 200:
             return True, "Connected. The model accepted a tool-calling request."
-        message = error_message(response) or response.text[:300]
+        api_message = error_message(response)
+        if _looks_like_tool_unsupported(api_message):
+            return False, TOOL_UNSUPPORTED_MESSAGE
+        message = api_message or response.text[:300]
         return False, f"{cls.label} rejected the request ({response.status_code}): {message}"
 
     # -- capability metadata, for the model dropdown ------------------------
@@ -356,6 +411,14 @@ class GroqClient(OpenAICompatibleClient):
     base_url = "https://api.groq.com/openai/v1"
     label = "Groq"
 
+    #: Groq's "compound" models run their own server-side agentic tool loop
+    #: (web search, code execution) and do not accept a caller-supplied
+    #: custom tool schema - PyBrowser's tools never reach them, so a request
+    #: fails outright. Excluded from every list this client produces, seeded
+    #: or live, never merely disabled.
+    DENYLIST = frozenset({"groq/compound", "groq/compound-mini",
+                          "compound", "compound-mini"})
+
     #: Groq's /models listing does not report tool-calling support per
     #: model (unlike OpenRouter's supported_parameters). This name-based
     #: heuristic only rules out entries that are obviously not chat models
@@ -363,19 +426,31 @@ class GroqClient(OpenAICompatibleClient):
     #: only way to actually know.
     _NOT_CHAT_MODELS = ("whisper", "tts", "guard", "moderation", "prompt-guard")
 
+    #: A small, curated starting point so the dropdown is never empty before
+    #: a key is entered or a live refresh completes. "Refresh model list"
+    #: replaces this with Groq's own current listing, which is authoritative -
+    #: this is only a seed, not a claim these ids will always exist.
+    _SEED_MODEL_IDS = (
+        "llama-3.3-70b-versatile",
+        "llama-3.1-8b-instant",
+        "openai/gpt-oss-20b",
+        "openai/gpt-oss-120b",
+        "qwen/qwen3.6-27b",
+        "qwen/qwen3.8-27b",
+    )
+
     @classmethod
     def capability_of(cls, entry: dict[str, Any]) -> tuple[bool, str]:
         model_id = (entry.get("id") or "").lower()
+        if cls.is_denylisted(model_id):
+            return False, cls.DENYLIST_REASON
         if any(marker in model_id for marker in cls._NOT_CHAT_MODELS):
             return False, "not a chat model (audio/moderation) - cannot run the agent loop"
         return True, "tool support unconfirmed - use Test Connection to check"
 
     @classmethod
     def seed_models(cls) -> list[dict[str, str]]:
-        # Deliberately empty: Groq's catalogue turns over often enough that
-        # a hardcoded id here would go stale silently. Enter a key and use
-        # "Refresh models" to load the live, current list instead.
-        return []
+        return [{"id": model_id} for model_id in cls._SEED_MODEL_IDS]
 
 
 class OpenRouterClient(OpenAICompatibleClient):
@@ -387,8 +462,17 @@ class OpenRouterClient(OpenAICompatibleClient):
     base_url = "https://openrouter.ai/api/v1"
     label = "OpenRouter"
 
+    #: OpenRouter can itself route to Groq's "compound" models under the
+    #: same names - excluded here for the identical reason (see GroqClient):
+    #: they run their own server-side tool loop and reject a caller-supplied
+    #: custom tool schema.
+    DENYLIST = frozenset({"groq/compound", "groq/compound-mini"})
+
     @classmethod
     def capability_of(cls, entry: dict[str, Any]) -> tuple[bool, str]:
+        model_id = (entry.get("id") or "").lower()
+        if cls.is_denylisted(model_id):
+            return False, cls.DENYLIST_REASON
         supported = entry.get("supported_parameters")
         pricing = entry.get("pricing") or {}
         free = str(pricing.get("prompt", "")) in ("0", "0.0", "0.000000") and \

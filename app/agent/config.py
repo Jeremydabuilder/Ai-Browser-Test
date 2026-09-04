@@ -192,6 +192,19 @@ def describe_provider(provider_id: str) -> ProviderInfo:
 PROVIDER_IDS = frozenset(info.id for info in PROVIDERS)
 
 
+def model_settings_key(provider_id: str) -> str:
+    """Which settings-table key remembers the chosen model for this provider.
+
+    Anthropic keeps the original bare key for backward compatibility with
+    preferences already on disk. Every other provider gets its own key, so
+    switching providers and back does not overwrite one provider's choice
+    with another's - each is remembered separately.
+    """
+    if provider_id == PROVIDER_ANTHROPIC:
+        return KEY_AGENT_MODEL
+    return f"{KEY_AGENT_MODEL}_{provider_id}"
+
+
 # ---------------------------------------------------------------------------
 # Effort
 # ---------------------------------------------------------------------------
@@ -399,12 +412,31 @@ class AgentConfig:
         agent must still start if the settings table is unreadable.
         """
         config = cls()
+
+        # Provider is resolved first - settings, then environment - because
+        # it decides which settings key the model comes from next. Getting
+        # this order backwards would read Groq's remembered model while
+        # believing OpenRouter was still selected, or vice versa.
         if settings is not None:
             try:
                 stored_provider = settings.get(KEY_AGENT_PROVIDER, DEFAULT_PROVIDER)
                 if stored_provider in PROVIDER_IDS:
                     config.provider = stored_provider
-                config.model = settings.get(KEY_AGENT_MODEL, DEFAULT_MODEL) or DEFAULT_MODEL
+            except Exception:  # noqa: BLE001 - preferences are never load-bearing
+                pass
+        env_provider = (os.environ.get(ENV_PROVIDER) or "").strip().lower()
+        if env_provider in PROVIDER_IDS:
+            config.provider = env_provider
+
+        if settings is not None:
+            try:
+                # Each provider remembers its own last-chosen model - see
+                # model_settings_key. Anthropic keeps its non-empty default;
+                # the others start blank rather than silently inheriting
+                # Anthropic's model id.
+                fallback_model = DEFAULT_MODEL if config.provider == PROVIDER_ANTHROPIC else ""
+                config.model = settings.get(
+                    model_settings_key(config.provider), fallback_model) or fallback_model
                 stored_effort = settings.get(KEY_AGENT_EFFORT, DEFAULT_EFFORT)
                 if stored_effort in _EFFORT_IDS:
                     config.effort = stored_effort
@@ -412,10 +444,12 @@ class AgentConfig:
                     settings.get(KEY_AGENT_WORKSPACE_ID, "") or "").strip()
             except Exception:  # noqa: BLE001 - preferences are never load-bearing
                 pass
+        elif config.provider != PROVIDER_ANTHROPIC:
+            # No settings store to remember anything in - stay honest that no
+            # model has actually been chosen rather than defaulting to an
+            # Anthropic model id a non-Anthropic client would reject.
+            config.model = ""
 
-        provider = (os.environ.get(ENV_PROVIDER) or "").strip().lower()
-        if provider in PROVIDER_IDS:
-            config.provider = provider
         model = os.environ.get(ENV_MODEL)
         if model:
             config.model = model.strip()

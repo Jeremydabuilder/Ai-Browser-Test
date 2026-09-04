@@ -208,14 +208,16 @@ class ClientTests(unittest.TestCase):
         self.assertIn("not available via Groq", ctx.exception.message)
 
     def test_tool_calling_unsupported_is_translated_clearly(self):
+        from app.agent.openai_compatible import TOOL_UNSUPPORTED_MESSAGE
+
         client = GroqClient("k", AgentConfig(),
                             transport=httpx.MockTransport(lambda r: httpx.Response(
                                 400, json={"error": {"message":
                                           "This model does not support tool use."}})))
         with self.assertRaises(ClaudeError) as ctx:
             client.send(system="s", messages=[], tools=[{"name": "x", "input_schema": {}}])
-        self.assertIn("does not support tool calling", ctx.exception.message)
-        self.assertIn("PyBrowser's agent requires", ctx.exception.message)
+        self.assertEqual(ctx.exception.message, TOOL_UNSUPPORTED_MESSAGE)
+        self.assertIn("custom tools PyBrowser requires", ctx.exception.message)
 
     def test_a_server_error_is_retryable(self):
         client = GroqClient("k", AgentConfig(),
@@ -604,6 +606,225 @@ class SafetyParityTests(unittest.TestCase):
             text = fh.read()
         for needle in ("groq", "openrouter", "anthropic", "Credential", "ClaudeClient"):
             self.assertNotIn(needle, text, f"Missions must stay provider-agnostic: found {needle!r}")
+
+
+# ---------------------------------------------------------------------------
+# Denylist / capability metadata at the client level
+# ---------------------------------------------------------------------------
+
+
+class DenylistTests(unittest.TestCase):
+    """groq/compound and groq/compound-mini run their own server-side tool
+    loop and reject a caller-supplied schema - PyBrowser's tools never reach
+    them. They must never be presented as normal compatible choices."""
+
+    def test_groq_compound_models_are_denylisted(self):
+        self.assertTrue(GroqClient.is_denylisted("groq/compound"))
+        self.assertTrue(GroqClient.is_denylisted("groq/compound-mini"))
+        self.assertTrue(GroqClient.is_denylisted("GROQ/COMPOUND-MINI"))
+
+    def test_openrouter_denylists_the_same_compound_models(self):
+        self.assertTrue(OpenRouterClient.is_denylisted("groq/compound"))
+        self.assertTrue(OpenRouterClient.is_denylisted("groq/compound-mini"))
+
+    def test_an_ordinary_model_is_not_denylisted(self):
+        self.assertFalse(GroqClient.is_denylisted("llama-3.3-70b-versatile"))
+        self.assertFalse(OpenRouterClient.is_denylisted("llama-3.3-70b-versatile"))
+
+    def test_capability_of_refuses_a_denylisted_entry_even_with_good_metadata(self):
+        # Even if a future OpenRouter listing claimed "tools" support for
+        # this model, the denylist wins - it is a known-bad interaction, not
+        # a guess from missing metadata.
+        supported, reason = OpenRouterClient.capability_of(
+            {"id": "groq/compound-mini", "supported_parameters": ["tools"]})
+        self.assertFalse(supported)
+        self.assertIn("custom tool interface", reason)
+
+    def test_list_models_filters_denylisted_entries_out_entirely(self):
+        def handler(request):
+            return httpx.Response(200, json={"data": [
+                {"id": "llama-3.3-70b-versatile"},
+                {"id": "groq/compound"},
+                {"id": "groq/compound-mini"},
+            ]})
+
+        models = GroqClient.list_models("k", transport=httpx.MockTransport(handler))
+        ids = {m["id"] for m in models}
+        self.assertEqual(ids, {"llama-3.3-70b-versatile"})
+
+    def test_the_seed_list_never_contains_a_denylisted_model(self):
+        for entry in GroqClient.seed_models():
+            self.assertFalse(GroqClient.is_denylisted(entry["id"]))
+
+    def test_the_seed_list_matches_the_requested_models(self):
+        seeded = {entry["id"] for entry in GroqClient.seed_models()}
+        self.assertEqual(seeded, {
+            "llama-3.3-70b-versatile", "llama-3.1-8b-instant",
+            "openai/gpt-oss-20b", "openai/gpt-oss-120b",
+            "qwen/qwen3.6-27b", "qwen/qwen3.8-27b",
+        })
+
+    def test_pretty_label_keeps_the_exact_model_id_visible(self):
+        from app.agent.openai_compatible import pretty_label
+
+        label = pretty_label("llama-3.3-70b-versatile")
+        self.assertIn("llama-3.3-70b-versatile", label)
+        self.assertNotEqual(label, "llama-3.3-70b-versatile")  # actually humanized
+
+
+# ---------------------------------------------------------------------------
+# The dialog's model dropdown
+# ---------------------------------------------------------------------------
+
+
+class ModelSelectionTests(unittest.TestCase):
+    """Tools -> Configure AI Agent's model picker for Groq/OpenRouter."""
+
+    def setUp(self):
+        from PySide6.QtWidgets import QMessageBox
+
+        self._info = mock.patch.object(QMessageBox, "information", lambda *a, **k: None)
+        self._warn_calls = []
+        self._warn = mock.patch.object(
+            QMessageBox, "warning",
+            lambda *a, **k: self._warn_calls.append(a[2] if len(a) > 2 else ""))
+        self._info.start()
+        self._warn.start()
+        self.settings = _FakeSettings({})
+
+    def tearDown(self):
+        self._info.stop()
+        self._warn.stop()
+
+    def _dialog(self):
+        from app.ui.agent_setup import ApiKeyDialog
+
+        dialog = ApiKeyDialog(None, self.settings)
+        self.addCleanup(dialog.deleteLater)
+        return dialog
+
+    def _switch_to(self, dialog, provider_id: str):
+        index = dialog.provider_box.findData(provider_id)
+        dialog.provider_box.setCurrentIndex(index)
+
+    def test_switching_to_groq_populates_the_dropdown_from_the_seed_list(self):
+        dialog = self._dialog()
+        self._switch_to(dialog, "groq")
+        ids = {dialog._other_model_box.itemData(i)
+              for i in range(dialog._other_model_box.count())}
+        self.assertIn("llama-3.3-70b-versatile", ids)
+        self.assertGreater(dialog._other_model_box.count(), 1)
+
+    def test_a_configured_key_triggers_an_automatic_live_fetch_no_click_needed(self):
+        live = [{"id": "llama-3.3-70b-versatile"}, {"id": "some-new-model"}]
+        with mock.patch.object(creds, "resolve_for",
+                               return_value=creds.Credential(
+                                   creds.Mode.ENV_KEY, "Groq", secret="gsk_x", provider="groq")):
+            with mock.patch.object(GroqClient, "list_models", return_value=live) as fetch:
+                dialog = self._dialog()
+                self._switch_to(dialog, "groq")
+                self.assertTrue(fetch.called, "a stored key must trigger a live fetch automatically")
+        ids = {dialog._other_model_box.itemData(i)
+              for i in range(dialog._other_model_box.count())}
+        self.assertIn("some-new-model", ids)
+
+    def test_incompatible_models_are_present_but_disabled_not_selectable(self):
+        live = [{"id": "llama-3.3-70b-versatile"}, {"id": "whisper-large-v3"}]
+        dialog = self._dialog()
+        dialog._populate_model_combo("groq", live)
+        box = dialog._other_model_box
+        whisper_index = box.findData("whisper-large-v3")
+        self.assertGreaterEqual(whisper_index, 0, "still shown, not hidden")
+        self.assertFalse(box.model().item(whisper_index).isEnabled())
+
+    def test_compound_mini_cannot_be_selected_as_a_normal_compatible_model(self):
+        live = [{"id": "llama-3.3-70b-versatile"}, {"id": "groq/compound-mini"}]
+        dialog = self._dialog()
+        self._switch_to(dialog, "groq")
+        dialog._populate_model_combo("groq", live)
+        box = dialog._other_model_box
+        index = box.findData("groq/compound-mini")
+        self.assertGreaterEqual(index, 0)
+        self.assertFalse(box.model().item(index).isEnabled())
+        # And even typed by hand, it is refused rather than silently saved.
+        box.setCurrentText("groq/compound-mini")
+        self.assertEqual(dialog._selected_other_model(), "groq/compound-mini")
+        self.assertFalse(dialog._selected_other_model_supported())
+        dialog._save_other_model()
+        self.assertEqual(self.settings.get("agent_model_groq", ""), "")
+
+    def test_compound_mini_test_connection_fails_locally_without_a_network_call(self):
+        dialog = self._dialog()
+        self._switch_to(dialog, "groq")
+        dialog._other_model_box.setCurrentText("groq/compound-mini")
+        with mock.patch.object(GroqClient, "test_connection") as tc:
+            dialog._test_other_connection()
+            self.assertFalse(tc.called)
+        self.assertIn("custom tool interface", dialog._other_result.text())
+
+    def test_provider_change_refreshes_the_model_choices(self):
+        dialog = self._dialog()
+        self._switch_to(dialog, "groq")
+        groq_ids = {dialog._other_model_box.itemData(i)
+                   for i in range(dialog._other_model_box.count())}
+        self._switch_to(dialog, "openrouter")
+        openrouter_ids = {dialog._other_model_box.itemData(i)
+                          for i in range(dialog._other_model_box.count())}
+        self.assertNotEqual(groq_ids, openrouter_ids)
+        self.assertNotIn("llama-3.3-70b-versatile", openrouter_ids)
+
+    def test_the_last_selected_model_is_remembered_separately_per_provider(self):
+        dialog = self._dialog()
+        self._switch_to(dialog, "groq")
+        index = dialog._other_model_box.findData("llama-3.1-8b-instant")
+        dialog._other_model_box.setCurrentIndex(index)
+        dialog._save_other_model()
+
+        self._switch_to(dialog, "openrouter")
+        # OpenRouter has never had a model chosen - Groq's choice must not
+        # leak across.
+        self.assertNotEqual(dialog._selected_other_model(), "llama-3.1-8b-instant")
+
+        self._switch_to(dialog, "groq")
+        self.assertEqual(dialog._selected_other_model(), "llama-3.1-8b-instant")
+
+        from app.agent.config import model_settings_key
+        self.assertEqual(self.settings.get(model_settings_key("groq")), "llama-3.1-8b-instant")
+        self.assertEqual(self.settings.get(model_settings_key("openrouter"), ""), "")
+
+    def test_openrouter_filters_by_its_own_supported_parameters_metadata(self):
+        live = [{"id": "good-model", "supported_parameters": ["tools"]},
+               {"id": "bad-model", "supported_parameters": ["temperature"]}]
+        dialog = self._dialog()
+        dialog._populate_model_combo("openrouter", live)
+        box = dialog._other_model_box
+        self.assertTrue(box.model().item(box.findData("good-model")).isEnabled())
+        self.assertFalse(box.model().item(box.findData("bad-model")).isEnabled())
+
+    def test_manual_entry_still_goes_through_test_connection(self):
+        """The manual fallback is for a model not yet in any listing - it
+        must still be provable, not a way to skip verification."""
+        dialog = self._dialog()
+        self._switch_to(dialog, "groq")
+        dialog._other_model_box.setCurrentText("a-brand-new-model-not-in-any-list")
+        with mock.patch.object(GroqClient, "test_connection",
+                               return_value=(True, "ok")) as tc:
+            dialog._test_other_connection()
+            self.assertTrue(tc.called)
+            self.assertEqual(tc.call_args[0][1], "a-brand-new-model-not-in-any-list")
+
+    def test_a_clear_message_replaces_the_raw_400_on_test_connection(self):
+        from app.agent.openai_compatible import TOOL_UNSUPPORTED_MESSAGE
+
+        dialog = self._dialog()
+        self._switch_to(dialog, "groq")
+        dialog._other_field.setText("gsk_x")
+        with mock.patch.object(
+                GroqClient, "test_connection",
+                return_value=(False, TOOL_UNSUPPORTED_MESSAGE)):
+            dialog._test_other_connection()
+        self.assertIn("custom tools PyBrowser requires", dialog._other_result.text())
+        self.assertNotIn("400", dialog._other_result.text())
 
 
 if __name__ == "__main__":
