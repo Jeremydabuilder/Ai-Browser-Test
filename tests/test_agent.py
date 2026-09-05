@@ -27,7 +27,7 @@ os.environ.setdefault("PYBROWSER_DATA_DIR", tempfile.mkdtemp(prefix="pybrowser-a
 from PySide6.QtCore import QEventLoop, QTimer  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
-from app.agent.claude_client import ClaudeError  # noqa: E402
+from app.agent.claude_client import ClaudeError, ToolCall  # noqa: E402
 from app.agent.config import AgentConfig, ContextLimits  # noqa: E402
 from app.agent.session import AgentSession, AgentState  # noqa: E402
 from app.agent.tools import UNTRUSTED_CLOSE, UNTRUSTED_OPEN, ToolRegistry  # noqa: E402
@@ -102,9 +102,13 @@ class AgentTestCase(unittest.TestCase):
         _app.processEvents()
 
     # -- helpers ---------------------------------------------------------
-    def start(self, script: list, limits: ContextLimits | None = None) -> ScriptedClaude:
+    def start(self, script: list, limits: ContextLimits | None = None,
+              autonomy: str | None = None) -> ScriptedClaude:
         fake = ScriptedClaude(script)
-        config = AgentConfig(limits=limits or ContextLimits())
+        kwargs = {"limits": limits or ContextLimits()}
+        if autonomy is not None:
+            kwargs["autonomy"] = autonomy
+        config = AgentConfig(**kwargs)
         self.session = AgentSession(self.browser, fake, config)
         self.session.assistant_message.connect(self.said.append)
         self.session.activity.connect(self.actions.append)
@@ -124,6 +128,11 @@ class AgentTestCase(unittest.TestCase):
         """Live element references from the current page."""
         structure = self.browser.get_page_structure().wait().data["structure"]
         return [e.ref for e in structure.find(role=role, name_contains=name)]
+
+    def _buy_click_count(self) -> int:
+        structure = self.browser.get_page_structure().wait().data["structure"]
+        counter = next((e for e in structure.buttons if e.name.startswith("Clicked")), None)
+        return int(re.search(r"\d+", counter.name).group()) if counter else -1
 
     def one_ref(self, role: str, name: str) -> str:
         found = self.refs(role, name)
@@ -493,10 +502,86 @@ class ConfirmationTests(AgentTestCase):
         self.assertTrue(pump(lambda: bool(self.confirmations), 15000))
         self.session.resolve_confirmation(False)
 
-    def _buy_click_count(self) -> int:
-        structure = self.browser.get_page_structure().wait().data["structure"]
-        counter = next((e for e in structure.buttons if e.name.startswith("Clicked")), None)
-        return int(re.search(r"\d+", counter.name).group()) if counter else -1
+
+# ---------------------------------------------------------------------------
+class AutonomyTests(AgentTestCase):
+    """The user's autonomy tier is a policy layered on top of the browser's
+    own sensitivity judgement (ToolRegistry._apply_autonomy) - it changes
+    whether an action gets asked about, never what the action IS."""
+
+    def _type_search(self, messages):
+        # Typing into the plain search box is ELEVATED only ("enters data
+        # into the page") - unlike submitting #search-form, which shares a
+        # <form> with a password field and so is always SENSITIVE (see
+        # classify_submit inspecting every field in the form, not just the
+        # one element being acted on).
+        return calls("browser_type", {"ref": find_ref(messages, "searchbox", "Search terms"),
+                                      "text": "tennis shoes"})
+
+    def _buy_click(self, messages):
+        return calls("browser_click", {"ref": find_ref(messages, "button", "Buy now")})
+
+    def test_standard_does_not_ask_for_an_elevated_only_action(self):
+        self.start([calls("browser_get_page"), self._type_search, says("done")])
+        self.assertTrue(self.run_task("Search for something."))
+        self.assertEqual(self.confirmations, [])
+        self.assertEqual(self.said, ["done"])
+
+    def test_ask_always_asks_for_the_same_elevated_action(self):
+        from app.agent.config import Autonomy
+
+        self.start([calls("browser_get_page"), self._type_search, says("done")],
+                   autonomy=Autonomy.ASK_ALWAYS)
+        self.session.send("Search for something.")
+        self.assertTrue(pump(lambda: bool(self.confirmations), 15000))
+        self.assertEqual(self.session.state, AgentState.AWAITING_CONFIRMATION)
+        self.session.resolve_confirmation(True)
+        self.assertTrue(pump(lambda: self.said == ["done"], 15000))
+
+    def test_read_only_refuses_the_elevated_action_without_asking(self):
+        from app.agent.config import Autonomy
+
+        self.start([calls("browser_get_page"), self._type_search, says("done")],
+                   autonomy=Autonomy.READ_ONLY)
+        self.assertTrue(self.run_task("Search for something."))
+        self.assertEqual(self.confirmations, [], "read-only refuses outright, never asks")
+        result = json.loads(self.fake.tool_results()[-1])
+        self.assertEqual(result["error"]["code"], "READ_ONLY")
+        self.assertEqual(self.said, ["done"])
+
+    def test_read_only_also_refuses_a_sensitive_action(self):
+        from app.agent.config import Autonomy
+
+        self.start([calls("browser_get_page"), self._buy_click, says("done")],
+                   autonomy=Autonomy.READ_ONLY)
+        self.assertTrue(self.run_task("Buy the thing."))
+        self.assertEqual(self.confirmations, [])
+        self.assertEqual(self._buy_click_count(), 0)
+        result = json.loads(self.fake.tool_results()[-1])
+        self.assertEqual(result["error"]["code"], "READ_ONLY")
+
+    def test_read_only_still_allows_ordinary_reading(self):
+        from app.agent.config import Autonomy
+
+        self.start([calls("browser_get_page"), says("done")], autonomy=Autonomy.READ_ONLY)
+        self.assertTrue(self.run_task("Look at the page."))
+        self.assertEqual(self.errors, [])
+        self.assertEqual(self.said, ["done"])
+
+    def test_standard_still_asks_for_a_sensitive_action(self):
+        # Standard is the long-standing default behaviour, unchanged: only
+        # SENSITIVE asks.
+        self.start([calls("browser_get_page"), self._buy_click, says("done")])
+        self.session.send("Buy it.")
+        self.assertTrue(pump(lambda: bool(self.confirmations), 15000))
+        self.session.resolve_confirmation(False)
+
+    def test_an_unrecognised_stored_autonomy_value_falls_back_to_standard(self):
+        self.start([calls("browser_get_page"), self._type_search, says("done")],
+                   autonomy="some-value-that-does-not-exist")
+        self.assertTrue(self.run_task("Search for something."))
+        self.assertEqual(self.confirmations, [])
+        self.assertEqual(self.said, ["done"])
 
 
 # ---------------------------------------------------------------------------
@@ -710,14 +795,18 @@ class ContextLimitTests(AgentTestCase):
 
     def test_turn_limit_stops_a_runaway_task(self):
         # A model that always asks for another tool call must not loop forever.
-        self.start([calls("browser_get_page")] * 10, limits=ContextLimits(max_turns=3))
+        # max_repeated_calls is raised out of the way so this test isolates
+        # the turn limit specifically - see the loop guard's own tests for
+        # what stops an identical call repeated back to back.
+        self.start([calls("browser_get_page")] * 10,
+                   limits=ContextLimits(max_turns=3, max_repeated_calls=100))
         self.assertTrue(self.run_task("Loop forever."))
         self.assertIn("limit of 3 steps", self.errors[-1])
         self.assertEqual(self.session.state, AgentState.IDLE)
 
     def test_tool_call_limit_stops_a_runaway_task(self):
         self.start([calls("browser_get_page")] * 10,
-                   limits=ContextLimits(max_tool_calls=2, max_turns=20))
+                   limits=ContextLimits(max_tool_calls=2, max_turns=20, max_repeated_calls=100))
         self.assertTrue(self.run_task("Loop forever."))
         self.assertIn("limit of 2 browser actions", self.errors[-1])
 
@@ -736,6 +825,78 @@ class ContextLimitTests(AgentTestCase):
         self.run_task("Read.")
         payload = self.fake.tool_results()[0]
         self.assertIn('"truncated": true', payload)
+
+
+# ---------------------------------------------------------------------------
+class SafetyGuardTests(AgentTestCase):
+    """Three ways a stuck agent stops itself and says why, instead of
+    running until it hits the turn/tool-call budget - see the guards added
+    to AgentSession._next_tool and _note_ref_outcome."""
+
+    def test_the_loop_guard_stops_an_identical_call_repeated_back_to_back(self):
+        self.start([calls("browser_get_page")] * 10)  # default limits
+        self.assertTrue(self.run_task("Get stuck."))
+        self.assertIn("repeated the same action", self.errors[-1])
+        self.assertIn("browser_get_page", self.errors[-1])
+        # Stopped well short of the default 25-turn/40-call budget.
+        self.assertLessEqual(len(self.fake.requests), 4)
+        self.assertEqual(self.session.state, AgentState.IDLE)
+
+    def test_the_loop_guard_does_not_fire_on_genuinely_different_calls(self):
+        urls = [f"{self.server.base}?p={n}" for n in range(3)]
+        self.start([calls("browser_navigate", {"url": urls[0]}),
+                   calls("browser_navigate", {"url": urls[1]}),
+                   calls("browser_navigate", {"url": urls[2]}),
+                   says("done")])
+        self.assertTrue(self.run_task("Visit three different pages."))
+        self.assertEqual(self.errors, [])
+        self.assertEqual(self.said, ["done"])
+
+    def test_the_tab_cap_refuses_further_tabs_without_stopping_the_task(self):
+        urls = [f"{self.server.base}?tab={n}" for n in range(10)]
+        specs = [("browser_open_tab", {"url": u}) for u in urls]
+        self.start([calls_many(specs), says("done")],
+                   limits=ContextLimits(max_tabs_per_task=8))
+        self.assertTrue(self.run_task("Open a lot of tabs."))
+        self.assertTrue(any("TOO_MANY_TABS" in r for r in self.fake.tool_results()),
+                        "a refusal must appear once the cap is passed")
+        # A refusal is a normal tool result, not a task-ending error - the
+        # model got to read it and still finish normally.
+        self.assertEqual(self.errors, [])
+        self.assertEqual(self.said, ["done"])
+
+    def test_repeated_selector_failure_stops_the_task(self):
+        # max_repeated_calls raised out of the way: five identical clicks on
+        # the same bad ref would otherwise trip the loop guard first, and
+        # this test is specifically about the ref-failure guard.
+        specs = [("browser_click", {"ref": "e9999-does-not-exist"})] * 5
+        self.start([calls(name, args) for name, args in specs],
+                   limits=ContextLimits(max_repeated_calls=100))
+        self.assertTrue(self.run_task("Click something that is not there."))
+        self.assertIn("same element failed", self.errors[-1])
+        self.assertEqual(self.session.state, AgentState.IDLE)
+
+    def test_a_ref_that_eventually_succeeds_is_not_held_against_it(self):
+        # Driven directly against _note_ref_outcome: two failures, then a
+        # success on the same ref, then two more failures must not reach the
+        # default threshold of 3 - the success has to reset the count, not
+        # just slow it down.
+        self.start([says("unused")])
+        session = self.session
+        call = ToolCall(id="c1", name="browser_click", arguments={"ref": "e1"})
+        self.assertFalse(session._note_ref_outcome(call, ok=False))
+        self.assertFalse(session._note_ref_outcome(call, ok=False))
+        self.assertFalse(session._note_ref_outcome(call, ok=True))
+        self.assertFalse(session._note_ref_outcome(call, ok=False))
+        self.assertFalse(session._note_ref_outcome(call, ok=False))
+        # A third real failure since the reset is what finally trips it.
+        self.assertTrue(session._note_ref_outcome(call, ok=False))
+
+    def test_a_call_with_no_ref_never_trips_the_selector_guard(self):
+        self.start([says("unused")])
+        call = ToolCall(id="c1", name="browser_get_page", arguments={})
+        for _ in range(10):
+            self.assertFalse(self.session._note_ref_outcome(call, ok=False))
 
 
 # ---------------------------------------------------------------------------

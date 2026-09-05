@@ -92,6 +92,8 @@ class ApiKeyDialog(QDialog):
         self._other_widget = self._other_provider_section(body)
         layout.addWidget(self._other_widget)
 
+        layout.addWidget(self._autonomy_section(body))
+
         # Without this, a QVBoxLayout inside a resizable QScrollArea gives
         # its leftover vertical space to whichever child has no stretch
         # factor of its own - which turned out to be the "Provider" label,
@@ -705,6 +707,74 @@ class ApiKeyDialog(QDialog):
             lambda: self._save_preferences(KEY_AGENT_MODEL, KEY_AGENT_EFFORT))
         column.addWidget(apply_button)
         return box
+
+    # -- how cautious Py is, regardless of which provider is chosen --------
+    def _autonomy_section(self, parent: QWidget) -> QWidget:
+        """How much Py has to ask before it acts - the same setting whatever
+        provider is chosen, so it lives outside both provider sections.
+
+        Sits on top of the browser's own sensitivity judgement (see
+        app/browser/safety.py), never inside it - that classifier has no
+        notion of user preference and stays a pure "how consequential is
+        this?" question. This is the policy layered on top of the answer.
+        """
+        from app.agent.config import AUTONOMY_LEVELS, AgentConfig
+
+        current = AgentConfig.from_environment(self._settings)
+
+        box = QWidget(parent)
+        column = QVBoxLayout(box)
+        column.setContentsMargins(0, 0, 0, 0)
+
+        heading = QLabel(
+            "<hr><b>How cautious should Py be?</b><br>"
+            "<span style='color:#555'>This decides when Py stops and asks "
+            "before acting - separate from the model or provider above.</span>",
+            box)
+        heading.setWordWrap(True)
+        column.addWidget(heading)
+
+        self.autonomy_box = QComboBox(box)
+        for level, label, description in AUTONOMY_LEVELS:
+            self.autonomy_box.addItem(label, level)
+            self.autonomy_box.setItemData(
+                self.autonomy_box.count() - 1, description, Qt.ItemDataRole.ToolTipRole)
+        index = self.autonomy_box.findData(current.autonomy)
+        self.autonomy_box.setCurrentIndex(index if index >= 0 else 0)
+        column.addWidget(self.autonomy_box)
+
+        self._autonomy_note = QLabel("", box)
+        self._autonomy_note.setWordWrap(True)
+        self._autonomy_note.setStyleSheet("color:#555;")
+        column.addWidget(self._autonomy_note)
+        self.autonomy_box.currentIndexChanged.connect(self._update_autonomy_note)
+        self._update_autonomy_note()
+
+        save = QPushButton("Save autonomy", box)
+        save.clicked.connect(self._save_autonomy)
+        column.addWidget(save)
+        return box
+
+    def _update_autonomy_note(self) -> None:
+        from app.agent.config import describe_autonomy
+
+        _label, description = describe_autonomy(self.autonomy_box.currentData())
+        self._autonomy_note.setText(description)
+
+    def _save_autonomy(self) -> None:
+        if self._settings is None:
+            QMessageBox.warning(
+                self, "Configure AI Agent",
+                "Settings are unavailable, so this cannot be remembered. "
+                "Set PYBROWSER_AGENT_AUTONOMY instead.")
+            return
+        from app.agent.config import KEY_AGENT_AUTONOMY
+
+        self._settings.set(KEY_AGENT_AUTONOMY, self.autonomy_box.currentData())
+        self.saved.emit()
+        QMessageBox.information(
+            self, "Configure AI Agent",
+            "Saved. Py picks this up as soon as you close this dialog.")
 
     # -- which workspace a request acts in --------------------------------
     def _workspace_section(self, parent: QWidget) -> QWidget:

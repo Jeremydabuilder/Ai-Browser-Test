@@ -66,7 +66,7 @@ nss alsa-lib`.
 ## Tests
 
 ```bash
-python -m unittest discover -s tests -v          # 1244 tests
+python -m unittest discover -s tests -v          # 1257 tests
 python scripts/smoke_test.py                     # headless end-to-end run
 python scripts/feature_check.py                  # 28-point feature checklist
 python scripts/agent_demo.py                     # the research demo, offline
@@ -430,6 +430,32 @@ Open the panel with **Ctrl+Shift+A** (or Tools → Show AI Agent).
 Sensitive actions — purchases, deletion, sending messages, credentials, payment
 details, legal agreements, executable downloads — pause for an explicit
 **Allow / Deny**, decided by the *browser*, not by the model.
+
+### How cautious Py is
+
+**Tools → Configure AI Agent…** also has an autonomy setting, independent of
+provider or model:
+
+- **Read-only** — Py can browse, read and compare, but anything that would
+  change something is refused outright, never offered for approval.
+- **Ask before every action** — Py asks before anything that writes, clicks
+  or submits, not just purchases and deletions.
+- **Standard** (default) — Py asks only before something sensitive and
+  handles routine clicks and typing on its own; this is the behaviour the
+  browser has always had.
+
+This sits on top of the browser's own judgement of how consequential an
+action is (`app/browser/safety.py`), not inside it - the classifier stays a
+plain "how risky is this?" question with no notion of preference; autonomy
+is the policy layered on top of that answer. `PYBROWSER_AGENT_AUTONOMY`
+(`read_only` / `ask_always` / `standard`) sets the same thing from the
+environment.
+
+The agent also stops and explains itself if it gets stuck rather than
+grinding on: repeating the exact same action back to back, clicking the same
+broken element over and over, or opening far more tabs than one task should
+need each end the task with a plain reason, the same recovery affordances
+(Retry / Continue mission / Try another approach) a failed task always gets.
 
 ### Keeping the cost down
 

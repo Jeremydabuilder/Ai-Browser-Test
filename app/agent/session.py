@@ -125,6 +125,23 @@ class ConfirmationRequest:
         return f"Py wants to {self.description}{where}.{why}"
 
 
+def _signature_of(arguments: dict[str, Any]) -> str:
+    """A stable, order-independent fingerprint of a tool call's arguments,
+    for the loop guard in AgentSession._next_tool.
+
+    json.dumps(sort_keys=True) rather than str(dict): dict insertion order
+    is not something the model controls call to call, and treating two
+    differently-ordered but identical calls as different signatures would
+    let a real loop slip past undetected.
+    """
+    import json
+
+    try:
+        return json.dumps(arguments, sort_keys=True, default=str)
+    except (TypeError, ValueError):
+        return str(arguments)
+
+
 # ---------------------------------------------------------------------------
 # Worker
 # ---------------------------------------------------------------------------
@@ -226,7 +243,8 @@ class AgentSession(QObject):
         self._browser = browser
         # `missions` is passed straight through to the registry, which needs
         # one method from it. The session itself stays Mission-ignorant.
-        self._tools = ToolRegistry(browser, self.config.limits, missions)
+        self._tools = ToolRegistry(browser, self.config.limits, missions,
+                                  autonomy=self.config.autonomy)
 
         # -- agent state, deliberately separate from browser state -------
         self._messages: list[dict[str, Any]] = []
@@ -235,6 +253,14 @@ class AgentSession(QObject):
         self._cancelled = False
         self._turns = 0
         self._tool_calls_made = 0
+        #: Recent (tool, arguments) signatures, oldest first - see the loop
+        #: guard in _next_tool. Reset with every fresh task.
+        self._call_history: list[tuple[str, str]] = []
+        #: Consecutive failures per element reference - see
+        #: _note_ref_outcome. A ref that succeeds is dropped from this.
+        self._ref_failures: dict[str, int] = {}
+        #: Tabs opened by this task so far - see the guard in _next_tool.
+        self._tabs_opened = 0
         self._pending: list[ToolCall] = []
         self._results: list[dict[str, Any]] = []
         self._assistant_content: Any = None
@@ -313,6 +339,9 @@ class AgentSession(QObject):
         self._cancelled = False
         self._turns = 0
         self._tool_calls_made = 0
+        self._call_history = []
+        self._ref_failures = {}
+        self._tabs_opened = 0
         self.task_usage.reset()
         self.usage_updated.emit(self.task_usage)
         self._steps = []
@@ -531,6 +560,9 @@ class AgentSession(QObject):
         self._routine_mode = True
         self._turns = 0
         self._tool_calls_made = 0
+        self._call_history = []
+        self._ref_failures = {}
+        self._tabs_opened = 0
         self._steps = []
         self.trace.record(tracing.TASK_STARTED, chars=0)
         self._pending = [ToolCall(id=f"routine-{index}", name=name, arguments=dict(args))
@@ -570,7 +602,39 @@ class AgentSession(QObject):
             self._advance()
             return
 
-        # 2. Classify before anything else, so a malformed call becomes a normal
+        # 2. Loop guard: the exact same call, back to back, this many times
+        #    means the model is stuck repeating itself, not making progress -
+        #    continuing would just repeat forever. Checked before the call
+        #    even runs, so a stuck loop of read-only calls is caught too, not
+        #    only ones that fail.
+        signature = (call.name, _signature_of(call.arguments))
+        self._call_history.append(signature)
+        threshold = self.config.limits.max_repeated_calls
+        if (len(self._call_history) >= threshold
+                and len(set(self._call_history[-threshold:])) == 1):
+            self.trace.record(tracing.TASK_ERROR, kind="loop", retryable=True)
+            self.error.emit(
+                f"Stopping: repeated the same action {threshold} times in a row "
+                f"without anything changing ({call.name}).")
+            self._finish()
+            return
+
+        # 3. Tab guard: a runaway task opening tabs without bound is its own
+        #    kind of stuck, worth stopping on well before the tool-call
+        #    budget runs out - and unlike the loop guard, this is a normal
+        #    refusal the model can read and work within, not a hard stop.
+        if call.name == "browser_open_tab":
+            self._tabs_opened += 1
+            if self._tabs_opened > self.config.limits.max_tabs_per_task:
+                self.trace.record(tracing.TOOL_REJECTED, tool=call.name, reason="too_many_tabs")
+                self._record_result(call.id, self._tool_error(
+                    "TOO_MANY_TABS",
+                    f"This task has already opened {self.config.limits.max_tabs_per_task} "
+                    "tabs."), is_error=True)
+                self._advance()
+                return
+
+        # 4. Classify before anything else, so a malformed call becomes a normal
         #    tool error the model can correct rather than an exception.
         try:
             assessment = self._tools.assess(call.name, call.arguments)
@@ -586,7 +650,20 @@ class AgentSession(QObject):
             self._advance()
             return
 
-        # 3. The browser's safety layer decides - not the model.
+        # 5. Read-only autonomy refuses outright rather than asking - there is
+        #    nothing to confirm into. A clean tool error, the same shape as
+        #    any other refusal, so the model can explain why to the user
+        #    rather than the task just going quiet.
+        if assessment.get("refused"):
+            self.trace.record(tracing.TOOL_REJECTED, tool=call.name, reason="read_only")
+            self._record_result(call.id, self._tool_error(
+                "READ_ONLY", "Py is set to read-only and cannot perform this action. "
+                "Ask the user to change the autonomy setting if this task needs it."),
+                is_error=True)
+            self._advance()
+            return
+
+        # 6. The browser's safety layer decides - not the model.
         if assessment.get("requires_confirmation"):
             self._confirming_call = call
             submits, sensitive = self._describe_submission(call)
@@ -678,15 +755,45 @@ class AgentSession(QObject):
                                       result_chars=len(payload) if isinstance(payload, str) else None)
                     self._update_step(StepState.DONE)
                     self._record_step(call, description)
+                    self._note_ref_outcome(call, ok=True)
                 else:
                     code = result.error.code if result.error else "failed"
                     self.trace.record(tracing.TOOL_FAILED, tool=call.name, reason=code)
                     self._update_step(StepState.FAILED, code)
+                    if self._note_ref_outcome(call, ok=False):
+                        self._record_result(call.id, self._tools.render(result, payload),
+                                            is_error=True, tool_name=call.name)
+                        threshold = self.config.limits.max_consecutive_selector_failures
+                        self.error.emit(
+                            f"Stopping: the same element failed {threshold} times in a "
+                            "row - it may no longer be on the page.")
+                        self._finish()
+                        return
                 self._record_result(call.id, self._tools.render(result, payload),
                                     is_error=not result.ok, tool_name=call.name)
             self._advance()
 
         outcome.future.then(on_done)
+
+    def _note_ref_outcome(self, call: ToolCall, *, ok: bool) -> bool:
+        """Track consecutive failures against the same element reference.
+
+        Returns True once the same ref has just failed
+        ``max_consecutive_selector_failures`` times in a row - the caller
+        stops the task rather than recording this result and continuing, the
+        same "explain why and stop" the loop guard follows. A ref that
+        eventually succeeds is dropped, so an element that merely took a
+        couple of tries does not count against a later, unrelated one.
+        """
+        ref = call.arguments.get("ref")
+        if not isinstance(ref, str):
+            return False
+        if ok:
+            self._ref_failures.pop(ref, None)
+            return False
+        count = self._ref_failures.get(ref, 0) + 1
+        self._ref_failures[ref] = count
+        return count >= self.config.limits.max_consecutive_selector_failures
 
     def _advance(self) -> None:
         """Move to the next tool. Kept separate so every path funnels through it."""

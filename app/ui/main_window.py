@@ -1110,9 +1110,10 @@ class MainWindow(QMainWindow):
             return
 
         unchanged = (
-            (wanted.provider, wanted.model, wanted.effort, wanted.workspace_id)
+            (wanted.provider, wanted.model, wanted.effort, wanted.workspace_id,
+             wanted.autonomy)
             == (session.config.provider, session.config.model, session.config.effort,
-                session.config.workspace_id)
+                session.config.workspace_id, session.config.autonomy)
             and (credential is None or credential.fingerprint == self._credential_id)
         )
         if unchanged:

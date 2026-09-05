@@ -23,7 +23,7 @@ import json
 from dataclasses import dataclass
 from typing import Any, Callable
 
-from app.agent.config import ContextLimits
+from app.agent.config import Autonomy, ContextLimits
 from app.browser.controller import BrowserController, ScrollDirection
 from app.browser.futures import BrowserFuture
 from app.browser.results import ActionResult
@@ -676,7 +676,7 @@ class ToolRegistry:
     """Validates tool arguments and calls BrowserController."""
 
     def __init__(self, browser: BrowserController, limits: ContextLimits | None = None,
-                 missions=None) -> None:
+                 missions=None, *, autonomy: str = Autonomy.STANDARD) -> None:
         """``missions`` is the Mission service, or None when there is not one.
 
         Typed loosely on purpose: this class needs exactly one method from it,
@@ -684,10 +684,18 @@ class ToolRegistry:
         and no way to name a mission - so "the model cannot write anywhere
         except the active mission" is a property of what was passed in, not of
         the model behaving itself.
+
+        ``autonomy`` is the user's chosen policy tier (see app.agent.config.
+        Autonomy) - applied on top of the browser's own sensitivity judgement
+        in assess(), never inside it. An unrecognised value is treated as
+        STANDARD rather than raising, the same "a bad preference must not
+        crash the agent" rule every other stored setting follows.
         """
         self._browser = browser
         self._limits = limits or ContextLimits()
         self._missions = missions
+        self._autonomy = autonomy if autonomy in (
+            Autonomy.READ_ONLY, Autonomy.ASK_ALWAYS, Autonomy.STANDARD) else Autonomy.STANDARD
 
     # -- argument helpers ------------------------------------------------
     @staticmethod
@@ -730,11 +738,15 @@ class ToolRegistry:
     def assess(self, name: str, args: dict[str, Any]) -> dict[str, Any]:
         """What would this tool call do, and does it need the user's blessing?
 
-        The answer comes from the browser's own safety layer, never from the
-        model. That is the point: a page that talks the model into calling
-        "Place order" still has to get past a classification the model does not
-        control.
+        The level comes from the browser's own safety layer, never from the
+        model - a page that talks the model into calling "Place order" still
+        has to get past a classification the model does not control. Whether
+        that level actually asks is decided afterwards, by _apply_autonomy:
+        the user's own chosen policy, not the model's and not the page's.
         """
+        return self._apply_autonomy(self._raw_assess(name, args))
+
+    def _raw_assess(self, name: str, args: dict[str, Any]) -> dict[str, Any]:
         if name in READ_ONLY_TOOLS:
             return {"level": "normal", "reasons": [], "requires_confirmation": False}
         if name in LOCAL_WRITE_TOOLS:
@@ -766,6 +778,26 @@ class ToolRegistry:
         # create a hole in the confirmation gate.
         return {"level": "elevated", "reasons": ["changes browser state"],
                 "requires_confirmation": False}
+
+    def _apply_autonomy(self, result: dict[str, Any]) -> dict[str, Any]:
+        """Turn a sensitivity level into an actual decision, per the user's
+        chosen autonomy tier - see app.agent.config.Autonomy.
+
+        A NORMAL-level action is never touched by any tier: reading and
+        looking around is not what autonomy settings are about.
+        """
+        if result.get("level", "normal") == "normal":
+            return result
+        if self._autonomy == Autonomy.READ_ONLY:
+            result = dict(result)
+            result["requires_confirmation"] = False
+            result["refused"] = True
+            return result
+        if self._autonomy == Autonomy.ASK_ALWAYS:
+            result = dict(result)
+            result["requires_confirmation"] = True
+            return result
+        return result  # STANDARD: the browser's own judgement stands, unchanged.
 
     def _element_name(self, args: dict[str, Any]) -> str:
         """The accessible name of the element this call targets, if known."""

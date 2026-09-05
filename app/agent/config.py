@@ -227,6 +227,60 @@ _EFFORT_IDS = {level for level, _ in EFFORT_LEVELS}
 
 
 # ---------------------------------------------------------------------------
+# Autonomy
+# ---------------------------------------------------------------------------
+
+
+class Autonomy:
+    """How much the user has to be asked before Py acts.
+
+    This sits above app/browser/safety.py's classifier, not inside it - that
+    module stays a pure "how consequential is this?" judgement with no
+    notion of user preference (see its own docstring). Autonomy is the
+    policy layer that decides what to *do* with that judgement, applied in
+    ToolRegistry.assess().
+    """
+
+    #: Every write is refused outright - never offered for confirmation,
+    #: because there is nothing to confirm into. Py can read and compare,
+    #: never act.
+    READ_ONLY = "read_only"
+    #: Anything that isn't a plain read (ELEVATED as well as SENSITIVE) asks
+    #: first. The cautious default for someone new to the browser.
+    ASK_ALWAYS = "ask_always"
+    #: The behaviour this codebase always had: only SENSITIVE asks (money,
+    #: identity, destruction, legal consent); ELEVATED writes proceed on
+    #: their own. Kept as the default so existing behaviour never changes
+    #: for someone who never opens this setting.
+    STANDARD = "standard"
+
+
+AUTONOMY_LEVELS: tuple[tuple[str, str, str], ...] = (
+    (Autonomy.READ_ONLY, "Read-only",
+     "Py can browse, read and compare, but every action that would change "
+     "something is refused rather than asked about."),
+    (Autonomy.ASK_ALWAYS, "Ask before every action",
+     "Py asks before anything that writes, clicks or submits - not just "
+     "purchases and deletions."),
+    (Autonomy.STANDARD, "Standard (recommended)",
+     "Py asks before anything sensitive - purchases, deletions, sending "
+     "messages, signing in - and handles routine clicks and typing on its own."),
+)
+
+DEFAULT_AUTONOMY = Autonomy.STANDARD
+
+_AUTONOMY_IDS = {level for level, _label, _desc in AUTONOMY_LEVELS}
+
+
+def describe_autonomy(level: str) -> tuple[str, str]:
+    """(label, description) for a level, or Standard's if the id is unknown."""
+    for candidate, label, desc in AUTONOMY_LEVELS:
+        if candidate == level:
+            return label, desc
+    return AUTONOMY_LEVELS[2][1], AUTONOMY_LEVELS[2][2]
+
+
+# ---------------------------------------------------------------------------
 # Caching
 # ---------------------------------------------------------------------------
 
@@ -349,6 +403,18 @@ class ContextLimits:
     max_tool_calls: int = 40
     #: Model round-trips allowed in one task.
     max_turns: int = 25
+    #: The exact same (tool, arguments) pair, back to back, this many times
+    #: means the model is stuck repeating itself rather than making progress
+    #: - continuing would just repeat forever. See AgentSession._next_tool.
+    max_repeated_calls: int = 3
+    #: The same element reference failing this many times in a row - it has
+    #: probably left the page, or was never really there. See
+    #: AgentSession._note_ref_outcome.
+    max_consecutive_selector_failures: int = 3
+    #: Tabs the agent may open in one task. A runaway-tab guard distinct from
+    #: max_tool_calls: opening dozens of tabs is its own kind of stuck, worth
+    #: stopping on well before the tool-call budget runs out.
+    max_tabs_per_task: int = 8
     #: Characters of superseded page snapshots tolerated in the history before
     #: they are collapsed to one-line summaries. See AgentSession._prune().
     #: Deliberately large: every prune rewrites the cached conversation, so a
@@ -373,6 +439,9 @@ class AgentConfig:
     #: One of EFFORT_LEVELS. Pinned for the life of a session - changing it
     #: mid-conversation invalidates the message cache.
     effort: str = DEFAULT_EFFORT
+    #: One of AUTONOMY_LEVELS. Read by ToolRegistry.assess(), never by
+    #: AgentSession itself - the same separation-of-concerns as safety.py.
+    autonomy: str = DEFAULT_AUTONOMY
     #: Not a secret - which Anthropic workspace this request acts in. Only
     #: needed for an "identity-linked" API key, which the API refuses to run
     #: without one (400, anthropic-workspace-id required). Sent as the
@@ -440,6 +509,9 @@ class AgentConfig:
                 stored_effort = settings.get(KEY_AGENT_EFFORT, DEFAULT_EFFORT)
                 if stored_effort in _EFFORT_IDS:
                     config.effort = stored_effort
+                stored_autonomy = settings.get(KEY_AGENT_AUTONOMY, DEFAULT_AUTONOMY)
+                if stored_autonomy in _AUTONOMY_IDS:
+                    config.autonomy = stored_autonomy
                 config.workspace_id = (
                     settings.get(KEY_AGENT_WORKSPACE_ID, "") or "").strip()
             except Exception:  # noqa: BLE001 - preferences are never load-bearing
@@ -456,6 +528,9 @@ class AgentConfig:
         effort = (os.environ.get(ENV_EFFORT) or "").strip().lower()
         if effort in _EFFORT_IDS:
             config.effort = effort
+        autonomy = (os.environ.get(ENV_AUTONOMY) or "").strip().lower()
+        if autonomy in _AUTONOMY_IDS:
+            config.autonomy = autonomy
         workspace_id = (os.environ.get(ENV_WORKSPACE_ID) or "").strip()
         if workspace_id:
             config.workspace_id = workspace_id
@@ -470,6 +545,7 @@ class AgentConfig:
 ENV_PROVIDER = "PYBROWSER_AGENT_PROVIDER"
 ENV_MODEL = "PYBROWSER_AGENT_MODEL"
 ENV_EFFORT = "PYBROWSER_AGENT_EFFORT"
+ENV_AUTONOMY = "PYBROWSER_AGENT_AUTONOMY"
 ENV_CACHE = "PYBROWSER_AGENT_CACHE"
 #: Same name the Anthropic SDK itself reads for Workload Identity Federation,
 #: reused deliberately - one environment variable, one meaning, everywhere
@@ -482,4 +558,5 @@ ENV_WORKSPACE_ID = "ANTHROPIC_WORKSPACE_ID"
 KEY_AGENT_PROVIDER = "agent_provider"
 KEY_AGENT_MODEL = "agent_model"
 KEY_AGENT_EFFORT = "agent_effort"
+KEY_AGENT_AUTONOMY = "agent_autonomy"
 KEY_AGENT_WORKSPACE_ID = "agent_workspace_id"

@@ -207,6 +207,45 @@ tool it does not recognise.
 Denial is not a dead end: the model is told the user declined, and asked to
 explain what it was about to do rather than retry.
 
+**Autonomy tiers sit on top of this, never inside it.** `app/browser/
+safety.py`'s classifier stays a pure "how consequential is this?" judgement
+with no notion of user preference - `app.agent.config.Autonomy` is the
+policy layered on top, applied in `ToolRegistry._apply_autonomy` after the
+raw assessment (`_raw_assess`) is computed:
+
+| Tier | What changes |
+|---|---|
+| **Read-only** | Anything above NORMAL is refused outright - never offered for confirmation, because there is nothing to confirm into. |
+| **Ask before every action** | Anything above NORMAL asks, including ELEVATED writes (typing, clicking an ordinary button) that Standard lets through on its own. |
+| **Standard** (default) | Unchanged from before this existed - only SENSITIVE asks. |
+
+Configured in **Tools → Configure AI Agent…**, independent of provider or
+model, and persisted the same way (`SettingsStore`, `KEY_AGENT_AUTONOMY`) -
+never in the keyring, since it is a preference, not a secret. A read-only
+refusal reaches the model as a normal tool error (`READ_ONLY`), the same
+shape as any other refusal, so it can explain to the user rather than the
+task just going quiet.
+
+**Agent safety guards** (`AgentSession._next_tool` / `_note_ref_outcome`)
+stop a stuck task and say why, rather than grinding on until the turn/tool-
+call budget runs out:
+
+- **Loop guard** — the exact same `(tool, arguments)` pair, back to back,
+  `max_repeated_calls` times (default 3) stops the task. Checked before the
+  call even runs, so a loop of read-only calls is caught too, not only ones
+  that fail.
+- **Selector-failure guard** — the same element reference failing
+  `max_consecutive_selector_failures` times in a row (default 3) stops the
+  task; a ref that eventually succeeds resets its own count, so an element
+  that took a couple of tries is never held against a later, unrelated one.
+- **Tab cap** — `max_tabs_per_task` (default 8) refuses further
+  `browser_open_tab` calls with a normal tool error rather than ending the
+  task; a runaway-tab task is expected to keep working with what it has
+  open, not stop entirely.
+
+All three are `ContextLimits` fields, so a test (or a future settings UI)
+can tune them the same way `max_turns`/`max_tool_calls` already are.
+
 ---
 
 ## Untrusted content
