@@ -98,6 +98,18 @@ class ResultStoreTests(unittest.TestCase):
         self.assertEqual(got.result, "Nike Vapor 12 wins")
         self.assertTrue(got.has_result)
 
+    def test_a_table_shaped_result_keeps_its_line_breaks(self) -> None:
+        # collapse() (used for a finding, a single-line fact) would flatten
+        # every newline to a space - fine for a fact, fatal for a table the
+        # Mission Library needs to split back into rows.
+        table = "Contest | Deadline\n--- | ---\nA | Jan 1\nB | Feb 2"
+        self.store.set_result(self.mission.id, table)
+        self.assertEqual(self.store.get(self.mission.id).result, table)
+
+    def test_leading_and_trailing_blank_lines_are_trimmed(self) -> None:
+        self.store.set_result(self.mission.id, "\n\n  Nike wins  \n\n")
+        self.assertEqual(self.store.get(self.mission.id).result, "Nike wins")
+
     def test_no_result_means_has_result_is_false(self) -> None:
         self.assertFalse(self.store.get(self.mission.id).has_result)
 

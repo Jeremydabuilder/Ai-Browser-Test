@@ -412,9 +412,27 @@ _TEMPLATE = """<!doctype html>
     background: color-mix(in srgb, var(--accent) 12%, transparent);
     border-radius: 999px; padding: 3px 12px; margin: 0 0 18px;
   }
-  .result-block {
-    font-size: 15px; line-height: 1.5; white-space: pre-wrap;
+  .result-body {
     border-left: 3px solid var(--success); padding: 2px 0 2px 18px; margin: 4px 0 12px;
+  }
+  .result-body p {
+    margin: 0 0 10px; font-size: 15px; line-height: 1.5; white-space: pre-wrap;
+  }
+  .result-body p:last-child { margin-bottom: 0; }
+  .result-body ul.result-list { margin: 0 0 10px; padding-left: 18px; }
+  .result-body ul.result-list li { font-size: 14px; line-height: 1.5; padding: 1px 0; }
+  /* A comparison earns a real table, not three columns squeezed into prose -
+     see the writing-contests example this exists for. */
+  table.result-table {
+    border-collapse: collapse; width: 100%; margin: 0 0 14px; font-size: 13px;
+  }
+  table.result-table th, table.result-table td {
+    text-align: left; padding: 6px 10px; border-bottom: 1px solid var(--line);
+    vertical-align: top;
+  }
+  table.result-table th {
+    color: var(--disabled); font-size: 11px; font-weight: 600;
+    letter-spacing: .05em; text-transform: uppercase;
   }
   ul.follow-ups { padding-left: 12px; margin: 0 0 26px; }
   ul.follow-ups li { font-size: 13px; color: var(--muted); padding: 2px 0; }
@@ -582,6 +600,77 @@ _TEMPLATE = """<!doctype html>
     // page titles come from them, and this is a privileged page.
     if (text !== undefined) { node.textContent = text; }
     return node;
+  }
+
+  // A mission's result is free text the model wrote, so it is never
+  // interpreted as markup - only these three shapes are recognised, and
+  // every cell of every one is still written with textContent, the same
+  // rule as everything else on this page. Anything that does not look like
+  // a table or a bullet list is shown as a paragraph, unchanged.
+  function isTableBlock(lines) {
+    // Leading/trailing pipes are optional - a model asked for "a table with
+    // rows separated by |" will not always add them, and the header row is
+    // still unambiguous without them as long as a real separator follows.
+    if (lines.length < 2) { return false; }
+    if (lines[0].indexOf("|") < 0) { return false; }
+    return /^[\s:|-]+$/.test(lines[1]) &&
+          lines[1].indexOf("-") >= 0 && lines[1].indexOf("|") >= 0;
+  }
+
+  function splitTableRow(line) {
+    var trimmed = line.trim();
+    if (trimmed.charAt(0) === "|") { trimmed = trimmed.slice(1); }
+    if (trimmed.charAt(trimmed.length - 1) === "|") { trimmed = trimmed.slice(0, -1); }
+    return trimmed.split("|").map(function (cell) { return cell.trim(); });
+  }
+
+  function buildTable(lines) {
+    var table = el("table", "result-table");
+    var thead = el("thead");
+    var headRow = el("tr");
+    splitTableRow(lines[0]).forEach(function (cell) {
+      headRow.appendChild(el("th", null, cell));
+    });
+    thead.appendChild(headRow);
+    table.appendChild(thead);
+    var tbody = el("tbody");
+    for (var i = 2; i < lines.length; i++) {
+      var row = el("tr");
+      splitTableRow(lines[i]).forEach(function (cell) {
+        row.appendChild(el("td", null, cell));
+      });
+      tbody.appendChild(row);
+    }
+    table.appendChild(tbody);
+    return table;
+  }
+
+  function isListBlock(lines) {
+    return lines.length > 0 && lines.every(function (line) {
+      return /^\s*[-*•]\s+\S/.test(line);
+    });
+  }
+
+  function buildList(lines) {
+    var list = el("ul", "result-list");
+    lines.forEach(function (line) {
+      list.appendChild(el("li", null, line.replace(/^\s*[-*•]\s+/, "")));
+    });
+    return list;
+  }
+
+  function renderResultBody(text, container) {
+    (text || "").split(/\\n\s*\\n/).forEach(function (block) {
+      var lines = block.split("\\n").filter(function (line) { return line.trim() !== ""; });
+      if (!lines.length) { return; }
+      if (isTableBlock(lines)) {
+        container.appendChild(buildTable(lines));
+      } else if (isListBlock(lines)) {
+        container.appendChild(buildList(lines));
+      } else {
+        container.appendChild(el("p", null, block));
+      }
+    });
   }
 
   var search = document.getElementById("search");
@@ -810,7 +899,9 @@ _TEMPLATE = """<!doctype html>
 
     if (mission.result) {
       main.appendChild(el("h2", null, "RESULT"));
-      main.appendChild(el("div", "result-block", mission.result));
+      var resultBody = el("div", "result-body");
+      renderResultBody(mission.result, resultBody);
+      main.appendChild(resultBody);
       if (mission.followUps && mission.followUps.length) {
         var followUps = el("ul", "follow-ups");
         mission.followUps.forEach(function (item) {

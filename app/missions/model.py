@@ -941,3 +941,18 @@ def clean_finding(text: str) -> str:
     """Normalise a finding's whitespace. Does NOT shorten it - see the note on
     MAX_FINDING_CHARS. Length is the caller's to check and refuse."""
     return " ".join((text or "").split())
+
+
+def clean_result(text: str) -> str:
+    """Normalise a mission result's edges only - unlike collapse(), its
+    internal line breaks survive.
+
+    A result can be a comparison table or a bulleted list (see
+    missions_page.renderResultBody), and collapsing every whitespace run to
+    one space - the right rule for a single-line finding - would destroy the
+    very structure this exists to carry. Only the whole text's leading and
+    trailing whitespace is trimmed, plus any trailing whitespace left on an
+    individual line; nothing in between is touched.
+    """
+    stripped = (text or "").strip()
+    return "\n".join(line.rstrip() for line in stripped.splitlines())

@@ -590,6 +590,81 @@ class WorkspaceLayoutTests(unittest.TestCase):
         self.assertTrue(self.harness.js(
             tab, "!!document.querySelector('.workspace .side')"))
 
+
+class StructuredResultTests(unittest.TestCase):
+    """A mission's result renders as a table or a list where the text looks
+    like one, and as plain paragraphs otherwise - see renderResultBody() in
+    missions_page.py. Every cell still goes through textContent, the same
+    rule as everything else on this page."""
+
+    def setUp(self) -> None:
+        self.harness = _Window()
+        self.shoes, self.trip = self.harness.seed()
+        self.window = self.harness.window
+
+    def tearDown(self) -> None:
+        self.harness.close()
+
+    def _open_detail(self, mission_id: int):
+        self.window._open_mission(mission_id)
+        QTest.qWait(2200)
+        return self.window.tabs.current_tab()
+
+    def _set_result(self, mission_id: int, text: str) -> None:
+        self.harness.service.store.set_result(mission_id, text)
+
+    def test_a_markdown_table_renders_as_a_real_table(self) -> None:
+        self._set_result(
+            self.shoes.id,
+            "Contest | Deadline | Fee\n--- | --- | ---\nA | Jan 1 | $10\nB | Feb 2 | $20")
+        tab = self._open_detail(self.shoes.id)
+        self.assertTrue(self.harness.js(tab, "!!document.querySelector('table.result-table')"))
+        headers = self.harness.js(
+            tab, "Array.from(document.querySelectorAll('table.result-table th'))"
+                 ".map(function(e){return e.textContent;}).join('|')")
+        self.assertEqual(headers, "Contest|Deadline|Fee")
+        rows = self.harness.js(
+            tab, "Array.from(document.querySelectorAll('table.result-table td'))"
+                 ".map(function(e){return e.textContent;}).join('|')")
+        self.assertEqual(rows, "A|Jan 1|$10|B|Feb 2|$20")
+
+    def test_a_bullet_list_renders_as_a_real_list(self) -> None:
+        self._set_result(self.shoes.id, "- check price next week\n- watch for a restock")
+        tab = self._open_detail(self.shoes.id)
+        items = self.harness.js(
+            tab, "Array.from(document.querySelectorAll('.result-body ul.result-list li'))"
+                 ".map(function(e){return e.textContent;}).join('|')")
+        self.assertEqual(items, "check price next week|watch for a restock")
+
+    def test_plain_prose_renders_as_a_paragraph_not_a_table(self) -> None:
+        self._set_result(self.shoes.id, "Nike Vapor 12 is the best fit for a size 8.")
+        tab = self._open_detail(self.shoes.id)
+        self.assertFalse(self.harness.js(tab, "!!document.querySelector('table.result-table')"))
+        text = self.harness.js(tab, "(document.querySelector('.result-body p') || {}).textContent")
+        self.assertEqual(text, "Nike Vapor 12 is the best fit for a size 8.")
+
+    def test_a_hostile_result_cannot_inject_markup_through_a_table_cell(self) -> None:
+        self._set_result(
+            self.shoes.id,
+            "A | B\n--- | ---\n</script><img src=x onerror=alert(1)> | fine")
+        tab = self._open_detail(self.shoes.id)
+        self.assertEqual(
+            self.harness.js(tab, "document.querySelectorAll('.result-body img').length"), 0)
+        cell = self.harness.js(
+            tab, "document.querySelectorAll('table.result-table td')[0].textContent")
+        self.assertIn("onerror", cell)
+
+    def test_mixed_content_keeps_the_table_and_the_notes_separate(self) -> None:
+        self._set_result(
+            self.shoes.id,
+            "A | B\n--- | ---\nx | y\n\nSome closing notes.")
+        tab = self._open_detail(self.shoes.id)
+        self.assertTrue(self.harness.js(tab, "!!document.querySelector('table.result-table')"))
+        self.assertTrue(self.harness.js(
+            tab, "Array.from(document.querySelectorAll('.result-body p'))"
+                 ".some(function(p){return p.textContent === 'Some closing notes.';})"))
+
+
 class SummaryTests(unittest.TestCase):
     def test_counts_are_passed_in_for_the_list_view(self) -> None:
         # Missions are read without their contents there, so len() would

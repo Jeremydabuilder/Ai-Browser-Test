@@ -56,6 +56,7 @@ from app.missions.model import (
     clean_goal,
     clean_title,
     clean_finding,
+    clean_result,
     collapse,
     MAX_GHOST_RUN_EFFECT_CHARS,
     MAX_GHOST_RUN_EFFECTS,
@@ -265,7 +266,7 @@ class MissionStore:
         REFUSED, the same as a finding - see add_finding's note on why cutting
         a fact down is worse than an extra tool call.
         """
-        text = collapse(text)
+        text = clean_result(text)
         if len(text) > MAX_RESULT_CHARS:
             return False
         params: list = [text]

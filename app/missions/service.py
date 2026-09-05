@@ -37,7 +37,7 @@ from app.missions.model import (
     MissionChallenge,
     MissionDecision,
     TargetKind,
-    collapse,
+    clean_result,
     finding_ref,
     parse_finding_ref,
     MissionFinding,
@@ -690,7 +690,7 @@ class MissionService(QObject):
         mission = self._active
         if mission is None:
             return {"status": "no_mission"}
-        if len(collapse(text)) > MAX_RESULT_CHARS:
+        if len(clean_result(text)) > MAX_RESULT_CHARS:
             return {"status": "too_long", "limit": MAX_RESULT_CHARS}
         ok = self._store.set_result(mission.id, text, follow_ups)
         if not ok:

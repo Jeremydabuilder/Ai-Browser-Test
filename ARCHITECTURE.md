@@ -510,6 +510,24 @@ REFUSED rather than truncated (`MAX_RESULT_CHARS`), the same reasoning as
 `add_finding`. `follow_ups` are plain suggestions only - never anything that
 acts on its own - capped at `MAX_FOLLOW_UPS` items.
 
+`result` is normalised by `clean_result`, not `collapse` - the whitespace
+rule every other short field uses. A result can be a comparison table or a
+bulleted list (the system prompt gives the model the exact shape:
+`header | header` then `---|---` then one data row per line), and
+`collapse` folding every run of whitespace to one space would flatten a
+table's line breaks along with it, which is the entire structure the
+Mission Library's `renderResultBody` splits back apart. `clean_result`
+trims only the whole text's outer edges and each line's trailing
+whitespace; everything else survives untouched.
+
+`renderResultBody` (missions_page.py) turns that text into real DOM: a
+block whose first line contains `|` and whose second is a dash-and-pipe
+separator becomes a `<table>`; a block whose every line starts with `-`,
+`*` or `•` becomes a `<ul>`; anything else is a paragraph. Every cell is
+still written with `textContent`, the same rule as every other web-derived
+or model-authored string on this page - a result is free text the model
+wrote, so it is parsed for shape, never interpreted as markup.
+
 **`mission_actions`** is the persisted twin of `Step`: one row per finished
 tool call ("done" or "failed" only - a step's running/waiting states are the
 panel's own live UI and would just double up once the terminal state
