@@ -58,7 +58,7 @@ nss alsa-lib`.
 ## Tests
 
 ```bash
-python -m unittest discover -s tests -v          # 1174 tests
+python -m unittest discover -s tests -v          # 1187 tests
 python scripts/smoke_test.py                     # headless end-to-end run
 python scripts/feature_check.py                  # 28-point feature checklist
 python scripts/agent_demo.py                     # the research demo, offline

@@ -374,6 +374,72 @@ class RenderedPageTests(unittest.TestCase):
             _profile.set_new_tab_provider(lambda: collect(
                 _History(self.recent), _Bookmarks(self.marks), agent_available=True))
 
+    def test_onboarding_is_hidden_by_default(self) -> None:
+        self.assertTrue(self.js("document.getElementById('onboarding').hidden"))
+
+    def test_onboarding_shows_when_asked(self) -> None:
+        _profile.set_new_tab_provider(lambda: collect(
+            _History(self.recent), _Bookmarks(self.marks),
+            agent_available=True, show_onboarding=True))
+        try:
+            finished = []
+            self.tab.load_finished.connect(finished.append)
+            self.tab.reload()
+            self.assertTrue(pump(lambda: finished))
+            self.assertFalse(self.js("document.getElementById('onboarding').hidden"))
+        finally:
+            _profile.set_new_tab_provider(lambda: collect(
+                _History(self.recent), _Bookmarks(self.marks), agent_available=True))
+
+    def test_dismissing_onboarding_asks_the_browser_to_remember_it(self) -> None:
+        _profile.set_new_tab_provider(lambda: collect(
+            _History(self.recent), _Bookmarks(self.marks),
+            agent_available=True, show_onboarding=True))
+        try:
+            finished = []
+            self.tab.load_finished.connect(finished.append)
+            self.tab.reload()
+            self.assertTrue(pump(lambda: finished))
+            actions = []
+            self.tabs.internal_action.connect(lambda name, params: actions.append(name))
+            self.tab.run_javascript("document.getElementById('onboarding-close').click();")
+            self.assertTrue(pump(lambda: actions, 6000))
+            self.assertEqual(actions[0], "dismiss-onboarding")
+        finally:
+            _profile.set_new_tab_provider(lambda: collect(
+                _History(self.recent), _Bookmarks(self.marks), agent_available=True))
+
+    def test_trying_the_demo_asks_the_browser_to_start_one(self) -> None:
+        _profile.set_new_tab_provider(lambda: collect(
+            _History(self.recent), _Bookmarks(self.marks),
+            agent_available=True, show_onboarding=True))
+        try:
+            finished = []
+            self.tab.load_finished.connect(finished.append)
+            self.tab.reload()
+            self.assertTrue(pump(lambda: finished))
+            actions = []
+            self.tabs.internal_action.connect(lambda name, params: actions.append(name))
+            self.tab.run_javascript("document.getElementById('onboarding-demo').click();")
+            self.assertTrue(pump(lambda: actions, 6000))
+            self.assertEqual(actions[0], "demo-mission")
+        finally:
+            _profile.set_new_tab_provider(lambda: collect(
+                _History(self.recent), _Bookmarks(self.marks), agent_available=True))
+
+
+class OnboardingDataTests(unittest.TestCase):
+    def test_the_flag_round_trips_through_json(self) -> None:
+        data = NewTabData(show_onboarding=True)
+        self.assertTrue(json.loads(data.to_json())["showOnboarding"])
+
+    def test_it_defaults_to_false(self) -> None:
+        self.assertFalse(NewTabData().show_onboarding)
+
+    def test_collect_carries_the_flag_through(self) -> None:
+        data = collect(show_onboarding=True)
+        self.assertTrue(data.show_onboarding)
+
 
 if __name__ == "__main__":
     unittest.main()

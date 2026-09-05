@@ -1582,5 +1582,60 @@ class MissionCardTests(unittest.TestCase):
         self.assertEqual(self.tabs.count(), before + 1)
 
 
+class OnboardingTests(unittest.TestCase):
+    """The first-launch explainer on the new-tab page: when it shows, and
+    that dismissing it (or starting a first Mission) makes it stop."""
+
+    def setUp(self) -> None:
+        from app.ui.main_window import MainWindow
+
+        self.db, _ = _database()
+        self.window = MainWindow(_profile, self.db, ["about:blank"])
+
+    def tearDown(self) -> None:
+        if self.window is not None:
+            self.window.close()
+            self.window.deleteLater()
+            QTest.qWait(10)
+        self.db.close()
+
+    def test_it_shows_before_anything_has_happened(self) -> None:
+        self.assertTrue(self.window._show_onboarding())
+
+    def test_starting_a_mission_turns_it_off(self) -> None:
+        self.window.missions.start("find shoes")
+        self.assertFalse(self.window._show_onboarding())
+
+    def test_dismissing_it_turns_it_off_even_with_no_mission(self) -> None:
+        self.window._on_internal_action("dismiss-onboarding", {})
+        self.assertFalse(self.window._show_onboarding())
+
+    def test_it_stays_off_across_a_restart(self) -> None:
+        self.window._on_internal_action("dismiss-onboarding", {})
+        self.window.close()
+        self.window.deleteLater()
+        QTest.qWait(10)
+        from app.ui.main_window import MainWindow
+
+        reopened = MainWindow(_profile, self.db, ["about:blank"])
+        try:
+            self.assertFalse(reopened._show_onboarding())
+        finally:
+            reopened.close()
+            reopened.deleteLater()
+            QTest.qWait(10)
+            self.window = None  # tearDown must not touch the closed window again
+
+    def test_the_new_tab_data_carries_the_flag(self) -> None:
+        self.assertTrue(self.window._new_tab_data().show_onboarding)
+        self.window.missions.start("find shoes")
+        self.assertFalse(self.window._new_tab_data().show_onboarding)
+
+    def test_trying_the_demo_dismisses_it_and_opens_the_panel(self) -> None:
+        self.window._on_internal_action("demo-mission", {})
+        self.assertFalse(self.window._show_onboarding())
+        self.assertIsNotNone(self.window._side_panel)
+
+
 if __name__ == "__main__":
     unittest.main()

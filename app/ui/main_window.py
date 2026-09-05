@@ -300,7 +300,23 @@ class MainWindow(QMainWindow):
         from app.browser.newtab import collect
 
         return collect(self.history, self.bookmarks, self.missions,
-                       agent_available=self._agent_configured())
+                       agent_available=self._agent_configured(),
+                       show_onboarding=self._show_onboarding())
+
+    def _show_onboarding(self) -> bool:
+        """Whether the first-launch explainer belongs on this new tab.
+
+        Shown until the user either dismisses it or starts their first
+        Mission - whichever comes first. Not a dedicated "have we ever
+        launched before" flag: a mission already started is itself proof the
+        user does not need the explainer, dismissed or not.
+        """
+        try:
+            if self.settings.get_bool("onboarding_dismissed", False):
+                return False
+            return self.missions.store.count() == 0
+        except Exception:  # noqa: BLE001 - a new tab must appear regardless
+            return False
 
     def _agent_configured(self) -> bool:
         """Whether the AI entry point should promise anything.
@@ -351,6 +367,13 @@ class MainWindow(QMainWindow):
                     self._open_mission(int(mission_id))
                 except (TypeError, ValueError):
                     pass
+        elif name == "dismiss-onboarding":
+            self.settings.set_bool("onboarding_dismissed", True)
+        elif name == "demo-mission":
+            self.settings.set_bool("onboarding_dismissed", True)
+            self._open_agent_with(
+                "Compare a few noise-cancelling headphones under $150 and "
+                "recommend one.")
 
     # ------------------------------------------------------------------
     # The Mission Library

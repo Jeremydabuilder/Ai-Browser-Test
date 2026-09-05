@@ -84,6 +84,10 @@ class NewTabData:
     #: {"id", "title", "status", "progress"}.
     recent_missions: list[dict[str, object]] = field(default_factory=list)
     agent_available: bool = False
+    #: Show the first-launch explainer card. True only before the user has
+    #: started a first Mission and before they have dismissed it - see
+    #: main_window._new_tab_data. Never shown again once either happens.
+    show_onboarding: bool = False
 
     def to_json(self) -> str:
         payload = json.dumps({
@@ -91,6 +95,7 @@ class NewTabData:
             "bookmarks": self.bookmarks,
             "recentMissions": self.recent_missions,
             "agentAvailable": self.agent_available,
+            "showOnboarding": self.show_onboarding,
         }, ensure_ascii=False)
         # A page title containing "</script>" would otherwise end the block and
         # let arbitrary markup follow. Escaping "<" makes that impossible while
@@ -99,7 +104,8 @@ class NewTabData:
 
 
 def collect(history=None, bookmarks=None, missions=None, *,
-            agent_available: bool = False, limit: int = 8) -> NewTabData:
+            agent_available: bool = False, limit: int = 8,
+            show_onboarding: bool = False) -> NewTabData:
     """Gather the page's content from the stores, tolerating failure.
 
     A new tab must open even if the database is locked, missing or broken, so
@@ -107,7 +113,7 @@ def collect(history=None, bookmarks=None, missions=None, *,
     failing to appear. ``missions`` is a MissionService (or anything with the
     same ``.recent(limit)``); read-only, the same as history and bookmarks.
     """
-    data = NewTabData(agent_available=agent_available)
+    data = NewTabData(agent_available=agent_available, show_onboarding=show_onboarding)
     try:
         if history is not None:
             seen: set[str] = set()
@@ -519,6 +525,47 @@ _TEMPLATE = """<!doctype html>
   .empty {
     color: var(--disabled); font-size: 13px; padding: 7px 0;
   }
+  /* The first-launch explainer - shown once, never fought for attention with
+     illustrations or a multi-step tour. Sits above the mascot because it is
+     the very first thing a new user should read, then never appears again. */
+  .onboarding {
+    position: relative;
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow);
+    padding: 20px 22px;
+    margin-bottom: 28px;
+  }
+  .onboarding h2 {
+    margin: 0 0 10px; font-size: 15px; font-weight: 600; letter-spacing: normal;
+    text-transform: none; color: var(--text);
+  }
+  .onboarding ul {
+    margin: 0 0 16px; display: flex; flex-direction: column; gap: 6px;
+  }
+  .onboarding li {
+    font-size: 13px; color: var(--muted); padding: 0; line-height: 1.4;
+  }
+  .onboarding .row { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+  .onboarding .try {
+    height: 34px; padding: 0 16px; border-radius: 8px; cursor: pointer;
+    font: inherit; font-size: 13px; font-weight: 600;
+    background: var(--accent); color: #fff; border: 1px solid var(--accent);
+  }
+  .onboarding .try:hover { opacity: .92; }
+  .onboarding .later {
+    background: none; border: none; cursor: pointer; font: inherit;
+    font-size: 13px; color: var(--muted); text-decoration: underline;
+    padding: 0;
+  }
+  .onboarding .close {
+    position: absolute; top: 12px; right: 12px;
+    width: 24px; height: 24px; border-radius: 50%; border: none;
+    background: none; color: var(--disabled); cursor: pointer;
+    font-size: 15px; line-height: 1;
+  }
+  .onboarding .close:hover { background: var(--surface-alt); color: var(--text); }
   footer {
     margin-top: 32px; text-align: center;
     font-size: 12px; color: var(--disabled);
@@ -530,6 +577,21 @@ _TEMPLATE = """<!doctype html>
 </head>
 <body>
 <main>
+  <div class="onboarding" id="onboarding" hidden>
+    <button class="close" id="onboarding-close" type="button" aria-label="Dismiss">✕</button>
+    <h2>This isn’t Chrome with an AI bolted on.</h2>
+    <ul>
+      <li>Give Py a goal, and it searches, compares, and reads pages for you.</li>
+      <li>Watch what it finds and does, in plain activity you can follow.</li>
+      <li>Py checks with you before anything real - buying, sending, signing in.</li>
+      <li>Leave anytime. Py keeps its progress and picks up where you left off.</li>
+    </ul>
+    <div class="row">
+      <button class="try" id="onboarding-demo" type="button">Try a demo mission</button>
+      <button class="later" id="onboarding-later" type="button">Maybe later</button>
+    </div>
+  </div>
+
   <div class="brand">
     <!-- The token below is swapped for Py's artwork at render time. Do not
          mention it by name anywhere else in this file: the substitution is a
@@ -685,6 +747,20 @@ _TEMPLATE = """<!doctype html>
   fill("recent", data.recent, "Pages you visit will show up here.");
   fill("bookmarks", data.bookmarks, "Press Ctrl+D on a page to bookmark it.");
   fillMissions(data.recentMissions || []);
+
+  if (data.showOnboarding) {
+    var onboarding = document.getElementById("onboarding");
+    onboarding.hidden = false;
+    document.getElementById("onboarding-close").addEventListener("click", function () {
+      act("dismiss-onboarding", {});
+    });
+    document.getElementById("onboarding-later").addEventListener("click", function () {
+      act("dismiss-onboarding", {});
+    });
+    document.getElementById("onboarding-demo").addEventListener("click", function () {
+      act("demo-mission", {});
+    });
+  }
 
   if (!data.agentAvailable) {
     document.getElementById("ai-sub").textContent =

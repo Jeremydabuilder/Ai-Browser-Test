@@ -525,6 +525,23 @@ Neither `mission_set_progress` nor `mission_save_result` reaches the browser
 controller - the same structural guarantee as every other Mission write tool:
 recording an outcome is not carrying one out.
 
+### First-launch onboarding
+
+A one-time explainer card on the new-tab page (`app/browser/newtab.py`),
+shown by `NewTabData.show_onboarding` and decided by
+`MainWindow._show_onboarding()`: on before the user has started a first
+Mission *and* before they have dismissed it, off the moment either happens.
+There is no separate "have we ever launched before" flag - a Mission already
+existing is itself proof the explainer is not needed, whether or not it was
+ever explicitly dismissed.
+
+Deliberately not a multi-step tour: four lines stating what the product is
+and is not, a "Try a demo mission" button that writes a canned goal into the
+agent panel's input box for the user to send (or change) rather than sending
+it on their behalf, and a dismiss that persists via the existing
+`SettingsStore` (`onboarding_dismissed`) - no new storage mechanism, the same
+one workspace IDs and provider credentials already use.
+
 ### Routines (Teach Py)
 
 A Routine is a taught sequence of the agent's own tool calls, saved while
