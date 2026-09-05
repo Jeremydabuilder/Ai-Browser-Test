@@ -28,6 +28,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.browser.downloads import DownloadItem, DownloadManager
+from app.ui.theme import METRICS
 
 
 class _Row(QWidget):
@@ -39,9 +40,10 @@ class _Row(QWidget):
         self._item = item
         self._manager = manager
 
+        m = METRICS
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(10, 8, 10, 8)
-        layout.setSpacing(10)
+        layout.setContentsMargins(m.space_3, m.space_2, m.space_3, m.space_2)
+        layout.setSpacing(m.space_2)
 
         text = QVBoxLayout()
         text.setSpacing(2)

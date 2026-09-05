@@ -10,7 +10,7 @@ control the user cannot find is not a cost control.
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, QThread, Signal
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -23,6 +23,28 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+
+
+class _BackgroundCall(QThread):
+    """Runs one blocking call (a provider's `list_models`/`test_connection` -
+    real network requests, several seconds each) off the GUI thread.
+
+    A one-shot QThread rather than the persistent worker AgentSession uses:
+    this dialog makes at most one such call at a time and each is unrelated
+    to the last, so there is nothing to keep running between them. `result`
+    is only read after `finished` fires, which - like AgentSession's worker
+    signals - Qt delivers on the GUI thread only once `run()` has actually
+    returned, so there is no race with the thread that produced it.
+    """
+
+    def __init__(self, fn, *args, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._fn = fn
+        self._args = args
+        self.result = None
+
+    def run(self) -> None:
+        self.result = self._fn(*self._args)
 
 
 class ApiKeyDialog(QDialog):
@@ -45,6 +67,11 @@ class ApiKeyDialog(QDialog):
 
         self._store = ApiKeyStore()
         self._settings = settings
+        #: The in-flight background call, if any - kept alive here so it is
+        #: not garbage-collected mid-run, and so a second refresh can tell a
+        #: reply meant for it apart from one meant for a call it superseded.
+        self._other_worker: _BackgroundCall | None = None
+        self._other_refresh_token = 0
 
         self.setWindowTitle("Configure AI Agent")
         self.resize(640, 680)
@@ -234,21 +261,39 @@ class ApiKeyDialog(QDialog):
         model_row = QWidget(box)
         model_layout = QVBoxLayout(model_row)
         model_layout.setContentsMargins(0, 0, 0, 0)
-        refresh = QPushButton("Refresh model list", model_row)
-        refresh.clicked.connect(self._refresh_other_models)
-        model_layout.addWidget(refresh)
+        self._other_refresh_button = QPushButton("Refresh model list", model_row)
+        self._other_refresh_button.clicked.connect(self._refresh_other_models)
+        model_layout.addWidget(self._other_refresh_button)
         save_model = QPushButton("Save model", model_row)
         save_model.clicked.connect(self._save_other_model)
         model_layout.addWidget(save_model)
-        test = QPushButton("Test Connection", model_row)
-        test.clicked.connect(self._test_other_connection)
-        model_layout.addWidget(test)
+        self._other_test_button = QPushButton("Test Connection", model_row)
+        self._other_test_button.clicked.connect(self._test_other_connection)
+        model_layout.addWidget(self._other_test_button)
         layout.addWidget(model_row)
 
         self._other_result = QLabel("", box)
         self._other_result.setWordWrap(True)
         layout.addWidget(self._other_result)
         return box
+
+    def closeEvent(self, event) -> None:
+        """Never destroy this dialog out from under a QThread it started.
+
+        A running QThread whose Python/C++ wrapper is deleted while it is
+        still executing crashes the process - the exact failure mode moving
+        list_models/test_connection off the GUI thread must not introduce.
+        The wait is bounded rather than open-ended: closing mid-fetch may
+        block briefly, which is a small and rare cost next to freezing the
+        whole app for up to 20 seconds on every such call, which is what this
+        dialog did before.
+        """
+        worker = self._other_worker
+        if worker is not None and worker.isRunning():
+            if not worker.wait(3000):
+                worker.terminate()
+                worker.wait()
+        super().closeEvent(event)
 
     def _current_other_provider(self) -> str:
         return self.provider_box.currentData()
@@ -371,19 +416,27 @@ class ApiKeyDialog(QDialog):
 
         key = credential.secret or ""
         if key:
-            models = client_class.list_models(key)
-            if models:
-                self._populate_model_combo(provider_id, models, remembered)
-            else:
-                # A silent fallback here would look identical to "the seed
-                # list is what's actually live" - which it is not, and the
-                # seed can go stale. Say so, since Test Connection is the
-                # only way left to know if the selected model is real.
-                self._other_result.setText(
-                    f"Could not load {client_class.label}'s current model list - "
-                    "showing the offline seed list instead. Use “Refresh model "
-                    "list” to try again, or Test Connection to check the "
-                    "selected model directly.")
+            self._other_result.setText(f"Loading {client_class.label}'s model list…")
+            self._run_other_call(
+                client_class.list_models, (key,),
+                lambda models: self._on_other_models_loaded(
+                    provider_id, client_class, remembered, models))
+
+    def _on_other_models_loaded(self, provider_id: str, client_class, remembered: str,
+                                models: list) -> None:
+        if models:
+            self._populate_model_combo(provider_id, models, remembered)
+            self._other_result.setText("")
+        else:
+            # A silent fallback here would look identical to "the seed
+            # list is what's actually live" - which it is not, and the
+            # seed can go stale. Say so, since Test Connection is the
+            # only way left to know if the selected model is real.
+            self._other_result.setText(
+                f"Could not load {client_class.label}'s current model list - "
+                "showing the offline seed list instead. Use “Refresh model "
+                "list” to try again, or Test Connection to check the "
+                "selected model directly.")
 
     def _refresh_other_models(self) -> None:
         provider_id = self._current_other_provider()
@@ -394,15 +447,48 @@ class ApiKeyDialog(QDialog):
                                 "Enter (or save) an API key first, then refresh.")
             return
         current = self._selected_other_model()
-        models = client_class.list_models(key)
-        if not models:
-            QMessageBox.warning(
-                self, "Configure AI Agent",
-                f"Could not load {client_class.label}'s model list. Check the key "
-                "and your network connection. The seed list and manual entry "
-                "still work as a fallback.")
-            return
-        self._populate_model_combo(provider_id, models, current)
+        self._other_refresh_button.setEnabled(False)
+        self._other_result.setText(f"Loading {client_class.label}'s model list…")
+
+        def done(models: list) -> None:
+            self._other_refresh_button.setEnabled(True)
+            if not models:
+                self._other_result.setText("")
+                QMessageBox.warning(
+                    self, "Configure AI Agent",
+                    f"Could not load {client_class.label}'s model list. Check the key "
+                    "and your network connection. The seed list and manual entry "
+                    "still work as a fallback.")
+                return
+            self._populate_model_combo(provider_id, models, current)
+            self._other_result.setText("")
+
+        self._run_other_call(client_class.list_models, (key,), done)
+
+    def _run_other_call(self, fn, args: tuple, on_done) -> None:
+        """Run one provider call off the GUI thread; deliver its result to
+        ``on_done`` on the GUI thread once it returns.
+
+        A token guards against a stale reply: if the provider is switched (or
+        another call started) before this one finishes, its result is simply
+        dropped rather than overwriting a section that has moved on.
+        """
+        self._other_refresh_token += 1
+        token = self._other_refresh_token
+        worker = _BackgroundCall(fn, *args, parent=self)
+
+        def finished() -> None:
+            result = worker.result
+            worker.deleteLater()
+            if self._other_worker is worker:
+                self._other_worker = None
+            if token != self._other_refresh_token:
+                return  # superseded - a newer call's result is what matters now
+            on_done(result)
+
+        worker.finished.connect(finished)
+        self._other_worker = worker
+        worker.start()
 
     def _toggle_other_custom_model(self, checked: bool) -> None:
         self._other_model_box.setEnabled(not checked)
@@ -537,8 +623,14 @@ class ApiKeyDialog(QDialog):
             self._show_other_result(False, f"This model {client_class.DENYLIST_REASON}.")
             return
         self._other_result.setText("Testing…")
-        ok, message = client_class.test_connection(key, model)
-        self._show_other_result(ok, message)
+        self._other_test_button.setEnabled(False)
+
+        def done(outcome: tuple) -> None:
+            self._other_test_button.setEnabled(True)
+            ok, message = outcome
+            self._show_other_result(ok, message)
+
+        self._run_other_call(client_class.test_connection, (key, model), done)
 
     def _show_other_result(self, ok: bool, message: str) -> None:
         prefix = "✓ " if ok else "✗ "

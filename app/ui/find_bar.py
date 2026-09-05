@@ -27,10 +27,13 @@ class FindBar(QFrame):
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
+        from app.ui.theme import METRICS
+
+        m = METRICS
         self.setFrameShape(QFrame.Shape.StyledPanel)
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(8, 4, 8, 4)
-        layout.setSpacing(6)
+        layout.setContentsMargins(m.space_2, m.space_1, m.space_2, m.space_1)
+        layout.setSpacing(m.space_2)
 
         self.field = QLineEdit(self)
         self.field.setPlaceholderText("Find in page")

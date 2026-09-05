@@ -785,6 +785,13 @@ class ModelSelectionTests(unittest.TestCase):
     def _switch_to(self, dialog, provider_id: str):
         index = dialog.provider_box.findData(provider_id)
         dialog.provider_box.setCurrentIndex(index)
+        self._wait_for_call(dialog)
+
+    def _wait_for_call(self, dialog) -> None:
+        """list_models/test_connection run on a background QThread now, so a
+        test that triggers one must pump the event loop until it delivers
+        its result rather than asserting immediately after."""
+        pump(lambda: dialog._other_worker is None)
 
     def test_switching_to_groq_populates_the_dropdown_from_the_seed_list(self):
         dialog = self._dialog()
@@ -946,6 +953,7 @@ class ModelSelectionTests(unittest.TestCase):
         with mock.patch.object(GroqClient, "test_connection",
                                return_value=(True, "ok")) as tc:
             dialog._test_other_connection()
+            self._wait_for_call(dialog)
             self.assertTrue(tc.called)
             self.assertEqual(tc.call_args[0][1], "a-brand-new-model-not-in-any-list")
 
@@ -959,8 +967,108 @@ class ModelSelectionTests(unittest.TestCase):
                 GroqClient, "test_connection",
                 return_value=(False, TOOL_UNSUPPORTED_MESSAGE)):
             dialog._test_other_connection()
+            self._wait_for_call(dialog)
         self.assertIn("custom tools PyBrowser requires", dialog._other_result.text())
         self.assertNotIn("400", dialog._other_result.text())
+
+
+class BackgroundCallTests(unittest.TestCase):
+    """list_models/test_connection are real network requests with multi-second
+    timeouts (see openai_compatible.py) - they must never block the GUI
+    thread, which every Claude request in this codebase already avoids via
+    AgentSession's own worker thread."""
+
+    def setUp(self):
+        from PySide6.QtWidgets import QMessageBox
+
+        self._info = mock.patch.object(QMessageBox, "information", lambda *a, **k: None)
+        self._warn = mock.patch.object(QMessageBox, "warning", lambda *a, **k: None)
+        self._info.start()
+        self._warn.start()
+        self.settings = _FakeSettings({})
+
+    def tearDown(self):
+        self._info.stop()
+        self._warn.stop()
+
+    def _dialog(self):
+        from app.ui.agent_setup import ApiKeyDialog
+
+        dialog = ApiKeyDialog(None, self.settings)
+        self.addCleanup(dialog.deleteLater)
+        return dialog
+
+    def test_test_connection_does_not_block_the_event_loop(self):
+        """A slow call must let the event loop keep pumping while it runs -
+        proof it is not just synchronous code wrapped in a thread that is
+        then immediately waited on."""
+        import threading
+        import time
+
+        release = threading.Event()
+        ticked = []
+
+        def slow_call(_key, _model):
+            release.wait(timeout=5)
+            return (True, "ok")
+
+        dialog = self._dialog()
+        index = dialog.provider_box.findData("groq")
+        dialog.provider_box.setCurrentIndex(index)
+        pump(lambda: dialog._other_worker is None)
+
+        timer = QTimer()
+        timer.timeout.connect(lambda: ticked.append(True))
+        timer.start(5)
+        try:
+            with mock.patch.object(GroqClient, "test_connection", side_effect=slow_call):
+                dialog._other_field.setText("gsk_x")
+                dialog._test_other_connection()
+                # The event loop must tick several times *while the call is
+                # still in flight* - if it were blocking, nothing would run
+                # between calling this and the call returning.
+                start = len(ticked)
+                for _ in range(20):
+                    _app.processEvents()
+                    time.sleep(0.01)
+                self.assertGreater(len(ticked), start,
+                                   "the GUI thread was blocked during the call")
+                self.assertTrue(dialog._other_worker is not None
+                                and dialog._other_worker.isRunning(),
+                                "the call finished suspiciously fast for a 5s wait")
+        finally:
+            release.set()
+            timer.stop()
+        pump(lambda: dialog._other_worker is None)
+        self.assertIn("ok", dialog._other_result.text())
+
+    def test_closing_the_dialog_mid_fetch_does_not_crash(self):
+        import threading
+
+        release = threading.Event()
+
+        def slow_call(_key):
+            release.wait(timeout=5)
+            return []
+
+        dialog = self._dialog()
+        index = dialog.provider_box.findData("groq")
+        with mock.patch.object(GroqClient, "list_models", side_effect=slow_call):
+            with mock.patch.object(
+                    creds, "resolve_for",
+                    return_value=creds.Credential(
+                        creds.Mode.ENV_KEY, "Groq", secret="gsk_x", provider="groq")):
+                dialog.provider_box.setCurrentIndex(index)
+                self.assertIsNotNone(dialog._other_worker)
+                release.set()
+                # closeEvent must wait for the worker rather than tearing
+                # down the dialog (and the QThread with it) out from under
+                # a still-running call.
+                dialog.close()
+        # The worker's own `finished` signal is queued across threads and
+        # only delivered once the event loop runs - closeEvent's wait() just
+        # guarantees the OS thread itself has actually stopped by this point.
+        pump(lambda: dialog._other_worker is None)
 
 
 if __name__ == "__main__":

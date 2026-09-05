@@ -555,6 +555,22 @@ resends the user's exact last words; the other two send a plain follow-up
 message through the ordinary `send()` path, so recovery is not a separate
 code path from an ordinary turn - just a pre-written one.
 
+### Production-readiness audit (provider setup dialog)
+
+A background audit surfaced one real GUI-thread freeze: "Configure AI
+Agent"'s Groq/OpenRouter section called `list_models()`/`test_connection()`
+- real `httpx` requests with multi-second timeouts - directly on the GUI
+thread, unlike every Claude request, which is deliberately routed through
+`AgentSession`'s own `QThread` worker for exactly this reason. Fixed with
+`_BackgroundCall`, a one-shot `QThread` used the same way: `_refresh_other_section`
+(the automatic fetch on provider switch), `_refresh_other_models` (the
+"Refresh model list" button) and `_test_other_connection` ("Test Connection")
+all now run off the GUI thread, each guarded by a token so a stale reply from
+a superseded call is dropped rather than overwriting a section the user has
+since moved on from. `ApiKeyDialog.closeEvent` waits (bounded, 3s) for any
+in-flight call before allowing the dialog to be destroyed - a QThread whose
+Qt wrapper is deleted while still running is a crash, not a leak.
+
 ### Routines (Teach Py)
 
 A Routine is a taught sequence of the agent's own tool calls, saved while

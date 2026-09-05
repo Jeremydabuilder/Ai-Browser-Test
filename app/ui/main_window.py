@@ -1223,10 +1223,13 @@ class NoticeBar(QFrame):
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
+        from app.ui import theme
+
+        m = theme.METRICS
         self._action = None
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(10, 5, 6, 5)
-        layout.setSpacing(8)
+        layout.setContentsMargins(m.space_3, m.space_1, m.space_3, m.space_1)
+        layout.setSpacing(m.space_2)
 
         self._label = QLabel("", self)
         self._label.setWordWrap(True)
