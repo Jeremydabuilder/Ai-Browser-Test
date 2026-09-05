@@ -96,6 +96,15 @@ class _Window:
             QTest.qWait(50)
         return out[0] if out else ""
 
+    def js(self, tab, script: str, timeout_ms: int = 4000):
+        out: list = []
+        tab.run_javascript(script, out.append)
+        for _ in range(timeout_ms // 50):
+            if out:
+                break
+            QTest.qWait(50)
+        return out[0] if out else None
+
     def close(self) -> None:
         self.window.close()
         self.window.deleteLater()
@@ -429,6 +438,7 @@ class LibraryInTheBrowserTests(unittest.TestCase):
         self.assertIn("Tennis Shoes", text)
         self.assertNotIn("Trip to Japan", text)
 
+
     def test_an_action_url_never_renders_as_a_page(self) -> None:
         # Deliberately an action the window does not implement: a real one
         # would do its job, and `delete` would sit on a modal confirmation
@@ -497,6 +507,63 @@ class LibraryInTheBrowserTests(unittest.TestCase):
         self.assertEqual(tab.url().toString(), "about:blank")
         self.assertEqual(self.service.store.count(), 2)     # nothing recorded
 
+
+
+class WorkspaceLayoutTests(unittest.TestCase):
+    """The detail page's two-column workspace: substance on the left,
+    everything about how it got there on the right - see missions_page.py's
+    renderDetail()."""
+
+    def setUp(self) -> None:
+        self.harness = _Window()
+        self.shoes, self.trip = self.harness.seed()
+        self.window = self.harness.window
+
+    def tearDown(self) -> None:
+        self.harness.close()
+
+    def _open_detail(self, mission_id: int):
+        self.window._open_mission(mission_id)
+        QTest.qWait(2200)
+        return self.window.tabs.current_tab()
+
+    def test_the_list_view_is_not_widened(self) -> None:
+        self.window._show_mission_library()
+        QTest.qWait(2200)
+        tab = self.window.tabs.current_tab()
+        self.assertFalse(self.harness.js(
+            tab, "document.querySelector('main').classList.contains('wide')"))
+
+    def test_the_detail_view_is_widened(self) -> None:
+        tab = self._open_detail(self.shoes.id)
+        self.assertTrue(self.harness.js(
+            tab, "document.querySelector('main').classList.contains('wide')"))
+
+    def test_findings_land_in_the_main_column(self) -> None:
+        tab = self._open_detail(self.shoes.id)
+        text = self.harness.js(
+            tab, "(document.querySelector('.main-col') || {}).textContent || ''")
+        self.assertIn("lateral support", text)
+
+    def test_pages_land_in_the_side_column(self) -> None:
+        # A finding cites its source domain inline in the main column too -
+        # what belongs to the side specifically is the PAGES list itself,
+        # the clickable link to reopen the page.
+        tab = self._open_detail(self.shoes.id)
+        self.assertTrue(self.harness.js(
+            tab, "!!document.querySelector(\".side a[href*='tennis-warehouse']\")"))
+        self.assertFalse(self.harness.js(
+            tab, "!!document.querySelector(\".main-col a[href*='tennis-warehouse']\")"))
+
+    def test_a_mission_with_no_extra_columns_still_has_the_workspace_grid(self) -> None:
+        # The trip mission has neither findings beyond zero nor pages beyond
+        # zero - the grid itself must not depend on there being anything to
+        # put in either side.
+        tab = self._open_detail(self.trip.id)
+        self.assertTrue(self.harness.js(
+            tab, "!!document.querySelector('.workspace .main-col')"))
+        self.assertTrue(self.harness.js(
+            tab, "!!document.querySelector('.workspace .side')"))
 
 class SummaryTests(unittest.TestCase):
     def test_counts_are_passed_in_for_the_list_view(self) -> None:

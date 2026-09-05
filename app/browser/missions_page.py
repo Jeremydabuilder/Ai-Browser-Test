@@ -345,6 +345,21 @@ _TEMPLATE = """<!doctype html>
     -webkit-font-smoothing: antialiased;
   }
   main { max-width: 760px; margin: 0 auto; padding: 40px 24px 80px; }
+  /* One Mission's detail view is a workspace, not a document: its own
+     findings and decision on the left, everything about how it got there
+     on the right - so it earns the extra width a single reading column
+     does not need. Collapses to one column below the breakpoint rather
+     than squeezing a sidebar onto a narrow window. */
+  main.wide { max-width: 1040px; }
+  .workspace {
+    display: grid; grid-template-columns: minmax(0, 1fr) 300px;
+    gap: 8px 40px; align-items: start; margin-top: 8px;
+  }
+  .side h2:first-child { margin-top: 0; }
+  @media (max-width: 860px) {
+    .workspace { grid-template-columns: 1fr; }
+    .side { margin-top: 12px; }
+  }
   header { display: flex; align-items: baseline; gap: 16px; margin-bottom: 20px; }
   h1 { font-size: 22px; margin: 0; letter-spacing: -.01em; }
   .count { color: var(--muted); font-size: 13px; }
@@ -656,7 +671,7 @@ _TEMPLATE = """<!doctype html>
     body.appendChild(row);
   }
 
-  function renderDecision(mission) {
+  function renderDecision(mission, target) {
     // Nothing at all when there is none. A mission still being worked on
     // should look like one, not like a form with an empty field.
     var decision = mission.decision;
@@ -725,14 +740,16 @@ _TEMPLATE = """<!doctype html>
     });
     acts.appendChild(challenge);
     box.appendChild(acts);
-    body.appendChild(box);
+    target.appendChild(box);
 
     var verdict = challengeBlock(decision.challenge);
-    if (verdict) { body.appendChild(verdict); }
+    if (verdict) { target.appendChild(verdict); }
   }
 
   function renderDetail(mission) {
-    var back = el("button", "back", "\\u2190 All missions");
+    document.querySelector("main").classList.add("wide");
+
+    var back = el("button", "back", "\u2190 All missions");
     back.addEventListener("click", function () { act("library", {}); });
     body.appendChild(back);
 
@@ -753,20 +770,6 @@ _TEMPLATE = """<!doctype html>
       body.appendChild(el("div", "progress-pill", mission.progress));
     }
 
-    if (mission.result) {
-      body.appendChild(el("h2", null, "RESULT"));
-      body.appendChild(el("div", "result-block", mission.result));
-      if (mission.followUps && mission.followUps.length) {
-        var followUps = el("ul", "follow-ups");
-        mission.followUps.forEach(function (item) {
-          followUps.appendChild(el("li", null, item));
-        });
-        body.appendChild(followUps);
-      }
-    }
-
-    renderDecision(mission);
-
     var actions = el("div", "actions");
     var resume = el("button", "act primary",
                     mission.status === "active" ? "Go to mission" : "Resume");
@@ -784,26 +787,34 @@ _TEMPLATE = """<!doctype html>
     actions.appendChild(branch);
     body.appendChild(actions);
 
-    if (mission.branches && mission.branches.length) {
-      body.appendChild(el("h2", null, "BRANCHES \u00b7 " + mission.branches.length));
-      var branches = el("ul");
-      mission.branches.forEach(function (child) {
-        var li = el("li", "page");
-        var row = el("div", "root-row");
-        row.appendChild(el("span", "t", child.title));
-        if (child.status === "active") { row.appendChild(el("span", "tag", "ACTIVE")); }
-        var open = el("button", "link", "Open");
-        open.addEventListener("click", function () { act("open", { id: child.id }); });
-        row.appendChild(open);
-        li.appendChild(row);
-        branches.appendChild(li);
-      });
-      body.appendChild(branches);
+    // Two columns from here: the mission's own substance on the left - what
+    // it found and decided - and everything about *how it got there* on the
+    // right, the same split as a document and its margin notes. Collapses
+    // to one column below the workspace breakpoint (see the media query).
+    var workspace = el("div", "workspace");
+    var main = el("div", "main-col");
+    var side = el("div", "side");
+    workspace.appendChild(main);
+    workspace.appendChild(side);
+    body.appendChild(workspace);
+
+    if (mission.result) {
+      main.appendChild(el("h2", null, "RESULT"));
+      main.appendChild(el("div", "result-block", mission.result));
+      if (mission.followUps && mission.followUps.length) {
+        var followUps = el("ul", "follow-ups");
+        mission.followUps.forEach(function (item) {
+          followUps.appendChild(el("li", null, item));
+        });
+        main.appendChild(followUps);
+      }
     }
 
-    body.appendChild(el("h2", null, "FINDINGS \\u00b7 " + mission.findingList.length));
+    renderDecision(mission, main);
+
+    main.appendChild(el("h2", null, "FINDINGS \u00b7 " + mission.findingList.length));
     if (!mission.findingList.length) {
-      body.appendChild(el("p", "empty", "Nothing recorded for this mission yet."));
+      main.appendChild(el("p", "empty", "Nothing recorded for this mission yet."));
     } else {
       var found = el("ul");
       mission.findingList.forEach(function (finding) {
@@ -818,10 +829,22 @@ _TEMPLATE = """<!doctype html>
         if (verdict) { li.appendChild(verdict); }
         found.appendChild(li);
       });
-      body.appendChild(found);
+      main.appendChild(found);
     }
 
-    body.appendChild(el("h2", null, "PAGES \\u00b7 " + mission.pageList.length));
+    if (mission.actionList && mission.actionList.length) {
+      side.appendChild(el("h2", null, "ACTIVITY \u00b7 " + mission.actionList.length));
+      var activity = el("ul", "activity");
+      mission.actionList.forEach(function (item) {
+        var li = el("li", "activity-" + item.outcome);
+        li.appendChild(el("span", "t", item.description));
+        if (item.age) { li.appendChild(el("span", "d", item.age)); }
+        activity.appendChild(li);
+      });
+      side.appendChild(activity);
+    }
+
+    side.appendChild(el("h2", null, "PAGES \u00b7 " + mission.pageList.length));
     var pages = el("ul");
     mission.pageList.forEach(function (page) {
       var li = el("li", "page");
@@ -833,10 +856,27 @@ _TEMPLATE = """<!doctype html>
       li.appendChild(link);
       pages.appendChild(li);
     });
-    body.appendChild(pages);
+    side.appendChild(pages);
+
+    if (mission.branches && mission.branches.length) {
+      side.appendChild(el("h2", null, "BRANCHES \u00b7 " + mission.branches.length));
+      var branches = el("ul");
+      mission.branches.forEach(function (child) {
+        var li = el("li", "page");
+        var row = el("div", "root-row");
+        row.appendChild(el("span", "t", child.title));
+        if (child.status === "active") { row.appendChild(el("span", "tag", "ACTIVE")); }
+        var open = el("button", "link", "Open");
+        open.addEventListener("click", function () { act("open", { id: child.id }); });
+        row.appendChild(open);
+        li.appendChild(row);
+        branches.appendChild(li);
+      });
+      side.appendChild(branches);
+    }
 
     if (mission.routineList && mission.routineList.length) {
-      body.appendChild(el("h2", null, "ROUTINES \u00b7 " + mission.routineList.length));
+      side.appendChild(el("h2", null, "ROUTINES \u00b7 " + mission.routineList.length));
       var routines = el("ul");
       mission.routineList.forEach(function (routine) {
         var li = el("li", "page");
@@ -852,11 +892,11 @@ _TEMPLATE = """<!doctype html>
         li.appendChild(row);
         routines.appendChild(li);
       });
-      body.appendChild(routines);
+      side.appendChild(routines);
     }
 
     if (mission.ghostRunList && mission.ghostRunList.length) {
-      body.appendChild(el("h2", null, "GHOST RUNS · " + mission.ghostRunList.length));
+      side.appendChild(el("h2", null, "GHOST RUNS \u00b7 " + mission.ghostRunList.length));
       var ghostRuns = el("ul");
       mission.ghostRunList.forEach(function (ghost) {
         var li = el("li", "page");
@@ -880,19 +920,7 @@ _TEMPLATE = """<!doctype html>
         }
         ghostRuns.appendChild(li);
       });
-      body.appendChild(ghostRuns);
-    }
-
-    if (mission.actionList && mission.actionList.length) {
-      body.appendChild(el("h2", null, "ACTIVITY · " + mission.actionList.length));
-      var activity = el("ul", "activity");
-      mission.actionList.forEach(function (item) {
-        var li = el("li", "activity-" + item.outcome);
-        li.appendChild(el("span", "t", item.description));
-        if (item.age) { li.appendChild(el("span", "d", item.age)); }
-        activity.appendChild(li);
-      });
-      body.appendChild(activity);
+      side.appendChild(ghostRuns);
     }
     document.getElementById("count").textContent = "";
   }

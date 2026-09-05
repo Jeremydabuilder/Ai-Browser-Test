@@ -673,6 +673,14 @@ saved tab group: it has a URL, it works with back and forward, and it has room.
 Everything a Mission is going to grow into needs room, and a page is what makes
 a Mission a *place* rather than a widget.
 
+A Mission's detail view is a two-column workspace, not a single reading
+column: `.main-col` (result, decision, findings - the mission's own
+substance) beside `.side` (activity, sources, branches, routines, ghost
+runs - how it got there), a CSS grid that widens `<main>` past the list
+view's narrower width and collapses to one column below its own breakpoint.
+The list and evidence views stay a single column - the split is only for
+the page that has enough going on to need one.
+
 `app/browser/internal.py` owns the scheme now - registration, host routing, and
 the action channel - because a second internal page arrived and the plumbing was
 tangled with the new-tab page's content. Each page registers a host and supplies
