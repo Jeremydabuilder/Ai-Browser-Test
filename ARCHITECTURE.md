@@ -515,7 +515,11 @@ tool call ("done" or "failed" only - a step's running/waiting states are the
 panel's own live UI and would just double up once the terminal state
 re-emits). It is an operational log, not a fact a decision might cite, so
 unlike findings it is trimmed (oldest dropped past `MAX_ACTIONS_PER_MISSION`)
-rather than refused once full. `MissionService.record_agent_step` is wired to
+rather than refused once full. An action recorded against a page renders as
+a link in the Mission Library's ACTIVITY list, the same "open this tab"
+affordance a live Step offers - resolved from the mission's own pages
+server-side (`missions_page._action`), never from a URL the model could
+otherwise have put in the description itself. `MissionService.record_agent_step` is wired to
 `AgentSession.step_changed` from `main_window.py` - deliberately a Qt signal
 connection made by whoever owns both objects, not an import from `app.agent`
 inside `app.missions`, keeping the same one-way dependency the rest of the

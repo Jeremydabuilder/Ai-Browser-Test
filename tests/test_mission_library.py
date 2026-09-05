@@ -555,6 +555,31 @@ class WorkspaceLayoutTests(unittest.TestCase):
         self.assertFalse(self.harness.js(
             tab, "!!document.querySelector(\".main-col a[href*='tennis-warehouse']\")"))
 
+    def test_an_activity_row_with_a_page_is_clickable(self) -> None:
+        page = self.harness.service.store.add_page(
+            self.shoes.id, "https://www.tennis-warehouse.com/y", "Another page")
+        self.harness.service.store.record_action(
+            self.shoes.id, "Opening Tennis Warehouse",
+            tool_name="browser_navigate", page_id=page.id)
+        tab = self._open_detail(self.shoes.id)
+        text = self.harness.text_of(tab)
+        self.assertIn("Opening Tennis Warehouse", text)
+        self.assertTrue(self.harness.js(
+            tab, "!!document.querySelector(\".activity a[href*='tennis-warehouse.com%2Fy']\")"))
+
+    def test_an_activity_row_with_no_page_is_plain_text(self) -> None:
+        self.harness.service.store.record_action(self.shoes.id, "Thinking it over")
+        tab = self._open_detail(self.shoes.id)
+        text = self.harness.text_of(tab)
+        self.assertIn("Thinking it over", text)
+        # No page to open, so no link for this specific row - only the
+        # other activity rows (recorded against a real page) get one.
+        rows_with_links = self.harness.js(
+            tab, "document.querySelectorAll('.activity a').length")
+        rows_total = self.harness.js(
+            tab, "document.querySelectorAll('.activity li').length")
+        self.assertLess(rows_with_links, rows_total)
+
     def test_a_mission_with_no_extra_columns_still_has_the_workspace_grid(self) -> None:
         # The trip mission has neither findings beyond zero nor pages beyond
         # zero - the grid itself must not depend on there being anything to

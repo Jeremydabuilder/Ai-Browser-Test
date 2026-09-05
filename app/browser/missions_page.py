@@ -90,7 +90,8 @@ def summarise(mission, *, with_detail: bool = False,
     if with_detail:
         row["result"] = mission.result
         row["followUps"] = list(mission.follow_ups)
-        row["actionList"] = [_action(a) for a in mission.actions]
+        pages_by_id = {p.id: p for p in mission.pages}
+        row["actionList"] = [_action(a, pages_by_id) for a in mission.actions]
         row["decision"] = _decision(mission.decision)
         if row["decision"] is not None:
             row["decision"]["challenge"] = _challenge(
@@ -120,14 +121,21 @@ def summarise(mission, *, with_detail: bool = False,
     return row
 
 
-def _action(action) -> dict[str, Any]:
-    """One recorded action, flattened - see MissionAction."""
+def _action(action, pages_by_id: dict | None = None) -> dict[str, Any]:
+    """One recorded action, flattened - see MissionAction.
+
+    ``pageUrl`` lets the page offer "open this tab" the way a live Step
+    already can - resolved here, from the mission's own pages, rather than
+    trusting a URL the model could otherwise have put in a description.
+    """
+    page = (pages_by_id or {}).get(action.page_id)
     return {
         "id": action.id,
         "description": action.description,
         "toolName": action.tool_name,
         "outcome": action.outcome,
         "pageId": action.page_id,
+        "pageUrl": page.url if page is not None else "",
         "age": action.age,
     }
 
@@ -419,6 +427,8 @@ _TEMPLATE = """<!doctype html>
   ul.activity li .t { color: var(--text); }
   ul.activity li .d { color: var(--disabled); font-size: 11px; white-space: nowrap; }
   ul.activity li.activity-failed .t { color: var(--danger); }
+  ul.activity li a { text-decoration: none; overflow: hidden; text-overflow: ellipsis; }
+  ul.activity li a:hover .t { color: var(--accent); text-decoration: underline; }
   .actions { display: flex; gap: 8px; margin: 0 0 26px; }
   button.act {
     height: 32px; padding: 0 14px; border-radius: 8px; cursor: pointer;
@@ -837,7 +847,16 @@ _TEMPLATE = """<!doctype html>
       var activity = el("ul", "activity");
       mission.actionList.forEach(function (item) {
         var li = el("li", "activity-" + item.outcome);
-        li.appendChild(el("span", "t", item.description));
+        if (item.pageUrl) {
+          // Clickable, the same as a Step in the live panel can be - "what
+          // Py did" and "where it did it" are one thing, not two.
+          var link = el("a");
+          link.href = "pybrowser://missions/action/page?url=" + encodeURIComponent(item.pageUrl);
+          link.appendChild(el("span", "t", item.description));
+          li.appendChild(link);
+        } else {
+          li.appendChild(el("span", "t", item.description));
+        }
         if (item.age) { li.appendChild(el("span", "d", item.age)); }
         activity.appendChild(li);
       });
