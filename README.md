@@ -66,7 +66,7 @@ nss alsa-lib`.
 ## Tests
 
 ```bash
-python -m unittest discover -s tests -v          # 1316 tests
+python -m unittest discover -s tests -v          # 1319 tests
 python scripts/smoke_test.py                     # headless end-to-end run
 python scripts/feature_check.py                  # 28-point feature checklist
 python scripts/agent_demo.py                     # the research demo, offline
@@ -143,6 +143,9 @@ real and worth knowing about before assuming "just open more tabs" is free.
 Tab overhead itself is cheap: six tabs cost barely more than one.
 
 ## Keyboard shortcuts
+
+Also in-app: **Help → Keyboard Shortcuts** (`Ctrl+/`) shows this same list
+without leaving the browser.
 
 | Shortcut | Action | | Shortcut | Action |
 |---|---|---|---|---|

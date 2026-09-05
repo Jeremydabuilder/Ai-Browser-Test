@@ -192,6 +192,8 @@ class MainWindow(QMainWindow):
             "Record what Py does next as a reusable Routine on the active mission")
 
         help_menu: QMenu = menubar.addMenu("&Help")
+        self._add_action(help_menu, "&Keyboard Shortcuts", "Ctrl+/", self._show_shortcuts)
+        help_menu.addSeparator()
         self._add_action(help_menu, f"&About {APP_NAME}", None, self._show_about)
 
     def _add_action(self, menu: QMenu, text: str, shortcut: str | None, slot) -> QAction:
@@ -1026,6 +1028,61 @@ class MainWindow(QMainWindow):
         """
         self.tabs.home_url = self.settings.new_tab_url()
         self._show_status("Settings saved.")
+
+    #: Kept in step with the table in README.md's "Keyboard shortcuts"
+    #: section by hand - there being two copies is the tradeoff for this one
+    #: being reachable without leaving the app.
+    _SHORTCUTS = (
+        ("Tabs & windows", (
+            ("Ctrl+T", "New tab"), ("Ctrl+W", "Close tab"),
+            ("Ctrl+N", "New window"), ("Ctrl+Q", "Quit"),
+            ("Ctrl+Tab", "Next tab"), ("Ctrl+1…9", "Jump to tab (9 = last)"),
+        )),
+        ("Navigation", (
+            ("Ctrl+L / Alt+D / F6", "Focus address bar"),
+            ("Ctrl+R / F5", "Reload"), ("Ctrl+Shift+R", "Reload ignoring cache"),
+            ("Esc", "Stop loading"), ("Alt+Left / Alt+Right", "Back / Forward"),
+        )),
+        ("Finding things", (
+            ("Ctrl+H", "History"), ("Ctrl+Shift+O", "Bookmarks"),
+            ("Ctrl+D", "Bookmark this page"),
+            ("Ctrl+F", "Find in page"),
+            ("Ctrl+G / Ctrl+Shift+G", "Find next / previous"),
+        )),
+        ("Py & the browser", (
+            ("Ctrl+Shift+A", "Show AI agent"), ("Ctrl+Shift+M", "Mission library"),
+            ("Ctrl+J", "Downloads"), ("Ctrl+,", "Settings"),
+        )),
+        ("View", (
+            ("Ctrl+ + / Ctrl+ - / Ctrl+0", "Zoom in / out / reset"),
+            ("F11", "Full screen"),
+        )),
+    )
+
+    @classmethod
+    def _shortcuts_html(cls) -> str:
+        rows = []
+        for section, shortcuts in cls._SHORTCUTS:
+            rows.append(f"<h3>{section}</h3><table cellspacing='0' cellpadding='4'>")
+            for key, action in shortcuts:
+                rows.append(
+                    f"<tr><td style='white-space:nowrap'><b><code>{key}</code></b></td>"
+                    f"<td style='padding-left:16px'>{action}</td></tr>")
+            rows.append("</table>")
+        return "".join(rows)
+
+    def _show_shortcuts(self) -> None:
+        from PySide6.QtWidgets import QDialog, QTextBrowser, QVBoxLayout
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Keyboard Shortcuts")
+        dialog.resize(480, 560)
+        layout = QVBoxLayout(dialog)
+        view = QTextBrowser(dialog)
+        view.setOpenExternalLinks(False)
+        view.setHtml(self._shortcuts_html())
+        layout.addWidget(view)
+        dialog.exec()
 
     def _show_about(self) -> None:
         from PySide6.QtCore import qVersion
