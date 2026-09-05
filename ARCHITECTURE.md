@@ -757,6 +757,14 @@ so a new query cannot forget the filter.
 starts a new activation. Browsing your own library must not hijack the agent's
 context.
 
+**Pause is reachable from the Library, not only from MissionCard.** The
+detail page shows a Pause button whenever the Mission being viewed is
+active - but only pauses it if it is active *in this window*: `_pause_mission`
+checks `self.missions.active.id == mission_id` before calling `pause()`,
+the same restriction MissionCard's own Pause button already had. A window
+looking at a Mission active somewhere else gets a status message, not a
+pause that reaches across windows.
+
 `app/missions/bus.py` is a process-wide announcement channel: a Mission deleted
 in one window must not stay live in another. It carries an id and nothing else -
 listeners re-read from the store, which is the only place the truth lives.

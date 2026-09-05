@@ -459,6 +459,8 @@ class MainWindow(QMainWindow):
                 tab.navigate(target)
         elif name == "resume" and mission_id is not None:
             self._resume_mission(mission_id)
+        elif name == "pause" and mission_id is not None:
+            self._pause_mission(mission_id)
         elif name == "rename" and mission_id is not None:
             self._rename_mission(mission_id)
         elif name == "delete" and mission_id is not None:
@@ -501,6 +503,20 @@ class MainWindow(QMainWindow):
         if self._side_panel is None:
             self._toggle_agent_panel()
         self._show_status(f"Mission resumed: {mission.title}")
+
+    def _pause_mission(self, mission_id: int) -> None:
+        """Pause a Mission from the Library.
+
+        Only meaningful for whichever Mission this window's own service holds
+        active - pausing looks at nothing else, the same restriction
+        MissionCard's own Pause button already has, just reached from a
+        different page.
+        """
+        if self.missions.active is None or self.missions.active.id != mission_id:
+            self._show_status("That mission is not active in this window.")
+            return
+        self.missions.pause()
+        self._reload_mission_views(mission_id)
 
     def _rename_mission(self, mission_id: int) -> None:
         from PySide6.QtWidgets import QInputDialog

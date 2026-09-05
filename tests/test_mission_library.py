@@ -472,6 +472,22 @@ class LibraryInTheBrowserTests(unittest.TestCase):
         QTest.qWait(200)
         self.assertEqual(self.service.active.id, self.trip.id)
 
+    def test_pausing_the_active_mission_leaves_it(self) -> None:
+        self.window._resume_mission(self.shoes.id)
+        QTest.qWait(200)
+        self.window._pause_mission(self.shoes.id)
+        self.assertIsNone(self.service.active)
+        self.assertEqual(self.service.store.get(self.shoes.id).status, MissionStatus.PAUSED)
+
+    def test_pausing_a_mission_that_is_not_active_here_does_nothing(self) -> None:
+        # The trip mission is not active in this window - pausing it must
+        # not reach into some other mission's state.
+        self.window._resume_mission(self.shoes.id)
+        QTest.qWait(200)
+        self.window._pause_mission(self.trip.id)
+        self.assertIsNotNone(self.service.active)
+        self.assertEqual(self.service.active.id, self.shoes.id)
+
     def test_an_unknown_mission_id_is_ignored_rather_than_crashing(self) -> None:
         self.window._on_mission_action("open", {"id": "99999"})
         self.window._on_mission_action("resume", {"id": "99999"})
@@ -526,6 +542,27 @@ class WorkspaceLayoutTests(unittest.TestCase):
         self.window._open_mission(mission_id)
         QTest.qWait(2200)
         return self.window.tabs.current_tab()
+
+    def test_a_paused_mission_shows_no_pause_button(self) -> None:
+        tab = self._open_detail(self.shoes.id)
+        self.assertFalse(self.harness.js(
+            tab, "Array.from(document.querySelectorAll('.actions .act'))"
+                 ".some(function(b){return b.textContent === 'Pause';})"))
+
+    def test_an_active_mission_shows_a_pause_button_that_works(self) -> None:
+        self.window._resume_mission(self.shoes.id)
+        QTest.qWait(200)
+        tab = self._open_detail(self.shoes.id)
+        self.assertTrue(self.harness.js(
+            tab, "Array.from(document.querySelectorAll('.actions .act'))"
+                 ".some(function(b){return b.textContent === 'Pause';})"))
+        self.harness.js(
+            tab, "Array.from(document.querySelectorAll('.actions .act'))"
+                 ".find(function(b){return b.textContent === 'Pause';}).click()")
+        QTest.qWait(1500)
+        self.assertIsNone(self.window.missions.active)
+        self.assertEqual(self.window.missions.store.get(self.shoes.id).status,
+                         MissionStatus.PAUSED)
 
     def test_the_list_view_is_not_widened(self) -> None:
         self.window._show_mission_library()

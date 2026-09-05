@@ -885,6 +885,12 @@ _TEMPLATE = """<!doctype html>
                     mission.status === "active" ? "Go to mission" : "Resume");
     resume.addEventListener("click", function () { act("resume", { id: mission.id }); });
     actions.appendChild(resume);
+    if (mission.status === "active") {
+      var pause = el("button", "act", "Pause");
+      pause.title = "Leave this mission - Py stops working on it until you resume";
+      pause.addEventListener("click", function () { act("pause", { id: mission.id }); });
+      actions.appendChild(pause);
+    }
     var rename = el("button", "act", "Rename");
     rename.addEventListener("click", function () { act("rename", { id: mission.id }); });
     actions.appendChild(rename);
