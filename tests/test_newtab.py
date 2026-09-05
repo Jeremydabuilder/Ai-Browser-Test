@@ -369,7 +369,7 @@ class RenderedPageTests(unittest.TestCase):
             self.tab.load_finished.connect(finished.append)
             self.tab.reload()
             self.assertTrue(pump(lambda: finished))
-            self.assertEqual(self.js("document.querySelectorAll('.empty').length"), 2)
+            self.assertEqual(self.js("document.querySelectorAll('.empty').length"), 3)
         finally:
             _profile.set_new_tab_provider(lambda: collect(
                 _History(self.recent), _Bookmarks(self.marks), agent_available=True))

@@ -79,12 +79,17 @@ class NewTabData:
 
     recent: list[dict[str, str]] = field(default_factory=list)
     bookmarks: list[dict[str, str]] = field(default_factory=list)
+    #: Missions started recently - the mission-first entry point on the new
+    #: tab page, alongside the ordinary Recent/Bookmarks columns. Each is
+    #: {"id", "title", "status", "progress"}.
+    recent_missions: list[dict[str, object]] = field(default_factory=list)
     agent_available: bool = False
 
     def to_json(self) -> str:
         payload = json.dumps({
             "recent": self.recent,
             "bookmarks": self.bookmarks,
+            "recentMissions": self.recent_missions,
             "agentAvailable": self.agent_available,
         }, ensure_ascii=False)
         # A page title containing "</script>" would otherwise end the block and
@@ -93,13 +98,14 @@ class NewTabData:
         return payload.replace("<", "\\u003c")
 
 
-def collect(history=None, bookmarks=None, *, agent_available: bool = False,
-            limit: int = 8) -> NewTabData:
+def collect(history=None, bookmarks=None, missions=None, *,
+            agent_available: bool = False, limit: int = 8) -> NewTabData:
     """Gather the page's content from the stores, tolerating failure.
 
     A new tab must open even if the database is locked, missing or broken, so
     every read is guarded: the page degrades to its empty state instead of
-    failing to appear.
+    failing to appear. ``missions`` is a MissionService (or anything with the
+    same ``.recent(limit)``); read-only, the same as history and bookmarks.
     """
     data = NewTabData(agent_available=agent_available)
     try:
@@ -122,6 +128,14 @@ def collect(history=None, bookmarks=None, *, agent_available: bool = False,
             ]
     except Exception:  # noqa: BLE001
         data.bookmarks = []
+    try:
+        if missions is not None:
+            data.recent_missions = [
+                {"id": m.id, "title": m.title, "status": m.status, "progress": m.progress}
+                for m in missions.recent(5)
+            ]
+    except Exception:  # noqa: BLE001
+        data.recent_missions = []
     return data
 
 
@@ -561,6 +575,10 @@ _TEMPLATE = """<!doctype html>
 
   <div class="columns">
     <section>
+      <h2>Recent Missions</h2>
+      <ul id="missions"></ul>
+    </section>
+    <section>
       <h2>Recent</h2>
       <ul id="recent"></ul>
     </section>
@@ -585,7 +603,7 @@ _TEMPLATE = """<!doctype html>
   try {
     data = JSON.parse(document.getElementById("data").textContent);
   } catch (e) {
-    data = { recent: [], bookmarks: [], agentAvailable: false };
+    data = { recent: [], bookmarks: [], recentMissions: [], agentAvailable: false };
   }
 
   function act(name, params) {
@@ -637,8 +655,36 @@ _TEMPLATE = """<!doctype html>
     });
   }
 
+  function fillMissions(items) {
+    var list = document.getElementById("missions");
+    if (!items.length) {
+      var note = document.createElement("li");
+      note.className = "empty";
+      note.textContent = "Give Py a goal - \\u201cAsk Py something else\\u201d - and it will show up here.";
+      list.appendChild(note);
+      return;
+    }
+    items.forEach(function (item) {
+      var li = document.createElement("li");
+      var a = document.createElement("a");
+      a.href = "pybrowser://newtab/action/mission?id=" + encodeURIComponent(item.id);
+      var title = document.createElement("span");
+      title.className = "title";
+      title.textContent = item.title;
+      a.appendChild(title);
+      var status = document.createElement("span");
+      status.className = "host";
+      status.textContent = item.status === "active" && item.progress
+        ? item.progress : item.status;
+      a.appendChild(status);
+      li.appendChild(a);
+      list.appendChild(li);
+    });
+  }
+
   fill("recent", data.recent, "Pages you visit will show up here.");
   fill("bookmarks", data.bookmarks, "Press Ctrl+D on a page to bookmark it.");
+  fillMissions(data.recentMissions || []);
 
   if (!data.agentAvailable) {
     document.getElementById("ai-sub").textContent =

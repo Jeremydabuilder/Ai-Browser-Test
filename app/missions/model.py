@@ -188,6 +188,58 @@ class MissionFinding:
                            url=self.source_url).domain
 
 
+#: Recorded activity kept per mission. Unlike findings, this is an
+#: operational log, not a fact a decision might cite - so it is trimmed
+#: (oldest dropped) rather than refused once full. Generous enough to cover
+#: a long task without becoming the thing the page has to render.
+MAX_ACTIONS_PER_MISSION = 300
+MAX_ACTION_DESCRIPTION_CHARS = 200
+
+#: A stage label, not a report - see Mission.progress. Short like a title,
+#: truncated rather than refused: losing the tail of a status line costs
+#: nothing a user would miss, unlike a finding or a decision.
+MAX_PROGRESS_CHARS = 80
+
+#: The mission's outcome, and the plain suggestions that follow it - see
+#: Mission.result and Mission.follow_ups. A result can be a full structured
+#: comparison, so it gets far more room than a single finding.
+MAX_RESULT_CHARS = 4000
+MAX_FOLLOW_UPS = 5
+MAX_FOLLOW_UP_CHARS = 200
+
+
+@dataclass(frozen=True)
+class MissionAction:
+    """One thing Py did, or tried to do, while working this Mission.
+
+    This is the persisted twin of AgentSession's transient Step - it exists
+    so "what did Py actually do" survives a restart and a resumed Mission,
+    not just the findings that resulted from it. The description is the same
+    short, user-facing sentence a Step already shows ("Opening Tennis
+    Warehouse," "Reading 12 products") - never raw tool arguments, and never
+    a page's own untrusted text.
+    """
+
+    id: int
+    mission_id: int
+    #: Short, user-facing sentence - see the docstring above.
+    description: str
+    #: The tool this came from, e.g. "browser_navigate" - for grouping/icons
+    #: in the UI. Empty for a plain narrative entry with no specific tool.
+    tool_name: str = ""
+    #: "done" | "failed" | "waiting" - mirrors StepState loosely enough for
+    #: the UI to pick a glyph, without importing agent-side state here.
+    outcome: str = "done"
+    #: The page this action touched, if any - lets the UI offer "open this
+    #: tab" the way a live Step can. None once that page is forgotten.
+    page_id: int | None = None
+    created_at: str = ""
+
+    @property
+    def age(self) -> str:
+        return relative_age(self.created_at)
+
+
 #: Longest a decision's headline may be. Refused, not truncated - the same
 #: reasoning as MAX_FINDING_CHARS.
 MAX_DECISION_CHARS = 200
@@ -659,10 +711,33 @@ class Mission:
     #: What distinguishes this branch from its siblings - "Budget", "Fastest".
     #: Empty on a root Mission.
     branch_name: str = ""
+    #: A short, current-stage label - "Comparing 3 options," "Waiting for
+    #: approval," "Done." Deliberately a label, not a percentage: an
+    #: open-ended web task has no denominator to divide by, and a fake 63%
+    #: would claim a precision nobody has. Set by the agent as it works
+    #: (mission_set_progress) and by the service on pause/resume/completion.
+    progress: str = ""
+    #: The mission's own outcome, written once real work is done - distinct
+    #: from a Decision, which is "what was chosen and why." A result can
+    #: exist without a decision (a pure research/comparison mission answers
+    #: the goal without choosing anything), and holds the structured
+    #: comparison/summary text the mission was for.
+    result: str = ""
+    #: What Py suggests doing next, once the mission has a result - "track
+    #: prices for another week," "check availability again closer to the
+    #: date." Plain suggestions, never anything that acts on their own.
+    follow_ups: tuple[str, ...] = field(default_factory=tuple)
+    #: Recent recorded activity, filled by the store when asked for it - see
+    #: MissionAction. Empty unless requested, same convention as pages/findings.
+    actions: tuple["MissionAction", ...] = field(default_factory=tuple)
 
     @property
     def is_branch(self) -> bool:
         return self.parent_id is not None
+
+    @property
+    def has_result(self) -> bool:
+        return bool(self.result.strip())
 
     def challenge_of(self, kind: str, target_id: int) -> MissionChallenge | None:
         """The live challenge against one finding or decision, if any."""

@@ -485,6 +485,46 @@ Ghost Run adds one agent tool (`mission_save_ghost_run`) and one Mission
 Library section; it does not touch Warm Resume, briefing, or any existing
 table.
 
+### Mission progress, result and the action log
+
+Three additions to `missions` (`progress`, `result`, `follow_ups`, migration
+v10 -> v11) plus one new table, `mission_actions`, close the gap between what
+Py did and what survives a restart. Before this, `AgentSession.Step` - what
+the agent panel's live checklist shows - was purely transient: closing the
+panel or restarting the app lost the record of what was tried, leaving only
+the findings and decision that resulted from it.
+
+**`progress`** is a short, current-stage label ("Comparing 3 options",
+"Waiting for approval"), never a percentage - an open-ended web task has no
+denominator to divide by, and a fake 63% would claim a precision nobody has.
+Set via the `mission_set_progress` tool, truncated rather than refused if
+over length (`MAX_PROGRESS_CHARS`), because losing the tail of a status line
+costs nothing a user would miss.
+
+**`result`** and **`follow_ups`** hold the mission's outcome - written once
+real work is done, via `mission_save_result` - and Py's own plain
+suggestions for what to do next. `result` is distinct from a Decision: a
+pure research or comparison mission answers the goal without ever choosing
+anything, so it can have a result with no decision. Over-length text is
+REFUSED rather than truncated (`MAX_RESULT_CHARS`), the same reasoning as
+`add_finding`. `follow_ups` are plain suggestions only - never anything that
+acts on its own - capped at `MAX_FOLLOW_UPS` items.
+
+**`mission_actions`** is the persisted twin of `Step`: one row per finished
+tool call ("done" or "failed" only - a step's running/waiting states are the
+panel's own live UI and would just double up once the terminal state
+re-emits). It is an operational log, not a fact a decision might cite, so
+unlike findings it is trimmed (oldest dropped past `MAX_ACTIONS_PER_MISSION`)
+rather than refused once full. `MissionService.record_agent_step` is wired to
+`AgentSession.step_changed` from `main_window.py` - deliberately a Qt signal
+connection made by whoever owns both objects, not an import from `app.agent`
+inside `app.missions`, keeping the same one-way dependency the rest of the
+Mission system holds toward the browser and the agent.
+
+Neither `mission_set_progress` nor `mission_save_result` reaches the browser
+controller - the same structural guarantee as every other Mission write tool:
+recording an outcome is not carrying one out.
+
 ### Routines (Teach Py)
 
 A Routine is a taught sequence of the agent's own tool calls, saved while

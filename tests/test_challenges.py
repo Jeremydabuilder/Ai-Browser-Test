@@ -298,6 +298,10 @@ class PersistenceTests(unittest.TestCase):
         conn.execute("ALTER TABLE missions DROP COLUMN next_ref")
         conn.execute("ALTER TABLE missions DROP COLUMN parent_id")
         conn.execute("ALTER TABLE missions DROP COLUMN branch_name")
+        conn.execute("ALTER TABLE missions DROP COLUMN progress")
+        conn.execute("ALTER TABLE missions DROP COLUMN result")
+        conn.execute("ALTER TABLE missions DROP COLUMN follow_ups")
+        conn.execute("DROP TABLE IF EXISTS mission_actions")
         conn.execute("PRAGMA user_version=5")
         conn.commit()
         conn.close()
@@ -494,7 +498,8 @@ class ToolTests(unittest.TestCase):
 
         added = {name for name in TOOL_NAMES if name.startswith("mission_")}
         self.assertEqual(added, {"mission_save_finding", "mission_save_decision",
-                                 "mission_save_challenge", "mission_save_ghost_run"})
+                                 "mission_save_challenge", "mission_save_ghost_run",
+                                 "mission_set_progress", "mission_save_result"})
 
 
 class PermissionTests(unittest.TestCase):

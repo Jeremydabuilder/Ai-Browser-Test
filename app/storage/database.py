@@ -25,7 +25,7 @@ import threading
 from pathlib import Path
 from typing import Any, Iterable, Sequence
 
-SCHEMA_VERSION = 10
+SCHEMA_VERSION = 11
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS history (
@@ -83,7 +83,10 @@ CREATE TABLE IF NOT EXISTS missions (
     deleted_at TEXT NOT NULL DEFAULT '',
     next_ref   INTEGER NOT NULL DEFAULT 1,
     parent_id  INTEGER REFERENCES missions(id) ON DELETE SET NULL,
-    branch_name TEXT NOT NULL DEFAULT ''
+    branch_name TEXT NOT NULL DEFAULT '',
+    progress   TEXT NOT NULL DEFAULT '',
+    result     TEXT NOT NULL DEFAULT '',
+    follow_ups TEXT NOT NULL DEFAULT '[]'
 );
 CREATE INDEX IF NOT EXISTS idx_missions_updated ON missions(updated_at DESC);
 
@@ -124,6 +127,21 @@ CREATE INDEX IF NOT EXISTS idx_mission_findings_mission
     ON mission_findings(mission_id, created_at);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_finding_ref
     ON mission_findings(mission_id, ref);
+
+-- What Py did, or tried to do - the persisted twin of AgentSession's
+-- transient Step. page_id is ON DELETE SET NULL: losing the page a step
+-- touched costs the "open this tab" link, never the record that it happened.
+CREATE TABLE IF NOT EXISTS mission_actions (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    mission_id  INTEGER NOT NULL REFERENCES missions(id) ON DELETE CASCADE,
+    description TEXT NOT NULL,
+    tool_name   TEXT NOT NULL DEFAULT '',
+    outcome     TEXT NOT NULL DEFAULT 'done',
+    page_id     INTEGER          REFERENCES mission_pages(id) ON DELETE SET NULL,
+    created_at  TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_mission_actions_mission
+    ON mission_actions(mission_id, created_at);
 
 -- What was decided, and the reasons a person can read. Deliberately holds no
 -- model reasoning: `rationale` is the sentence shown to the user.
@@ -528,6 +546,25 @@ CREATE TABLE IF NOT EXISTS decision_alternatives (
     );
     CREATE INDEX IF NOT EXISTS idx_decision_evidence
         ON decision_evidence(decision_id, position);
+    """,
+    # v10 -> v11: mission progress/result/follow_ups, and a persisted action
+    # log (mission_actions) - the durable twin of AgentSession's Step.
+    10: """
+    ALTER TABLE missions ADD COLUMN progress TEXT NOT NULL DEFAULT '';
+    ALTER TABLE missions ADD COLUMN result TEXT NOT NULL DEFAULT '';
+    ALTER TABLE missions ADD COLUMN follow_ups TEXT NOT NULL DEFAULT '[]';
+
+    CREATE TABLE IF NOT EXISTS mission_actions (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        mission_id  INTEGER NOT NULL REFERENCES missions(id) ON DELETE CASCADE,
+        description TEXT NOT NULL,
+        tool_name   TEXT NOT NULL DEFAULT '',
+        outcome     TEXT NOT NULL DEFAULT 'done',
+        page_id     INTEGER          REFERENCES mission_pages(id) ON DELETE SET NULL,
+        created_at  TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_mission_actions_mission
+        ON mission_actions(mission_id, created_at);
     """,
 }
 

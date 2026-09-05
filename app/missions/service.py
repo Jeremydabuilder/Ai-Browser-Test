@@ -31,11 +31,13 @@ from app.missions.model import (
     MAX_CHALLENGE_SUMMARY,
     MAX_FINDINGS_PER_MISSION,
     MAX_RATIONALE_CHARS,
+    MAX_RESULT_CHARS,
     Mission,
     GhostRun,
     MissionChallenge,
     MissionDecision,
     TargetKind,
+    collapse,
     finding_ref,
     parse_finding_ref,
     MissionFinding,
@@ -638,6 +640,64 @@ class MissionService(QObject):
         if outcome == self._store.FULL:
             result["limit"] = MAX_FINDINGS_PER_MISSION
         return result
+
+    # -- action log --------------------------------------------------------
+    def record_agent_step(self, step) -> None:
+        """Persist a finished Step against the active Mission, if any.
+
+        Meant to be connected to AgentSession.step_changed by whoever owns
+        both objects (see main_window.py) - this module stays free of any
+        import from app.agent, the same way it stays free of Qt WebEngine.
+        Only a step's terminal states are worth a row: "done" or "failed" is
+        history, "running"/"waiting" is the panel's own live checklist and
+        would just double up once the terminal state re-emits moments later.
+        """
+        mission = self._active
+        if mission is None:
+            return
+        state = getattr(step, "state", "")
+        if state not in ("done", "failed"):
+            return
+        description = getattr(step, "description", "")
+        if not description:
+            return
+        self._store.record_action(
+            mission.id, description,
+            tool_name=getattr(step, "tool", "") or "",
+            outcome=state)
+        self._refresh()
+
+    def actions(self, mission_id: int | None = None):
+        """Recent recorded activity for a Mission - see MissionAction."""
+        target = mission_id if mission_id is not None else (
+            self._active.id if self._active is not None else None)
+        if target is None:
+            return []
+        return self._store.actions(target)
+
+    def set_progress(self, label: str) -> dict:
+        """Update the active Mission's current-stage label."""
+        mission = self._active
+        if mission is None:
+            return {"status": "no_mission"}
+        ok = self._store.set_progress(mission.id, label)
+        if ok:
+            self._refresh()
+        return {"status": "saved" if ok else "failed"}
+
+    def set_result(self, text: str, follow_ups: list[str] | None = None) -> dict:
+        """Write the active Mission's outcome and Py's follow-up suggestions."""
+        mission = self._active
+        if mission is None:
+            return {"status": "no_mission"}
+        if len(collapse(text)) > MAX_RESULT_CHARS:
+            return {"status": "too_long", "limit": MAX_RESULT_CHARS}
+        ok = self._store.set_result(mission.id, text, follow_ups)
+        if not ok:
+            return {"status": "too_long", "limit": MAX_RESULT_CHARS}
+        self._refresh()
+        self._announce(mission.id)
+        return {"status": "saved"}
 
     def edit_finding(self, finding_id: int, text: str) -> str:
         """Reword a finding. Returns the store's outcome string."""

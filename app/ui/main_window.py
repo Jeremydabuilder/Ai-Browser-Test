@@ -299,7 +299,7 @@ class MainWindow(QMainWindow):
         """
         from app.browser.newtab import collect
 
-        return collect(self.history, self.bookmarks,
+        return collect(self.history, self.bookmarks, self.missions,
                        agent_available=self._agent_configured())
 
     def _agent_configured(self) -> bool:
@@ -344,6 +344,13 @@ class MainWindow(QMainWindow):
             self._show_history()
         elif name == "bookmarks":
             self._show_bookmarks()
+        elif name == "mission":
+            mission_id = params.get("id")
+            if mission_id:
+                try:
+                    self._open_mission(int(mission_id))
+                except (TypeError, ValueError):
+                    pass
 
     # ------------------------------------------------------------------
     # The Mission Library
@@ -990,6 +997,7 @@ class MainWindow(QMainWindow):
                 self._agent_unavailable = False
                 self._agent_session.briefing_provider = self.missions.briefing
                 self._agent_session.step_recorder = self.routines.record_step
+                self._agent_session.step_changed.connect(self.missions.record_agent_step)
                 credential = self._current_credential(self._agent_session.config.provider)
                 self._credential_id = credential.fingerprint if credential else ""
         self.set_side_panel(AgentPanel(self._agent_session, self, self.missions))

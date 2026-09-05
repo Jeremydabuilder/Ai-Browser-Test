@@ -13,7 +13,11 @@ the one hot path, and it is still only as frequent as the agent's actions.
 
 from __future__ import annotations
 
+import json
+
 from app.missions.model import (
+    MAX_ACTION_DESCRIPTION_CHARS,
+    MAX_ACTIONS_PER_MISSION,
     MAX_ALTERNATIVES,
     MAX_CHALLENGE_SUMMARY,
     MAX_DECISION_CHARS,
@@ -22,9 +26,13 @@ from app.missions.model import (
     MAX_ASSUMPTION_CHARS,
     MAX_ASSUMPTIONS,
     MAX_FINDINGS_PER_MISSION,
+    MAX_FOLLOW_UP_CHARS,
+    MAX_FOLLOW_UPS,
     MAX_POINT_CHARS,
     MAX_POINTS,
+    MAX_PROGRESS_CHARS,
     MAX_RATIONALE_CHARS,
+    MAX_RESULT_CHARS,
     MAX_TITLE,
     ChallengePoint,
     Confidence,
@@ -35,6 +43,7 @@ from app.missions.model import (
     GhostRunEffect,
     DecisionEvidence,
     Mission,
+    MissionAction,
     MissionChallenge,
     MissionDecision,
     PointKind,
@@ -149,7 +158,7 @@ class MissionStore:
         rows = self._db.query(
             self._MISSION_COLUMNS + f"WHERE parent_id = ? AND {self._ALIVE} "
             "ORDER BY updated_at DESC, id DESC", (mission_id,))
-        return [Mission(**dict(row)) for row in rows]
+        return [Mission(**self._mission_kwargs(row)) for row in rows]
 
     def parent_of(self, mission_id: int) -> Mission | None:
         row = self._db.query_one("SELECT parent_id FROM missions WHERE id = ?",
@@ -162,8 +171,28 @@ class MissionStore:
     #: ones. Written once so a new query cannot forget the filter - which is
     #: the failure mode of soft delete everywhere it has ever been done badly.
     _MISSION_COLUMNS = ("SELECT id, title, goal, status, created_at, updated_at, "
-                        "parent_id, branch_name FROM missions ")
+                        "parent_id, branch_name, progress, result, follow_ups "
+                        "FROM missions ")
     _ALIVE = "deleted_at = ''"
+
+    @staticmethod
+    def _mission_kwargs(row) -> dict:
+        """A Mission row's columns, with follow_ups decoded to a tuple.
+
+        Every read of a mission row goes through this rather than a bare
+        ``dict(row)``, so a stored follow_ups string can never reach the
+        Mission dataclass as a string where it declares a tuple.
+        """
+        data = dict(row)
+        raw = data.pop("follow_ups", "[]")
+        try:
+            follow_ups = json.loads(raw or "[]")
+        except (TypeError, ValueError):
+            follow_ups = []
+        if not isinstance(follow_ups, list):
+            follow_ups = []
+        data["follow_ups"] = tuple(str(item) for item in follow_ups)
+        return data
 
     def get(self, mission_id: int, *, with_pages: bool = True) -> Mission | None:
         row = self._db.query_one(
@@ -175,8 +204,9 @@ class MissionStore:
         found = tuple(self.findings(mission_id)) if with_pages else ()
         decision = self.decision(mission_id) if with_pages else None
         challenges = tuple(self.challenges(mission_id)) if with_pages else ()
-        return Mission(**dict(row), pages=pages, findings=found, decision=decision,
-                       challenges=challenges)
+        actions = tuple(self.actions(mission_id)) if with_pages else ()
+        return Mission(**self._mission_kwargs(row), pages=pages, findings=found,
+                       decision=decision, challenges=challenges, actions=actions)
 
     def recent(self, limit: int = 20, *, with_pages: bool = False) -> list[Mission]:
         """Missions, most recently touched first."""
@@ -184,7 +214,7 @@ class MissionStore:
             self._MISSION_COLUMNS + f"WHERE {self._ALIVE} "
             "ORDER BY updated_at DESC, id DESC LIMIT ?", (limit,))
         return [
-            Mission(**dict(row),
+            Mission(**self._mission_kwargs(row),
                     pages=tuple(self.pages(row["id"])) if with_pages else (),
                     findings=tuple(self.findings(row["id"])) if with_pages else (),
                     decision=self.decision(row["id"]) if with_pages else None)
@@ -214,6 +244,41 @@ class MissionStore:
         if not goal:
             return False
         return self._touch(mission_id, "goal = ?", (goal,))
+
+    def set_progress(self, mission_id: int, label: str) -> bool:
+        """Update the mission's current-stage label - see Mission.progress.
+
+        An empty label is a legitimate value (nothing to report yet). Over
+        length is truncated, not refused: a status line losing its tail costs
+        nothing a user would miss, unlike a finding or a decision.
+        """
+        return self._touch(mission_id, "progress = ?",
+                           (collapse(label)[:MAX_PROGRESS_CHARS],))
+
+    def set_result(self, mission_id: int, text: str,
+                   follow_ups: list[str] | None = None) -> bool:
+        """Write the mission's outcome, and Py's plain follow-up suggestions.
+
+        Called once real work is done - see Mission.result and Mission.follow_ups.
+        Passing follow_ups=None leaves the existing suggestions alone; pass []
+        explicitly to clear them. An over-length result or follow-up is
+        REFUSED, the same as a finding - see add_finding's note on why cutting
+        a fact down is worse than an extra tool call.
+        """
+        text = collapse(text)
+        if len(text) > MAX_RESULT_CHARS:
+            return False
+        params: list = [text]
+        assignment = "result = ?"
+        if follow_ups is not None:
+            cleaned = [collapse(item) for item in follow_ups if collapse(item)]
+            if len(cleaned) > MAX_FOLLOW_UPS:
+                return False
+            if any(len(item) > MAX_FOLLOW_UP_CHARS for item in cleaned):
+                return False
+            assignment += ", follow_ups = ?"
+            params.append(json.dumps(cleaned, ensure_ascii=False))
+        return self._touch(mission_id, assignment, tuple(params))
 
     def delete(self, mission_id: int) -> None:
         """Destroy a Mission and everything under it. Irreversible.
@@ -265,7 +330,7 @@ class MissionStore:
                 LIMIT ?""",
             (like, like, like, like, like, like, like, limit))
         return [
-            Mission(**dict(row),
+            Mission(**self._mission_kwargs(row),
                     pages=tuple(self.pages(row["id"])) if with_pages else (),
                     findings=tuple(self.findings(row["id"])) if with_pages else (),
                     decision=self.decision(row["id"]) if with_pages else None)
@@ -853,6 +918,52 @@ class MissionStore:
         cursor = self._db.execute("DELETE FROM mission_ghost_runs WHERE id = ?",
                                   (ghost_run_id,))
         return bool(cursor is not None and cursor.rowcount)
+
+    # -- action log --------------------------------------------------------
+    #
+    # The persisted twin of AgentSession's transient Step - see MissionAction.
+    # An operational log, not a fact a decision might cite, so it is trimmed
+    # (oldest dropped) rather than refused once full, unlike findings.
+    def record_action(self, mission_id: int, description: str, *,
+                      tool_name: str = "", outcome: str = "done",
+                      page_id: int | None = None) -> MissionAction | None:
+        description = collapse(description)[:MAX_ACTION_DESCRIPTION_CHARS]
+        if not description:
+            return None
+        stamp = now()
+        cursor = self._db.execute(
+            "INSERT INTO mission_actions "
+            "(mission_id, description, tool_name, outcome, page_id, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (mission_id, description, tool_name, outcome, page_id, stamp))
+        if cursor is None:
+            return None
+        action_id = int(cursor.lastrowid)
+
+        # Trim from the tail: delete the oldest rows past the cap so a
+        # long-running mission's log stays bounded without ever refusing a
+        # new entry.
+        self._db.execute(
+            "DELETE FROM mission_actions WHERE mission_id = ? AND id NOT IN ("
+            "SELECT id FROM mission_actions WHERE mission_id = ? "
+            "ORDER BY created_at DESC, id DESC LIMIT ?)",
+            (mission_id, mission_id, MAX_ACTIONS_PER_MISSION))
+        self._touch_mission(mission_id)
+
+        row = self._db.query_one(
+            "SELECT id, mission_id, description, tool_name, outcome, page_id, "
+            "created_at FROM mission_actions WHERE id = ?", (action_id,))
+        if row is None:
+            return None
+        return MissionAction(**dict(row))
+
+    def actions(self, mission_id: int, limit: int = MAX_ACTIONS_PER_MISSION
+               ) -> list[MissionAction]:
+        rows = self._db.query(
+            "SELECT id, mission_id, description, tool_name, outcome, page_id, "
+            "created_at FROM mission_actions WHERE mission_id = ? "
+            "ORDER BY created_at, id LIMIT ?", (mission_id, limit))
+        return [MissionAction(**dict(row)) for row in rows]
 
     def _touch_mission(self, mission_id: int) -> None:
         self._db.execute("UPDATE missions SET updated_at = ? WHERE id = ?",

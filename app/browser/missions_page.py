@@ -85,8 +85,12 @@ def summarise(mission, *, with_detail: bool = False,
         "findings": len(mission.findings) if findings is None else findings,
         "pages": len(mission.pages) if pages is None else pages,
         "branchName": mission.branch_name,
+        "progress": mission.progress,
     }
     if with_detail:
+        row["result"] = mission.result
+        row["followUps"] = list(mission.follow_ups)
+        row["actionList"] = [_action(a) for a in mission.actions]
         row["decision"] = _decision(mission.decision)
         if row["decision"] is not None:
             row["decision"]["challenge"] = _challenge(
@@ -114,6 +118,18 @@ def summarise(mission, *, with_detail: bool = False,
         ]
         row["ghostRunList"] = [_ghost_run(g) for g in (ghost_runs or [])]
     return row
+
+
+def _action(action) -> dict[str, Any]:
+    """One recorded action, flattened - see MissionAction."""
+    return {
+        "id": action.id,
+        "description": action.description,
+        "toolName": action.tool_name,
+        "outcome": action.outcome,
+        "pageId": action.page_id,
+        "age": action.age,
+    }
 
 
 def _ghost_run(ghost_run) -> dict[str, Any]:
@@ -366,6 +382,28 @@ _TEMPLATE = """<!doctype html>
   .back:last-of-type { margin-bottom: 18px; }
   .back:hover { color: var(--accent); }
   .detail-goal { color: var(--muted); margin: 4px 0 22px; font-size: 15px; }
+  /* A stage label, not a progress bar - see Mission.progress. Quiet, and
+     never claims a precision an open-ended web task does not have. */
+  .progress-pill {
+    display: inline-block; font-size: 12px; color: var(--accent);
+    background: color-mix(in srgb, var(--accent) 12%, transparent);
+    border-radius: 999px; padding: 3px 12px; margin: 0 0 18px;
+  }
+  .result-block {
+    font-size: 15px; line-height: 1.5; white-space: pre-wrap;
+    border-left: 3px solid var(--success); padding: 2px 0 2px 18px; margin: 4px 0 12px;
+  }
+  ul.follow-ups { padding-left: 12px; margin: 0 0 26px; }
+  ul.follow-ups li { font-size: 13px; color: var(--muted); padding: 2px 0; }
+  ul.activity { padding-left: 0; margin: 0 0 20px; list-style: none; }
+  ul.activity li {
+    display: flex; justify-content: space-between; gap: 12px;
+    font-size: 13px; color: var(--muted); padding: 4px 0;
+    border-bottom: 1px solid var(--line);
+  }
+  ul.activity li .t { color: var(--text); }
+  ul.activity li .d { color: var(--disabled); font-size: 11px; white-space: nowrap; }
+  ul.activity li.activity-failed .t { color: var(--danger); }
   .actions { display: flex; gap: 8px; margin: 0 0 26px; }
   button.act {
     height: 32px; padding: 0 14px; border-radius: 8px; cursor: pointer;
@@ -544,6 +582,9 @@ _TEMPLATE = """<!doctype html>
     row.appendChild(el("span", "meta", countLabel(mission)));
     card.appendChild(row);
     card.appendChild(el("div", "goal", mission.goal));
+    if (mission.status === "active" && mission.progress) {
+      card.appendChild(el("div", "progress-pill", mission.progress));
+    }
     card.addEventListener("click", function () { act("open", { id: mission.id }); });
     return card;
   }
@@ -708,6 +749,21 @@ _TEMPLATE = """<!doctype html>
     if (mission.branchName) { head.appendChild(el("span", "tag", mission.branchName)); }
     body.appendChild(head);
     body.appendChild(el("div", "detail-goal", mission.goal));
+    if (mission.progress) {
+      body.appendChild(el("div", "progress-pill", mission.progress));
+    }
+
+    if (mission.result) {
+      body.appendChild(el("h2", null, "RESULT"));
+      body.appendChild(el("div", "result-block", mission.result));
+      if (mission.followUps && mission.followUps.length) {
+        var followUps = el("ul", "follow-ups");
+        mission.followUps.forEach(function (item) {
+          followUps.appendChild(el("li", null, item));
+        });
+        body.appendChild(followUps);
+      }
+    }
 
     renderDecision(mission);
 
@@ -825,6 +881,18 @@ _TEMPLATE = """<!doctype html>
         ghostRuns.appendChild(li);
       });
       body.appendChild(ghostRuns);
+    }
+
+    if (mission.actionList && mission.actionList.length) {
+      body.appendChild(el("h2", null, "ACTIVITY · " + mission.actionList.length));
+      var activity = el("ul", "activity");
+      mission.actionList.forEach(function (item) {
+        var li = el("li", "activity-" + item.outcome);
+        li.appendChild(el("span", "t", item.description));
+        if (item.age) { li.appendChild(el("span", "d", item.age)); }
+        activity.appendChild(li);
+      });
+      body.appendChild(activity);
     }
     document.getElementById("count").textContent = "";
   }

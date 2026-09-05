@@ -38,12 +38,16 @@ from app.missions.model import (
     MAX_DECISION_CHARS,
     MAX_EVIDENCE,
     MAX_FINDING_CHARS,
+    MAX_FOLLOW_UP_CHARS,
+    MAX_FOLLOW_UPS,
     MAX_GHOST_RUN_EFFECT_CHARS,
     MAX_GHOST_RUN_EFFECTS,
     MAX_GHOST_RUN_OPTION_CHARS,
     MAX_POINT_CHARS,
     MAX_POINTS,
+    MAX_PROGRESS_CHARS,
     MAX_RATIONALE_CHARS,
+    MAX_RESULT_CHARS,
     Confidence,
     EffectKind,
     PointKind,
@@ -357,6 +361,38 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                                  "required": ["kind", "text"],
                                  "additionalProperties": False}}},
           ["option", "confidence"]),
+
+    _tool("mission_set_progress",
+          "Update the mission's current-stage label, shown to the user while "
+          "you work - e.g. \"Comparing 3 options\", \"Waiting for approval\", "
+          "\"Done\". Call this as the task moves between stages, not on every "
+          "tool call - a label is a headline, not a log. Deliberately not a "
+          f"percentage: there is no denominator for an open-ended web task. "
+          f"At most {MAX_PROGRESS_CHARS} characters; longer is truncated.",
+          {"label": {"type": "string", "description": "The current stage, in a few words."}},
+          ["label"]),
+
+    _tool("mission_save_result",
+          "Record the mission's outcome once real work is done - the answer to "
+          "the goal, written for the user to read: a comparison, a ranked list, "
+          "a summary, whatever the task called for. Distinct from a decision: a "
+          "pure research or comparison task has a result without ever choosing "
+          "anything. Saving again replaces the previous result. "
+          f"At most {MAX_RESULT_CHARS} characters; longer is refused rather than "
+          "shortened, so write it structured and to the point rather than "
+          "padded.",
+          {"text": {"type": "string",
+                    "description": "The outcome, in the user's terms. Use plain "
+                                   "structure (a short table, a list) where that "
+                                   "reads better than a paragraph."},
+           "follow_ups": {"type": "array",
+                          "items": {"type": "string"},
+                          "description": "Plain suggestions for what to do next - "
+                                         "\"track prices for another week\" - never "
+                                         "anything that acts on its own. At most "
+                                         f"{MAX_FOLLOW_UPS}, {MAX_FOLLOW_UP_CHARS} "
+                                         "characters each."}},
+          ["text"]),
 ]
 
 TOOL_NAMES = {schema["name"] for schema in TOOL_SCHEMAS}
@@ -410,7 +446,8 @@ _UNCLASSIFIED_SAFE = {"browser_select_tab", "browser_close_tab",
 #: The fail-closed default in `assess` is untouched: a tool in neither this set
 #: nor any other is still treated as a write.
 LOCAL_WRITE_TOOLS = {"mission_save_finding", "mission_save_decision",
-                     "mission_save_challenge", "mission_save_ghost_run"}
+                     "mission_save_challenge", "mission_save_ghost_run",
+                     "mission_set_progress", "mission_save_result"}
 
 #: Tools that only read. Used to skip confirmation checks entirely.
 READ_ONLY_TOOLS = {
@@ -797,6 +834,10 @@ class ToolRegistry:
                 return f"Challenging the claim: {self._string(args, 'verdict')}"
             if name == "mission_save_ghost_run":
                 return _ghost_run_activity(self._string(args, "option"))
+            if name == "mission_set_progress":
+                return self._string(args, "label") or "Updating progress"
+            if name == "mission_save_result":
+                return "Recording the result"
             if name == "browser_get_page":
                 return "Reading the page"
             if name == "browser_get_page_text":
@@ -1012,6 +1053,50 @@ class ToolRegistry:
                 activity=_ghost_run_activity(option))
         return ToolOutcome(immediate=_ghost_run_error(result),
                            activity="Recording a prediction")
+
+    def _run_set_progress(self, args: dict) -> ToolOutcome:
+        label = self._string(args, "label", required=True)
+        if self._missions is None:
+            return ToolOutcome(immediate=_error(
+                "NO_MISSION", "Missions are not available in this window.",
+                hint="Carry on with the task; nothing needs recording."),
+                activity="Updating progress")
+        result = self._missions.set_progress(label)
+        if result.get("status") == "saved":
+            return ToolOutcome(immediate={"ok": True}, activity=label or "Updating progress")
+        return ToolOutcome(immediate=_error(
+            "NO_MISSION", "There is no active mission to update."),
+            activity="Updating progress")
+
+    def _run_save_result(self, args: dict) -> ToolOutcome:
+        """Record the mission's outcome. Writes rows only - see _run_save_decision."""
+        text = self._string(args, "text", required=True)
+        raw_follow_ups = args.get("follow_ups")
+        follow_ups: list[str] | None = None
+        if raw_follow_ups is not None:
+            if not isinstance(raw_follow_ups, list) or not all(
+                    isinstance(item, str) for item in raw_follow_ups):
+                raise ToolError("'follow_ups' must be a list of strings.")
+            follow_ups = raw_follow_ups
+
+        if self._missions is None:
+            return ToolOutcome(immediate=_error(
+                "NO_MISSION", "Missions are not available in this window.",
+                hint="Answer the user directly instead."),
+                activity="Recording the result")
+
+        result = self._missions.set_result(text, follow_ups)
+        status = result.get("status")
+        if status == "saved":
+            return ToolOutcome(immediate={"ok": True}, activity="Recording the result")
+        if status == "too_long":
+            return ToolOutcome(immediate=_error(
+                "TOO_LONG", f"The result is too long (max {result.get('limit')} characters).",
+                hint="Shorten it and save again."),
+                activity="Recording the result")
+        return ToolOutcome(immediate=_error(
+            "NO_MISSION", "There is no active mission to record a result for."),
+            activity="Recording the result")
 
     def _run_get_page(self, args: dict) -> ToolOutcome:
         return ToolOutcome(future=self._browser.get_page_structure(
