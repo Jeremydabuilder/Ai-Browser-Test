@@ -98,6 +98,15 @@ METRICS = Metrics()
 ACCENT_LIGHT = "#3d5afe"
 ACCENT_DARK = "#8c9cff"
 
+#: The second brand colour: a violet a third of the way round from the blue.
+#: Used sparingly, and only where the browser is doing something distinctly
+#: *AI* rather than ordinary browsing - the mission/AI gradient below, and
+#: nowhere plain browsing chrome (tabs, the toolbar) ever reads from it. Two
+#: colours that never mix in the same control is what keeps this from
+#: reading as decoration rather than a signal.
+ACCENT2_LIGHT = "#7b3ff2"
+ACCENT2_DARK = "#b98cff"
+
 
 @dataclass(frozen=True)
 class Palette:
@@ -123,6 +132,9 @@ class Palette:
     #: Text drawn ON the accent. White fails against the lighter accent the
     #: dark theme needs, so this is a palette entry rather than a constant.
     accent_text: str
+    #: The second brand colour (see ACCENT2_LIGHT/DARK above) - the far end of
+    #: the AI/mission gradient. Never used alone; always paired with `accent`.
+    accent2: str
     danger: str
     danger_soft: str
     warning: str        # the approval prompt, which is a caution and not an error
@@ -138,7 +150,7 @@ LIGHT = Palette(
     line="#e0e0e8", line_strong="#c9c9d4",
     text="#17171d", muted="#65656f", disabled="#a8a8b4",
     accent=ACCENT_LIGHT, accent_hover="#2f47e0", accent_soft="#e6eaff",
-    accent_text="#ffffff",
+    accent_text="#ffffff", accent2=ACCENT2_LIGHT,
     danger="#b3261e", danger_soft="#fdeceb",
     warning="#a97400", warning_soft="#fff8e6", warning_text="#5c3d00",
     success="#2e7d32",
@@ -150,12 +162,22 @@ DARK = Palette(
     line="#30303b", line_strong="#43434f",
     text="#eeeef3", muted="#9797a6", disabled="#61616e",
     accent=ACCENT_DARK, accent_hover="#a3b0ff", accent_soft="#242a40",
-    accent_text="#16162a",
+    accent_text="#16162a", accent2=ACCENT2_DARK,
     danger="#f2b8b5", danger_soft="#3a2422",
     warning="#e0b661", warning_soft="#332a17", warning_text="#f0dcb4",
     success="#7bc47f",
     tooltip_bg="#33333f", tooltip_text="#eeeef3",
 )
+
+
+def ai_gradient(palette: Palette, *, angle: str = "x1:0, y1:0, x2:1, y2:0") -> str:
+    """The one gradient in the whole design system: accent to accent2.
+
+    A single shared recipe, so every AI-flavoured control (the primary
+    button, the mission progress bar, a future glowing affordance) reads as
+    the same brand mark rather than each inventing its own two-colour blend.
+    """
+    return f"qlineargradient({angle}, stop:0 {palette.accent}, stop:1 {palette.accent2})"
 
 
 def palette_for(app) -> Palette:
@@ -179,6 +201,7 @@ def stylesheet(palette: Palette, m: Metrics = METRICS) -> str:
     disagree by four pixels.
     """
     p = palette
+    gradient = ai_gradient(p)
     return f"""
     QMainWindow, QDialog {{ background: {p.bg}; }}
     QWidget {{ color: {p.text}; font-size: {m.text}px; }}
@@ -266,11 +289,17 @@ def stylesheet(palette: Palette, m: Metrics = METRICS) -> str:
     QPushButton:pressed {{ background: {p.surface_alt}; }}
     QPushButton:disabled {{ color: {p.disabled}; border-color: {p.line}; background: {p.bg}; }}
     QPushButton:focus {{ border-color: {p.accent}; }}
+    /* The one gradient control in the chrome: the primary action, which is
+       almost always "go ahead with the AI/mission thing this dialog is
+       about" (Allow, Start, Save). Ordinary buttons stay flat - the gradient
+       is what marks this one as *the* AI-flavoured action, not decoration
+       repeated everywhere. */
     QPushButton[kind="primary"] {{
-        background: {p.accent}; border-color: {p.accent};
+        background: {gradient}; border: 1px solid transparent;
         color: {p.accent_text}; font-weight: 600;
     }}
     QPushButton[kind="primary"]:hover {{ background: {p.accent_hover}; border-color: {p.accent_hover}; }}
+    QPushButton[kind="primary"]:pressed {{ background: {p.accent}; }}
     QPushButton[kind="primary"]:disabled {{
         background: {p.surface_alt}; border-color: {p.line}; color: {p.disabled};
     }}
@@ -349,7 +378,10 @@ def stylesheet(palette: Palette, m: Metrics = METRICS) -> str:
         background: {p.surface_alt}; border: none;
         border-radius: 2px; height: 4px;
     }}
-    QProgressBar::chunk {{ background: {p.accent}; border-radius: 2px; }}
+    /* A Mission in progress is the browser's own signature moment, so its
+       progress bar gets the brand gradient rather than a flat accent fill -
+       the one other place (besides the primary button) that earns it. */
+    QProgressBar::chunk {{ background: {gradient}; border-radius: 2px; }}
 
     QSplitter::handle {{ background: {p.line}; width: 1px; }}
     QSplitter::handle:hover {{ background: {p.accent}; }}

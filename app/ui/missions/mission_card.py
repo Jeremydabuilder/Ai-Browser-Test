@@ -311,6 +311,18 @@ class MissionCard(QFrame):
         self.goal.setStyleSheet(f"color:{c.muted}; font-size:{m.text_sm}px;")
         outer.addWidget(self.goal)
 
+        # What Py is doing *right now* - "Reviewing 8 sources", "Comparing
+        # the strongest options" - as opposed to the goal above it (what the
+        # mission is for) or the findings below it (what it has learned so
+        # far). Only shown while there is something live to say; a finished
+        # or paused mission has nothing current to report.
+        self.progress_line = QLabel("", self)
+        self.progress_line.setWordWrap(True)
+        self.progress_line.setStyleSheet(
+            f"color:{c.accent}; font-size:{m.text_sm}px; font-weight:600;")
+        self.progress_line.hide()
+        outer.addWidget(self.progress_line)
+
         # Findings first: the discoveries are what the Mission is for, the
         # pages are how it got them.
         # One line, not a section. The full record - evidence, alternatives,
@@ -400,6 +412,12 @@ class MissionCard(QFrame):
         self.status.setStyleSheet(
             f"color:{tone}; font-size:{m.text_xs}px; font-weight:700;"
             " letter-spacing:0.08em;")
+
+        if mission.status == MissionStatus.ACTIVE and mission.progress:
+            self.progress_line.setText(f"● {mission.progress}")
+            self.progress_line.show()
+        else:
+            self.progress_line.hide()
 
         self._render_decision(mission)
         self._render_findings(mission)

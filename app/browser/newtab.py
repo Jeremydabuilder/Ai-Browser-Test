@@ -272,7 +272,9 @@ _TEMPLATE = """<!doctype html>
     --muted: #65656f;
     --disabled: #a8a8b4;
     --accent: #3d5afe;
+    --accent2: #7b3ff2;
     --accent-soft: #eeedfc;
+    --gradient: linear-gradient(135deg, var(--accent), var(--accent2));
     --glow: rgba(75, 70, 212, .07);
     --shadow: 0 1px 2px rgba(20, 20, 40, .04), 0 10px 30px rgba(20, 20, 40, .06);
     --shadow-lift: 0 2px 6px rgba(20, 20, 40, .07), 0 16px 40px rgba(20, 20, 40, .10);
@@ -295,6 +297,7 @@ _TEMPLATE = """<!doctype html>
       --muted: #9797a6;
       --disabled: #61616e;
       --accent: #8c9cff;
+      --accent2: #b98cff;
       --accent-soft: #282740;
       --glow: rgba(139, 134, 255, .10);
       --shadow: 0 1px 2px rgba(0, 0, 0, .35), 0 10px 30px rgba(0, 0, 0, .35);
@@ -310,6 +313,7 @@ _TEMPLATE = """<!doctype html>
     --muted: #9797a6;
     --disabled: #61616e;
     --accent: #8c9cff;
+    --accent2: #b98cff;
     --accent-soft: #282740;
     --glow: rgba(139, 134, 255, .10);
     --shadow: 0 1px 2px rgba(0, 0, 0, .35), 0 10px 30px rgba(0, 0, 0, .35);
@@ -387,12 +391,21 @@ _TEMPLATE = """<!doctype html>
     0%, 100% { transform: translateY(0) }
     50%      { transform: translateY(-3px) }
   }
-  .mark:hover { transform: scale(1.06); animation-play-state: paused; }
+  .mark:hover {
+    transform: scale(1.06);
+    animation-play-state: paused;
+    filter: drop-shadow(0 0 18px var(--glow));
+  }
   .mark:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
   .wordmark {
     font-size: 23px; font-weight: 600; letter-spacing: -.022em;
   }
-  .wordmark span { color: var(--accent); }
+  .wordmark span {
+    background: var(--gradient);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
   .greeting {
     margin: 2px 0 0; font-size: 13.5px; color: var(--muted); text-align: center;
   }
@@ -448,15 +461,18 @@ _TEMPLATE = """<!doctype html>
     cursor: pointer;
     transition: border-color .16s ease, box-shadow .16s ease, transform .08s ease;
   }
-  .ai:hover { border-color: var(--accent); box-shadow: var(--shadow); }
+  .ai:hover {
+    border-color: var(--accent);
+    box-shadow: var(--shadow), 0 0 20px -6px var(--accent2);
+  }
   .ai:active { transform: translateY(1px); }
   .ai:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
   .ai .glyph {
     width: 30px; height: 30px; flex: none;
     display: flex; align-items: center; justify-content: center;
-    background: var(--accent-soft); border-radius: 50%;
+    background: var(--gradient); border-radius: 50%;
   }
-  .ai svg { width: 16px; height: 16px; color: var(--accent); }
+  .ai svg { width: 16px; height: 16px; color: #fff; }
   .ai b { font-weight: 600; font-size: 13.5px; }
   .ai small { display: block; color: var(--muted); font-size: 12px; }
 
@@ -599,7 +615,7 @@ _TEMPLATE = """<!doctype html>
          which inlined the whole drawing a second time, inside a comment. -->
     __MASCOT__
     <div class="wordmark">Py<span>Browser</span></div>
-    <p class="greeting" id="greeting">Hey, I\u2019m Py. What shall we explore?</p>
+    <p class="greeting" id="greeting">Hey, I\u2019m Py. What do you want to get done?</p>
   </div>
 
   <form id="f" autocomplete="off">
@@ -617,7 +633,7 @@ _TEMPLATE = """<!doctype html>
     <p class="hint" id="hint"></p>
   </form>
 
-  <p class="offer-label" id="offer-label">Or let me help with\u2026</p>
+  <p class="offer-label" id="offer-label">Or give Py a mission\u2026</p>
   <div class="actions" id="actions"></div>
 
   <button class="ai" id="ai" type="button">
@@ -824,12 +840,16 @@ _TEMPLATE = """<!doctype html>
   var ACTIONS = [
     ["Research", "Go deep on a topic",
      "Research this for me and give me a few good sources: "],
-    ["Summarise", "Get the key points",
+    ["Compare", "Weigh options side by side",
+     "Compare products, prices, features, and reviews."],
+    ["Find", "Get a recommendation",
+     "Find the best option based on my requirements."],
+    ["Plan", "Turn research into a plan",
+     "Research this and organize a plan using what you find on the web."],
+    ["Summarize", "Get the key points",
      "Summarise the page I am looking at."],
-    ["Compare", "Look across my tabs",
-     "Compare my open tabs and tell me how they differ."],
-    ["Explain", "Make it simple and clear",
-     "Explain what this page is and who it is for, in plain language."]
+    ["Explore", "See what stands out",
+     "Explore this topic and tell me what is worth knowing."]
   ];
   var actions = document.getElementById("actions");
   ACTIONS.forEach(function (spec) {

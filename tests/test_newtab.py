@@ -216,9 +216,11 @@ class DataTests(unittest.TestCase):
         # "Compare" on its own is a word, not an offer.
         html = render(NewTabData())
         for label, blurb in (("Research", "Go deep on a topic"),
-                             ("Summarise", "Get the key points"),
-                             ("Compare", "Look across my tabs"),
-                             ("Explain", "Make it simple and clear")):
+                             ("Compare", "Weigh options side by side"),
+                             ("Find", "Get a recommendation"),
+                             ("Plan", "Turn research into a plan"),
+                             ("Summarize", "Get the key points"),
+                             ("Explore", "See what stands out")):
             self.assertIn(label, html)
             self.assertIn(blurb, html)
 
