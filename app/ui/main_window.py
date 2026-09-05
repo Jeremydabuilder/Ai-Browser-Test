@@ -181,6 +181,7 @@ class MainWindow(QMainWindow):
             tools_menu, "Show &AI Agent", "Ctrl+Shift+A", self._toggle_agent_panel)
         self._agent_action.setCheckable(True)
         self._add_action(tools_menu, "&Configure AI Agent…", None, self._configure_agent)
+        self._add_action(tools_menu, "Agent &Diagnostics…", None, self._show_diagnostics)
         tools_menu.addSeparator()
         self._add_action(tools_menu, "&Mission Library", "Ctrl+Shift+M",
                          self._show_mission_library)
@@ -1028,10 +1029,12 @@ class MainWindow(QMainWindow):
     def _show_about(self) -> None:
         from PySide6.QtCore import qVersion
 
+        from app import __version__
+
         QMessageBox.about(
             self,
             f"About {APP_NAME}",
-            f"<b>{APP_NAME}</b> — the browser that finishes internet tasks.<br>"
+            f"<b>{APP_NAME}</b> {__version__} — the browser that finishes internet tasks.<br>"
             "Browse normally, or give Py a goal and let it research, compare, "
             "and act across the web.<br><br>"
             "Built with Python and Qt WebEngine.<br><br>"
@@ -1072,6 +1075,11 @@ class MainWindow(QMainWindow):
 
         ApiKeyDialog(self, self.settings).exec()
         self._apply_agent_settings()
+
+    def _show_diagnostics(self) -> None:
+        from app.ui.diagnostics import DiagnosticsDialog
+
+        DiagnosticsDialog(self._agent_session, self).exec()
 
     def _apply_agent_settings(self) -> None:
         """Adopt changed AI configuration immediately, without a restart.
