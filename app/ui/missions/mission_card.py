@@ -337,6 +337,19 @@ class MissionCard(QFrame):
         self.decision.hide()
         outer.addWidget(self.decision)
 
+        # A pure research/comparison mission has a result with no decision to
+        # make - "here is what I found," not "here is what I picked." Same
+        # one-line-then-open-for-more treatment, shown only when there is no
+        # decision already saying the mission is done.
+        self.result_line = _ClickableLabel("", self)
+        self.result_line.setWordWrap(True)
+        self.result_line.setStyleSheet(
+            f"color:{c.text}; font-size:{m.text_sm}px; font-weight:600;")
+        self.result_line.setToolTip("Open this mission to see the full result")
+        self.result_line.clicked.connect(self._open_decision)
+        self.result_line.hide()
+        outer.addWidget(self.result_line)
+
         self.findings_label = QLabel("", self)
         self.findings_label.setStyleSheet(
             f"color:{c.disabled}; font-size:{m.text_xs}px; font-weight:600;"
@@ -420,6 +433,7 @@ class MissionCard(QFrame):
             self.progress_line.hide()
 
         self._render_decision(mission)
+        self._render_result(mission)
         self._render_findings(mission)
         self._render_pages(mission)
         self.show()
@@ -442,6 +456,18 @@ class MissionCard(QFrame):
         self.decision.setToolTip(f"{decision.decision}\n{decision.rationale}\n\n"
                                  "Open this mission to see why")
         self.decision.show()
+
+    def _render_result(self, mission: Mission) -> None:
+        # Only when there is no decision: a mission with both shows the
+        # decision, which is the more specific of the two ("here is what I
+        # picked" implies "here is what I found").
+        if mission.decision is not None or not mission.result:
+            self.result_line.hide()
+            return
+        snippet = " ".join(mission.result.split())
+        self.result_line.setText(f"✓  {_elide(snippet, 90)}")
+        self.result_line.setToolTip(f"{snippet}\n\nOpen this mission to see the full result")
+        self.result_line.show()
 
     def _open_decision(self) -> None:
         window = self.window()

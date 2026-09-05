@@ -213,6 +213,7 @@ class MainWindow(QMainWindow):
         self.nav_bar.home_requested.connect(self._go_home)
         self.nav_bar.navigate_requested.connect(self._navigate_from_address_bar)
         self.nav_bar.bookmark_toggled.connect(self._toggle_bookmark)
+        self.nav_bar.ask_py_requested.connect(self._open_agent_with)
         self.find_bar.search_requested.connect(self._run_find)
         self.find_bar.closed.connect(self._clear_find)
 

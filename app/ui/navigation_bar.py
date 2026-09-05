@@ -23,7 +23,18 @@ class AddressBar(QLineEdit):
     That is the one piece of feedback an address bar can give before you commit,
     and PyBrowser already knows the answer - `url_utils.is_probably_search` is
     the same function the navigation itself uses.
+
+    When the typed text reads as a goal rather than a search or an address
+    ("find noise cancelling headphones under $150 with good bass"), a second,
+    trailing icon appears offering to hand it to Py instead. Enter still does
+    exactly what it always did - an ordinary search - so this is purely an
+    extra way in, never a change to the fast, familiar path.
     """
+
+    #: The box holds a task-shaped request the user chose to hand to Py,
+    #: rather than search for. Never emitted on its own; only a click on the
+    #: "Ask Py" icon fires this - Enter is untouched.
+    ask_py_requested = Signal(str)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -45,6 +56,15 @@ class AddressBar(QLineEdit):
         self._mode_action = self.addAction(
             self._search_icon, QLineEdit.ActionPosition.LeadingPosition)
         self._mode_action.setToolTip("")
+
+        self._ask_py_icon = icons.icon("sparkle", colours.accent, size=32, weight=1.8)
+        self._ask_py_action = self.addAction(
+            self._ask_py_icon, QLineEdit.ActionPosition.TrailingPosition)
+        self._ask_py_action.setToolTip("This reads like a task - ask Py to do it")
+        self._ask_py_action.setVisible(False)
+        self._ask_py_action.triggered.connect(
+            lambda: self.ask_py_requested.emit(self.text().strip()))
+
         self.textChanged.connect(self._update_mode_icon)
         self._update_mode_icon("")
 
@@ -56,6 +76,7 @@ class AddressBar(QLineEdit):
         self._mode_action.setToolTip(
             "Press Enter to search the web" if searching
             else "Press Enter to go to this address")
+        self._ask_py_action.setVisible(url_utils.looks_like_a_task(text))
 
     def focusInEvent(self, event) -> None:  # noqa: N802
         super().focusInEvent(event)
@@ -87,6 +108,7 @@ class NavigationBar(QToolBar):
     home_requested = Signal()
     navigate_requested = Signal(str)
     bookmark_toggled = Signal()
+    ask_py_requested = Signal(str)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__("Navigation", parent)
@@ -127,6 +149,7 @@ class NavigationBar(QToolBar):
             QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
         )
         self.address_bar.returnPressed.connect(self._on_return_pressed)
+        self.address_bar.ask_py_requested.connect(self.ask_py_requested)
 
         # Outline when not bookmarked, filled and accent-coloured when it is -
         # the state has to be readable at a glance, not inferred from a

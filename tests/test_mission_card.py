@@ -77,5 +77,47 @@ class ProgressLineTests(unittest.TestCase):
         self.assertFalse(self.card.progress_line.isVisible())
 
 
+class ResultLineTests(unittest.TestCase):
+    """A pure research/comparison mission has a result but no decision - see
+    the comment on Mission.result in app/missions/model.py. The card must
+    still say the mission is done, not show nothing at all."""
+
+    def setUp(self) -> None:
+        self.card = MissionCard(_FakeService())
+
+    def tearDown(self) -> None:
+        self.card.deleteLater()
+        _app.processEvents()
+
+    def _mission(self, **overrides) -> Mission:
+        base = dict(id=1, title="Research tidal power", goal="compare tidal power sources",
+                   status=MissionStatus.COMPLETED, result="")
+        base.update(overrides)
+        return Mission(**base)
+
+    def test_a_result_with_no_decision_is_shown(self) -> None:
+        self.card.show_mission(self._mission(result="Tidal stream generators are more "
+                                                     "cost-effective than barrages."))
+        self.assertTrue(self.card.result_line.isVisible())
+        self.assertIn("Tidal stream generators", self.card.result_line.text())
+
+    def test_no_result_shows_nothing(self) -> None:
+        self.card.show_mission(self._mission(result=""))
+        self.assertFalse(self.card.result_line.isVisible())
+
+    def test_a_long_result_is_shortened(self) -> None:
+        self.card.show_mission(self._mission(result="x" * 300))
+        self.assertLess(len(self.card.result_line.text()), 300)
+
+    def test_a_decision_takes_precedence_over_the_bare_result_line(self) -> None:
+        from app.missions.model import MissionDecision
+
+        decision = MissionDecision(id=1, mission_id=1, decision="Bose QuietComfort Ultra",
+                                   rationale="Best noise cancellation for the price.")
+        self.card.show_mission(self._mission(result="Some findings.", decision=decision))
+        self.assertFalse(self.card.result_line.isVisible())
+        self.assertTrue(self.card.decision.isVisible())
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -84,6 +84,35 @@ def is_probably_search(text: str) -> bool:
     )
 
 
+#: Verbs that open a goal rather than name a thing to look up - "find the
+#: cheapest flight" is a task, "cheapest flights nyc" is a search, and the
+#: difference is almost always which one of these starts the sentence.
+_TASK_VERBS = re.compile(
+    r"^(find|compare|research|plan|summari[sz]e|explore|look into|check|"
+    r"figure out|help me)\b", re.IGNORECASE
+)
+
+
+def looks_like_a_task(text: str) -> bool:
+    """True when this reads as a goal for Py rather than a search or a URL.
+
+    Deliberately conservative - a false positive here would put an "Ask Py"
+    icon next to an ordinary search, which is noise, while a false negative
+    just means the address bar behaves exactly as it always did. Two
+    independent signs: the sentence opens with a task verb ("find...",
+    "compare..."), or it is simply long enough that it reads as an
+    instruction rather than a handful of keywords - five words is roughly
+    where "best budget noise cancelling headphones" (a search) gives way to
+    "find me noise cancelling headphones under $150 with good bass" (a task).
+    """
+    text = (text or "").strip()
+    if not text or not is_probably_search(text):
+        return False
+    if _TASK_VERBS.match(text):
+        return True
+    return len(text.split()) >= 8
+
+
 def display_text(url: QUrl) -> str:
     """What to show in the address bar for a loaded URL.
 

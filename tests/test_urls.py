@@ -48,5 +48,39 @@ class NormalizeTests(unittest.TestCase):
         self.assertEqual(urls.short_host(QUrl("https://www.google.com")), "google.com")
 
 
+class TaskDetectionTests(unittest.TestCase):
+    """looks_like_a_task: the address bar's "ask Py instead" affordance.
+
+    Conservative on purpose - see the docstring on looks_like_a_task. A false
+    positive puts a stray icon next to an ordinary search; a false negative
+    just leaves the address bar behaving exactly as it always has."""
+
+    def test_a_url_is_never_a_task(self):
+        self.assertFalse(urls.looks_like_a_task("https://example.com"))
+        self.assertFalse(urls.looks_like_a_task("github.com"))
+
+    def test_an_empty_box_is_not_a_task(self):
+        self.assertFalse(urls.looks_like_a_task(""))
+        self.assertFalse(urls.looks_like_a_task("   "))
+
+    def test_a_short_search_is_not_a_task(self):
+        self.assertFalse(urls.looks_like_a_task("cheap laptops"))
+        self.assertFalse(urls.looks_like_a_task("best budget noise cancelling headphones"))
+
+    def test_a_sentence_starting_with_a_task_verb_is_a_task(self):
+        self.assertTrue(urls.looks_like_a_task("find the cheapest flight to tokyo"))
+        self.assertTrue(urls.looks_like_a_task("compare these two laptops for me"))
+        self.assertTrue(urls.looks_like_a_task("research the best tennis rackets under $250"))
+        self.assertTrue(urls.looks_like_a_task("plan a weekend trip to portland"))
+        self.assertTrue(urls.looks_like_a_task("summarize this article for me please"))
+
+    def test_a_long_sentence_is_a_task_even_without_a_task_verb(self):
+        self.assertTrue(urls.looks_like_a_task(
+            "noise cancelling headphones under $150 with good bass and long battery life"))
+
+    def test_a_task_verb_that_is_actually_part_of_a_url_stays_a_url(self):
+        self.assertFalse(urls.looks_like_a_task("plan.example.com"))
+
+
 if __name__ == "__main__":
     unittest.main()
