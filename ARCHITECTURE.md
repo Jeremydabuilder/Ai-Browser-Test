@@ -564,6 +564,30 @@ it on their behalf, and a dismiss that persists via the existing
 `SettingsStore` (`onboarding_dismissed`) - no new storage mechanism, the same
 one workspace IDs and provider credentials already use.
 
+### Blockers: a mission says when it is waiting on the user
+
+Whether a mission is currently blocked - waiting for the user to approve a
+sensitive action - is visible in the Mission Library, not only in the live
+`ConfirmationBar`, so it survives closing the panel. `MissionService.
+on_agent_state_changed` is wired to `AgentSession.state_changed` the same
+way `record_agent_step` is wired to `step_changed` (main_window.py, no
+import from `app.agent` inside `app.missions`): entering
+`AWAITING_CONFIRMATION` saves the mission's current progress label and
+replaces it with `model.BLOCKED_LABEL` ("Waiting for your approval"); the
+next state change - approve or decline, whichever the user picks - restores
+what was saved.
+
+Deliberately code-driven rather than something the model is asked to
+remember: a model that forgets to call `mission_set_progress` before a
+sensitive action would otherwise leave the mission looking like nothing is
+wrong, and this is exactly the kind of safety-relevant bookkeeping this
+codebase never trusts the model to keep straight on its own. The Mission
+Library shows a blocked mission's progress pill in the same warning colour
+a "weakened" challenge verdict uses elsewhere on the page - `BLOCKED_LABEL`
+is compared once, server-side (`missions_page.summarise`), rather than
+matched against in JavaScript, so the sentinel string lives in exactly one
+place.
+
 ### Recovering from a failed task
 
 `AgentPanel` shows a recovery row - Retry, Continue mission, Try another

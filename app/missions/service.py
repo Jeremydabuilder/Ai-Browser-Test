@@ -32,6 +32,7 @@ from app.missions.model import (
     MAX_FINDINGS_PER_MISSION,
     MAX_RATIONALE_CHARS,
     MAX_RESULT_CHARS,
+    BLOCKED_LABEL,
     Mission,
     GhostRun,
     MissionChallenge,
@@ -104,6 +105,11 @@ class MissionService(QObject):
         #: the user did not select - there is no tool parameter to name a
         #: target with.
         self._pending_challenge: tuple[str, int, str] | None = None
+        #: The active Mission's progress label from just before Py had to
+        #: stop for approval, so it can be restored once the user answers -
+        #: see on_agent_state_changed. None when nothing is currently
+        #: blocked on the user.
+        self._pre_confirmation_progress: str | None = None
         if controller is not None:
             controller.action_completed.connect(self._on_action)
         # Every window hears about every Mission change, including its own.
@@ -640,6 +646,35 @@ class MissionService(QObject):
         if outcome == self._store.FULL:
             result["limit"] = MAX_FINDINGS_PER_MISSION
         return result
+
+    # -- blockers ------------------------------------------------------------
+    def on_agent_state_changed(self, state: str) -> None:
+        """Make a mission that is blocked on the user say so, in the record
+        that survives closing the panel - not only in the live confirmation
+        prompt.
+
+        Meant to be connected to AgentSession.state_changed by whoever owns
+        both objects (see main_window.py), the same pattern as
+        record_agent_step - this stays free of any import from app.agent.
+        Deliberately code-driven rather than something the model is asked to
+        remember: a model that forgets to call mission_set_progress before a
+        sensitive action would otherwise leave the mission looking like
+        nothing is wrong. The label is restored once the user answers, so
+        approving or declining does not strand the mission on a stale
+        "waiting" message.
+        """
+        mission = self._active
+        if mission is None:
+            return
+        if state == "awaiting_confirmation":
+            if self._pre_confirmation_progress is None:
+                self._pre_confirmation_progress = mission.progress
+            self._store.set_progress(mission.id, BLOCKED_LABEL)
+            self._refresh()
+        elif self._pre_confirmation_progress is not None:
+            self._store.set_progress(mission.id, self._pre_confirmation_progress)
+            self._pre_confirmation_progress = None
+            self._refresh()
 
     # -- action log --------------------------------------------------------
     def record_agent_step(self, step) -> None:

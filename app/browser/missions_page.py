@@ -27,6 +27,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from app.browser.internal import route
+from app.missions.model import BLOCKED_LABEL
 
 HOST = "missions"
 LIBRARY_URL = "pybrowser://missions/"
@@ -86,6 +87,7 @@ def summarise(mission, *, with_detail: bool = False,
         "pages": len(mission.pages) if pages is None else pages,
         "branchName": mission.branch_name,
         "progress": mission.progress,
+        "blocked": mission.progress == BLOCKED_LABEL,
     }
     if with_detail:
         row["result"] = mission.result
@@ -412,6 +414,13 @@ _TEMPLATE = """<!doctype html>
     background: color-mix(in srgb, var(--accent) 12%, transparent);
     border-radius: 999px; padding: 3px 12px; margin: 0 0 18px;
   }
+  /* Blocked on the user is not just another stage - it needs a colour that
+     reads as "come back to this," the same warning tone a challenge's
+     "weakened" verdict uses elsewhere on this page. */
+  .progress-pill.blocked {
+    color: var(--warning);
+    background: color-mix(in srgb, var(--warning) 14%, transparent);
+  }
   .result-body {
     border-left: 3px solid var(--success); padding: 2px 0 2px 18px; margin: 4px 0 12px;
   }
@@ -697,7 +706,8 @@ _TEMPLATE = """<!doctype html>
     card.appendChild(row);
     card.appendChild(el("div", "goal", mission.goal));
     if (mission.status === "active" && mission.progress) {
-      card.appendChild(el("div", "progress-pill", mission.progress));
+      card.appendChild(el("div", "progress-pill" + (mission.blocked ? " blocked" : ""),
+                         mission.progress));
     }
     card.addEventListener("click", function () { act("open", { id: mission.id }); });
     return card;
@@ -866,7 +876,8 @@ _TEMPLATE = """<!doctype html>
     body.appendChild(head);
     body.appendChild(el("div", "detail-goal", mission.goal));
     if (mission.progress) {
-      body.appendChild(el("div", "progress-pill", mission.progress));
+      body.appendChild(el("div", "progress-pill" + (mission.blocked ? " blocked" : ""),
+                         mission.progress));
     }
 
     var actions = el("div", "actions");

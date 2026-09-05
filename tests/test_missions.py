@@ -1637,5 +1637,48 @@ class OnboardingTests(unittest.TestCase):
         self.assertIsNotNone(self.window._side_panel)
 
 
+class BlockerWiringTests(unittest.TestCase):
+    """MainWindow actually connects AgentSession.state_changed to
+    MissionService.on_agent_state_changed - the logic itself is unit-tested
+    in test_mission_progress.py; this proves the wiring exists."""
+
+    def setUp(self) -> None:
+        from app.ui.main_window import MainWindow
+
+        self.db, _ = _database()
+        self.window = MainWindow(_profile, self.db, ["about:blank"])
+        self.mission = self.window.missions.start("find tennis shoes")
+        self.window.missions.set_progress("Comparing 3 options")
+
+    def tearDown(self) -> None:
+        self.window.close()
+        self.window.deleteLater()
+        QTest.qWait(10)
+        self.db.close()
+
+    def test_a_real_agent_sessions_state_changes_reach_the_mission(self) -> None:
+        from unittest import mock
+
+        from app.agent.config import AgentConfig
+        from app.agent.session import AgentSession
+        from tests.fake_claude import ScriptedClaude, says
+
+        session = AgentSession(self.window.controller,
+                              ScriptedClaude([says("ok")]), AgentConfig())
+        self.addCleanup(session.shutdown)
+        with mock.patch("app.ui.agent_setup.build_session",
+                        return_value=(session, "")):
+            self.window._toggle_agent_panel()
+        QTest.qWait(10)
+
+        session.state_changed.emit("awaiting_confirmation")
+        self.assertEqual(self.window.missions.store.get(self.mission.id).progress,
+                         "Waiting for your approval")
+
+        session.state_changed.emit("acting")
+        self.assertEqual(self.window.missions.store.get(self.mission.id).progress,
+                         "Comparing 3 options")
+
+
 if __name__ == "__main__":
     unittest.main()

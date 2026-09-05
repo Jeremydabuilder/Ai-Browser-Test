@@ -1023,6 +1023,7 @@ class MainWindow(QMainWindow):
                 self._agent_session.briefing_provider = self.missions.briefing
                 self._agent_session.step_recorder = self.routines.record_step
                 self._agent_session.step_changed.connect(self.missions.record_agent_step)
+                self._agent_session.state_changed.connect(self.missions.on_agent_state_changed)
                 credential = self._current_credential(self._agent_session.config.provider)
                 self._credential_id = credential.fingerprint if credential else ""
         self.set_side_panel(AgentPanel(self._agent_session, self, self.missions))

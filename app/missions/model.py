@@ -200,6 +200,13 @@ MAX_ACTION_DESCRIPTION_CHARS = 200
 #: nothing a user would miss, unlike a finding or a decision.
 MAX_PROGRESS_CHARS = 80
 
+#: The exact progress label MissionService.on_agent_state_changed writes
+#: while a mission is blocked on the user's approval. Shared with
+#: missions_page.py so the Library can show a blocked mission distinctly
+#: (a warning colour, not the ordinary progress accent) without inventing a
+#: second, separately-maintained flag for what is really one fact.
+BLOCKED_LABEL = "Waiting for your approval"
+
 #: The mission's outcome, and the plain suggestions that follow it - see
 #: Mission.result and Mission.follow_ups. A result can be a full structured
 #: comparison, so it gets far more room than a single finding.

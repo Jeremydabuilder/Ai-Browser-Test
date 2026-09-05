@@ -539,6 +539,21 @@ class WorkspaceLayoutTests(unittest.TestCase):
         self.assertTrue(self.harness.js(
             tab, "document.querySelector('main').classList.contains('wide')"))
 
+    def test_a_blocked_mission_shows_a_warning_pill(self) -> None:
+        from app.missions.model import BLOCKED_LABEL
+
+        self.harness.service.store.set_progress(self.shoes.id, BLOCKED_LABEL)
+        tab = self._open_detail(self.shoes.id)
+        self.assertTrue(self.harness.js(tab, "!!document.querySelector('.progress-pill.blocked')"))
+        self.assertEqual(
+            self.harness.js(tab, "document.querySelector('.progress-pill').textContent"),
+            BLOCKED_LABEL)
+
+    def test_an_ordinary_progress_label_is_not_marked_blocked(self) -> None:
+        self.harness.service.store.set_progress(self.shoes.id, "Comparing 3 options")
+        tab = self._open_detail(self.shoes.id)
+        self.assertFalse(self.harness.js(tab, "!!document.querySelector('.progress-pill.blocked')"))
+
     def test_findings_land_in_the_main_column(self) -> None:
         tab = self._open_detail(self.shoes.id)
         text = self.harness.js(

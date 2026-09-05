@@ -315,6 +315,68 @@ class ServiceTests(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# Blockers: a mission that is waiting on the user says so in its own record,
+# not only in the live confirmation prompt.
+# ---------------------------------------------------------------------------
+
+
+class BlockerTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.db, _ = _database()
+        self.service = MissionService(MissionStore(self.db))
+        self.mission = self.service.start("find tennis shoes")
+
+    def tearDown(self) -> None:
+        self.db.close()
+
+    def test_awaiting_confirmation_sets_a_waiting_progress_label(self) -> None:
+        self.service.set_progress("Comparing 3 options")
+        self.service.on_agent_state_changed("awaiting_confirmation")
+        self.assertEqual(self.service.store.get(self.mission.id).progress,
+                         "Waiting for your approval")
+
+    def test_the_previous_progress_is_restored_once_resolved(self) -> None:
+        self.service.set_progress("Comparing 3 options")
+        self.service.on_agent_state_changed("awaiting_confirmation")
+        self.service.on_agent_state_changed("acting")
+        self.assertEqual(self.service.store.get(self.mission.id).progress,
+                         "Comparing 3 options")
+
+    def test_a_decline_restores_progress_too(self) -> None:
+        # The session moves to a different state either way (approve ->
+        # acting, decline -> whatever comes next) - restoring must not
+        # depend on which one it was.
+        self.service.set_progress("Comparing 3 options")
+        self.service.on_agent_state_changed("awaiting_confirmation")
+        self.service.on_agent_state_changed("thinking")
+        self.assertEqual(self.service.store.get(self.mission.id).progress,
+                         "Comparing 3 options")
+
+    def test_repeated_awaiting_confirmation_does_not_overwrite_the_saved_label(self) -> None:
+        # A second sensitive action while still blocked (should not happen,
+        # but must not silently replace "Comparing 3 options" with "Waiting
+        # for your approval" as the thing that gets restored).
+        self.service.set_progress("Comparing 3 options")
+        self.service.on_agent_state_changed("awaiting_confirmation")
+        self.service.on_agent_state_changed("awaiting_confirmation")
+        self.service.on_agent_state_changed("acting")
+        self.assertEqual(self.service.store.get(self.mission.id).progress,
+                         "Comparing 3 options")
+
+    def test_ordinary_state_changes_do_not_touch_progress(self) -> None:
+        self.service.set_progress("Comparing 3 options")
+        self.service.on_agent_state_changed("thinking")
+        self.service.on_agent_state_changed("acting")
+        self.assertEqual(self.service.store.get(self.mission.id).progress,
+                         "Comparing 3 options")
+
+    def test_nothing_happens_with_no_active_mission(self) -> None:
+        self.service.leave()
+        self.service.on_agent_state_changed("awaiting_confirmation")  # must not raise
+        self.assertIsNone(self.service.active)
+
+
+# ---------------------------------------------------------------------------
 # The tools
 # ---------------------------------------------------------------------------
 
