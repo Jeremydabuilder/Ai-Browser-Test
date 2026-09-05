@@ -1070,6 +1070,43 @@ class BackgroundCallTests(unittest.TestCase):
         # guarantees the OS thread itself has actually stopped by this point.
         pump(lambda: dialog._other_worker is None)
 
+    def test_switching_away_before_a_slow_fetch_returns_does_not_apply_stale_models(self):
+        """Switch to Groq (triggers a slow automatic fetch), switch away to
+        OpenRouter (which has no key, so it starts no fetch of its own)
+        before the Groq fetch returns, then let it return - it must never
+        repopulate the now-showing OpenRouter section with Groq's models."""
+        import threading
+
+        release = threading.Event()
+
+        def slow_groq_fetch(_key):
+            release.wait(timeout=5)
+            return [{"id": "llama-3.3-70b-versatile"}]
+
+        def resolve(provider_id, store=None):
+            if provider_id == "groq":
+                return creds.Credential(creds.Mode.ENV_KEY, "Groq",
+                                        secret="gsk_x", provider="groq")
+            return creds.Credential(creds.Mode.NONE, "OpenRouter", provider=provider_id)
+
+        with mock.patch.object(creds, "resolve_for", side_effect=resolve):
+            with mock.patch.object(GroqClient, "list_models", side_effect=slow_groq_fetch):
+                dialog = self._dialog()
+                self.addCleanup(dialog.deleteLater)
+                dialog.provider_box.setCurrentIndex(dialog.provider_box.findData("groq"))
+                self.assertIsNotNone(dialog._other_worker, "the automatic fetch must start")
+
+                dialog.provider_box.setCurrentIndex(dialog.provider_box.findData("openrouter"))
+                release.set()
+                pump(lambda: dialog._other_worker is None or not dialog._other_worker.isRunning())
+                for _ in range(10):
+                    _app.processEvents()
+
+        ids = {dialog._other_model_box.itemData(i)
+              for i in range(dialog._other_model_box.count())}
+        self.assertNotIn("llama-3.3-70b-versatile", ids,
+                         "OpenRouter's section must not show Groq's models")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -409,6 +409,26 @@ class RenderedPageTests(unittest.TestCase):
             _profile.set_new_tab_provider(lambda: collect(
                 _History(self.recent), _Bookmarks(self.marks), agent_available=True))
 
+    def test_dismissing_onboarding_hides_it_immediately(self) -> None:
+        # act() navigates to a pybrowser:// URL the browser intercepts and
+        # refuses to render, so the page itself never reloads on its own -
+        # the card has to hide itself on click, not wait for a navigation
+        # that will never actually happen.
+        _profile.set_new_tab_provider(lambda: collect(
+            _History(self.recent), _Bookmarks(self.marks),
+            agent_available=True, show_onboarding=True))
+        try:
+            finished = []
+            self.tab.load_finished.connect(finished.append)
+            self.tab.reload()
+            self.assertTrue(pump(lambda: finished))
+            self.tab.run_javascript("document.getElementById('onboarding-close').click();")
+            self.assertTrue(pump(
+                lambda: self.js("document.getElementById('onboarding').hidden") is True))
+        finally:
+            _profile.set_new_tab_provider(lambda: collect(
+                _History(self.recent), _Bookmarks(self.marks), agent_available=True))
+
     def test_trying_the_demo_asks_the_browser_to_start_one(self) -> None:
         _profile.set_new_tab_provider(lambda: collect(
             _History(self.recent), _Bookmarks(self.marks),

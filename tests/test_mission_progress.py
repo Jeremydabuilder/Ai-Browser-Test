@@ -277,6 +277,20 @@ class ServiceTests(unittest.TestCase):
     def test_set_result_reports_too_long(self) -> None:
         result = self.service.set_result("x" * (MAX_RESULT_CHARS + 1))
         self.assertEqual(result["status"], "too_long")
+        self.assertEqual(result["field"], "text")
+
+    def test_set_result_reports_which_field_when_a_follow_up_is_the_problem(self) -> None:
+        # A follow-up over length must not be reported as "the result is too
+        # long" - that names the wrong thing for the caller to fix.
+        result = self.service.set_result("fine", follow_ups=["x" * (MAX_FOLLOW_UP_CHARS + 1)])
+        self.assertEqual(result["status"], "too_long")
+        self.assertEqual(result["field"], "follow_ups")
+
+    def test_set_result_reports_too_many_follow_ups_distinctly(self) -> None:
+        many = [f"item {n}" for n in range(MAX_FOLLOW_UPS + 1)]
+        result = self.service.set_result("fine", follow_ups=many)
+        self.assertEqual(result["status"], "too_long")
+        self.assertEqual(result["field"], "follow_ups")
 
     def test_set_result_saves_and_refreshes_the_active_mission(self) -> None:
         self.assertEqual(self.service.set_result("Nike wins")["status"], "saved")
@@ -411,6 +425,18 @@ class ToolTests(unittest.TestCase):
         result = self.tools.run("mission_save_result", {"text": "x" * (MAX_RESULT_CHARS + 1)}).immediate
         self.assertFalse(result["ok"])
         self.assertEqual(result["error"]["code"], "TOO_LONG")
+        self.assertIn("result is too long", result["error"]["message"])
+
+    def test_save_result_tool_names_a_follow_up_not_the_result(self) -> None:
+        # Telling the model "the result is too long" when a follow-up was
+        # the actual problem gives it the wrong thing to fix.
+        result = self.tools.run(
+            "mission_save_result",
+            {"text": "fine", "follow_ups": ["x" * (MAX_FOLLOW_UP_CHARS + 1)]}).immediate
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error"]["code"], "TOO_LONG")
+        self.assertIn("follow-up", result["error"]["message"])
+        self.assertNotIn("The result is too long", result["error"]["message"])
 
     def test_label_is_required(self) -> None:
         from app.agent.tools import ToolError

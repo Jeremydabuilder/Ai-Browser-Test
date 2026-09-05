@@ -30,6 +30,8 @@ from app.missions.model import (
     MAX_FINDING_CHARS,
     MAX_CHALLENGE_SUMMARY,
     MAX_FINDINGS_PER_MISSION,
+    MAX_FOLLOW_UP_CHARS,
+    MAX_FOLLOW_UPS,
     MAX_RATIONALE_CHARS,
     MAX_RESULT_CHARS,
     BLOCKED_LABEL,
@@ -39,6 +41,7 @@ from app.missions.model import (
     MissionDecision,
     TargetKind,
     clean_result,
+    collapse,
     finding_ref,
     parse_finding_ref,
     MissionFinding,
@@ -743,15 +746,28 @@ class MissionService(QObject):
         return {"status": "saved" if ok else "failed"}
 
     def set_result(self, text: str, follow_ups: list[str] | None = None) -> dict:
-        """Write the active Mission's outcome and Py's follow-up suggestions."""
+        """Write the active Mission's outcome and Py's follow-up suggestions.
+
+        Pre-checked here, the same three ways MissionStore.set_result would
+        refuse it, so a refusal names what actually went over - a caller
+        told "the result is too long" when a follow-up was the problem would
+        have nothing useful to fix.
+        """
         mission = self._active
         if mission is None:
             return {"status": "no_mission"}
         if len(clean_result(text)) > MAX_RESULT_CHARS:
-            return {"status": "too_long", "limit": MAX_RESULT_CHARS}
+            return {"status": "too_long", "field": "text", "limit": MAX_RESULT_CHARS}
+        if follow_ups is not None:
+            cleaned = [collapse(item) for item in follow_ups if collapse(item)]
+            if len(cleaned) > MAX_FOLLOW_UPS:
+                return {"status": "too_long", "field": "follow_ups", "limit": MAX_FOLLOW_UPS}
+            if any(len(item) > MAX_FOLLOW_UP_CHARS for item in cleaned):
+                return {"status": "too_long", "field": "follow_ups",
+                       "limit": MAX_FOLLOW_UP_CHARS}
         ok = self._store.set_result(mission.id, text, follow_ups)
         if not ok:
-            return {"status": "too_long", "limit": MAX_RESULT_CHARS}
+            return {"status": "too_long", "field": "text", "limit": MAX_RESULT_CHARS}
         self._refresh()
         self._announce(mission.id)
         return {"status": "saved"}

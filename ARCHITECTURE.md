@@ -617,6 +617,26 @@ since moved on from. `ApiKeyDialog.closeEvent` waits (bounded, 3s) for any
 in-flight call before allowing the dialog to be destroyed - a QThread whose
 Qt wrapper is deleted while still running is a crash, not a leak.
 
+A follow-up self-review of this whole session's diff caught a gap the token
+guard above did not close: it only invalidated a stale reply when the
+*next* provider had its own fetch to start. Switching from Groq (a fetch in
+flight) to OpenRouter with no stored key started nothing, left the token
+unbumped, and let Groq's models land in OpenRouter's dropdown once its
+fetch finally returned. `_refresh_other_section` now bumps
+`_other_refresh_token` unconditionally on every provider switch, not only
+when that switch happens to start a new fetch of its own.
+
+The same review caught two more real issues, both since fixed: the new-tab
+onboarding card's dismiss/demo buttons only fired an action URL, which
+`BrowserPage.acceptNavigationRequest` refuses before it ever reaches the
+page - so nothing changed on screen until the next reload; the click
+handlers now hide `#onboarding` directly, in addition to firing the action
+that persists the dismissal. And `MissionService.set_result` reported every
+refusal as "the result is too long" even when the actual violation was in
+`follow_ups` (too many, or one too long) - it now pre-validates each field
+itself, the same three checks `MissionStore.set_result` makes, so the
+status names which one actually failed.
+
 ### Routines (Teach Py)
 
 A Routine is a taught sequence of the agent's own tool calls, saved while

@@ -751,13 +751,20 @@ _TEMPLATE = """<!doctype html>
   if (data.showOnboarding) {
     var onboarding = document.getElementById("onboarding");
     onboarding.hidden = false;
+    // act() navigates to a pybrowser:// URL that the browser intercepts and
+    // refuses to render, so the page itself never changes on its own - the
+    // card has to be hidden here, not left to a navigation that never
+    // actually happens.
     document.getElementById("onboarding-close").addEventListener("click", function () {
+      onboarding.hidden = true;
       act("dismiss-onboarding", {});
     });
     document.getElementById("onboarding-later").addEventListener("click", function () {
+      onboarding.hidden = true;
       act("dismiss-onboarding", {});
     });
     document.getElementById("onboarding-demo").addEventListener("click", function () {
+      onboarding.hidden = true;
       act("demo-mission", {});
     });
   }

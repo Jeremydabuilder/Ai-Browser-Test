@@ -398,6 +398,12 @@ class ApiKeyDialog(QDialog):
         from app.agent.config import describe_provider
         from app.agent.credentials import resolve_for
 
+        # Bumped unconditionally, even when this switch starts no new fetch
+        # of its own: a fetch already in flight for the provider just left
+        # must never be allowed to land here and repopulate the combo with
+        # the wrong provider's models once this section has moved on.
+        self._other_refresh_token += 1
+
         info = describe_provider(provider_id)
         credential = resolve_for(provider_id)
         self._other_status.setText(f"<b>Currently using:</b> {credential.describe()}")

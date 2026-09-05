@@ -1090,10 +1090,15 @@ class ToolRegistry:
         if status == "saved":
             return ToolOutcome(immediate={"ok": True}, activity="Recording the result")
         if status == "too_long":
-            return ToolOutcome(immediate=_error(
-                "TOO_LONG", f"The result is too long (max {result.get('limit')} characters).",
-                hint="Shorten it and save again."),
-                activity="Recording the result")
+            if result.get("field") == "follow_ups":
+                message = (f"A follow-up is too long, or there are too many "
+                          f"(max {result.get('limit')}).")
+                hint = "Shorten or trim the follow-ups and save again."
+            else:
+                message = f"The result is too long (max {result.get('limit')} characters)."
+                hint = "Shorten it and save again."
+            return ToolOutcome(immediate=_error("TOO_LONG", message, hint=hint),
+                              activity="Recording the result")
         return ToolOutcome(immediate=_error(
             "NO_MISSION", "There is no active mission to record a result for."),
             activity="Recording the result")
