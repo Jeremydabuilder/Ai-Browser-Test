@@ -8,6 +8,7 @@ from PySide6.QtWidgets import (
     QDialog,
     QHBoxLayout,
     QHeaderView,
+    QLabel,
     QLineEdit,
     QMessageBox,
     QPushButton,
@@ -46,6 +47,16 @@ class _ListDialog(QDialog):
         self.tree.header().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         self.tree.itemActivated.connect(self._on_activated)
 
+        # Shown instead of the tree when there is nothing in it - an empty
+        # tree with just column headers looks broken, not empty on purpose.
+        # Which sentence depends on *why* it's empty: nothing saved at all,
+        # versus a filter that matched nothing (see _empty_message below).
+        self._empty_label = QLabel("", self)
+        self._empty_label.setWordWrap(True)
+        self._empty_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._empty_label.setProperty("kind", "muted")
+        self._empty_label.hide()
+
         self.open_button = QPushButton("Open", self)
         self.open_button.clicked.connect(self._open_selected)
         self.delete_button = QPushButton("Delete", self)
@@ -61,13 +72,30 @@ class _ListDialog(QDialog):
 
         layout = QVBoxLayout(self)
         layout.addWidget(self.filter_box)
-        layout.addWidget(self.tree)
+        layout.addWidget(self.tree, 1)
+        layout.addWidget(self._empty_label, 1)
         layout.addLayout(buttons)
 
         self.refresh()
 
     def refresh(self) -> None:  # pragma: no cover - overridden
         raise NotImplementedError
+
+    def _empty_message(self, term: str) -> str:  # pragma: no cover - overridden
+        raise NotImplementedError
+
+    def _update_empty_state(self, term: str) -> None:
+        """Call at the end of a subclass's refresh(), once the tree is filled.
+
+        Toggling visibility rather than deleting/rebuilding anything: the
+        tree keeps existing whether it's shown or not, so there is nothing
+        here that can drift out of sync with it.
+        """
+        has_items = self.tree.topLevelItemCount() > 0
+        self.tree.setVisible(has_items)
+        self._empty_label.setVisible(not has_items)
+        if not has_items:
+            self._empty_label.setText(self._empty_message(term))
 
     def _selected_urls(self) -> list[str]:
         return [item.data(0, _URL_ROLE) for item in self.tree.selectedItems()]
@@ -102,6 +130,12 @@ class HistoryDialog(_ListDialog):
             item.setData(0, _URL_ROLE, entry.url)
             item.setData(0, _ID_ROLE, entry.id)
             self.tree.addTopLevelItem(item)
+        self._update_empty_state(term)
+
+    def _empty_message(self, term: str) -> str:
+        if term:
+            return f'No history matches "{term}".'
+        return "Your browsing history will appear here."
 
     def _delete_selected(self) -> None:
         for item in self.tree.selectedItems():
@@ -135,6 +169,12 @@ class BookmarksDialog(_ListDialog):
             item.setData(0, _URL_ROLE, bookmark.url)
             item.setData(0, _ID_ROLE, bookmark.id)
             self.tree.addTopLevelItem(item)
+        self._update_empty_state(term)
+
+    def _empty_message(self, term: str) -> str:
+        if term:
+            return f'No bookmarks match "{term}".'
+        return "Nothing saved yet. Press Ctrl+D on a page to bookmark it."
 
     def _delete_selected(self) -> None:
         for item in self.tree.selectedItems():
