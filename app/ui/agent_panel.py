@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QPlainTextEdit,
     QPushButton,
     QSizePolicy,
@@ -102,7 +103,10 @@ class ConfirmationBar(QFrame):
     pressing Enter without reading carefully.
     """
 
-    answered = Signal(bool)
+    #: (allowed, edited_value). edited_value is "" unless the request had an
+    #: editable field and the user changed it - resolve_confirmation ignores
+    #: it otherwise, so it is always safe to pass the field's current text.
+    answered = Signal(bool, str)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -143,14 +147,27 @@ class ConfirmationBar(QFrame):
         self._detail.setTextFormat(Qt.TextFormat.RichText)
         layout.addWidget(self._detail)
 
+        # The handoff: shown only for a request with an editable field (right
+        # now, the text of a browser_type call). Letting someone fix one field
+        # here - the wrong date, a typo - beats making them decline and
+        # re-explain the whole thing in the chat.
+        self._edit_label = QLabel("", self)
+        self._edit_label.setStyleSheet(f"font-size:{m.text_xs}px; opacity:.8;")
+        layout.addWidget(self._edit_label)
+        self._edit = QLineEdit(self)
+        self._edit.setPlaceholderText("Edit before approving…")
+        layout.addWidget(self._edit)
+        self._edit_label.hide()
+        self._edit.hide()
+
         buttons = QHBoxLayout()
         buttons.setSpacing(m.space_2)
         self.deny_button = QPushButton("Deny", self)
         self.deny_button.setDefault(True)      # the safe answer is the default
         self.allow_button = QPushButton("Allow", self)
         self.allow_button.setProperty("kind", "primary")
-        self.allow_button.clicked.connect(lambda: self.answered.emit(True))
-        self.deny_button.clicked.connect(lambda: self.answered.emit(False))
+        self.allow_button.clicked.connect(lambda: self.answered.emit(True, self._edit.text()))
+        self.deny_button.clicked.connect(lambda: self.answered.emit(False, ""))
         buttons.addStretch(1)
         buttons.addWidget(self.deny_button)
         buttons.addWidget(self.allow_button)
@@ -187,6 +204,17 @@ class ConfirmationBar(QFrame):
             lines.append("<b>One of those is a password or payment field.</b>")
         self._detail.setText("<br>".join(lines))
         self._detail.setVisible(bool(lines))
+
+        if request.editable_field:
+            self._edit_label.setText(f"Text to type ({escape(request.editable_field)}):")
+            self._edit.setText(request.editable_value)
+            self._edit_label.show()
+            self._edit.show()
+        else:
+            self._edit_label.hide()
+            self._edit.hide()
+            self._edit.clear()
+
         self.show()
         self.deny_button.setFocus()
 
@@ -537,10 +565,10 @@ class AgentPanel(QWidget):
             self.transcript.clear()
             self._empty = False
 
-    def _answer_confirmation(self, allowed: bool) -> None:
+    def _answer_confirmation(self, allowed: bool, edited_value: str) -> None:
         self.confirmation.hide()
         if self._session is not None:
-            self._session.resolve_confirmation(allowed)
+            self._session.resolve_confirmation(allowed, edited_value or None)
 
     # -- missions --------------------------------------------------------
     #

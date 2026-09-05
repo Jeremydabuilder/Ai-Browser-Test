@@ -29,7 +29,8 @@ from app.agent.config import AgentConfig  # noqa: E402
 from app.agent.session import AgentSession  # noqa: E402
 from app.browser.controller import BrowserController  # noqa: E402
 from app.browser.tab_manager import TabManager  # noqa: E402
-from app.ui.agent_panel import QUICK_ACTIONS, AgentPanel  # noqa: E402
+from app.agent.session import ConfirmationRequest  # noqa: E402
+from app.ui.agent_panel import QUICK_ACTIONS, AgentPanel, ConfirmationBar  # noqa: E402
 from app.ui.mascot import MascotState  # noqa: E402
 from tests.fake_claude import ScriptedClaude, says  # noqa: E402
 from tests.qt_profile import shared_profile  # noqa: E402
@@ -166,6 +167,73 @@ class PanelTests(unittest.TestCase):
         self.session._set_state("thinking")
         panel._clear()
         self.assertEqual(len(self.session.messages), 1)
+
+
+class ConfirmationBarTests(unittest.TestCase):
+    """The approval card's handoff: an editable field for a request that has
+    one, none for a request that does not - tested at the widget level since
+    the underlying decision (which requests get one) is AgentSession's, and
+    is covered in tests.test_agent.HandoffTests."""
+
+    def setUp(self) -> None:
+        self.bar = ConfirmationBar()
+
+    def tearDown(self) -> None:
+        self.bar.deleteLater()
+        _app.processEvents()
+
+    def test_a_request_with_an_editable_field_shows_a_prefilled_box(self) -> None:
+        request = ConfirmationRequest(
+            tool_call_id="1", tool_name="browser_type",
+            description='Typing into "Search terms"',
+            editable_field="text", editable_value="tennis shoes")
+        self.bar.ask(request)
+        self.assertTrue(self.bar._edit.isVisible())
+        self.assertEqual(self.bar._edit.text(), "tennis shoes")
+
+    def test_a_request_with_nothing_editable_hides_the_box(self) -> None:
+        request = ConfirmationRequest(
+            tool_call_id="1", tool_name="browser_click",
+            description='Clicking "Buy now"')
+        self.bar.ask(request)
+        self.assertFalse(self.bar._edit.isVisible())
+
+    def test_approving_emits_the_edited_text(self) -> None:
+        request = ConfirmationRequest(
+            tool_call_id="1", tool_name="browser_type",
+            description='Typing into "Search terms"',
+            editable_field="text", editable_value="tennis shoes")
+        self.bar.ask(request)
+        self.bar._edit.setText("running shoes")
+        answers = []
+        self.bar.answered.connect(lambda allowed, text: answers.append((allowed, text)))
+        self.bar.allow_button.click()
+        self.assertEqual(answers, [(True, "running shoes")])
+
+    def test_declining_emits_an_empty_string_regardless_of_the_box(self) -> None:
+        request = ConfirmationRequest(
+            tool_call_id="1", tool_name="browser_type",
+            description='Typing into "Search terms"',
+            editable_field="text", editable_value="tennis shoes")
+        self.bar.ask(request)
+        self.bar._edit.setText("running shoes")
+        answers = []
+        self.bar.answered.connect(lambda allowed, text: answers.append((allowed, text)))
+        self.bar.deny_button.click()
+        self.assertEqual(answers, [(False, "")])
+
+    def test_switching_to_a_non_editable_request_clears_the_previous_box(self) -> None:
+        editable = ConfirmationRequest(
+            tool_call_id="1", tool_name="browser_type",
+            description='Typing into "Search terms"',
+            editable_field="text", editable_value="tennis shoes")
+        self.bar.ask(editable)
+        not_editable = ConfirmationRequest(
+            tool_call_id="2", tool_name="browser_click",
+            description='Clicking "Buy now"')
+        self.bar.ask(not_editable)
+        self.assertFalse(self.bar._edit.isVisible())
+        self.assertEqual(self.bar._edit.text(), "")
 
 
 if __name__ == "__main__":

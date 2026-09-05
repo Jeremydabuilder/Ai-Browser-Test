@@ -585,6 +585,98 @@ class AutonomyTests(AgentTestCase):
 
 
 # ---------------------------------------------------------------------------
+class HandoffTests(AgentTestCase):
+    """The human-agent handoff: a confirmation for browser_type carries the
+    proposed text as an editable field, and the user's correction - not the
+    agent's original guess - is what actually gets typed."""
+
+    def _type_search(self, messages):
+        return calls("browser_type", {"ref": find_ref(messages, "searchbox", "Search terms"),
+                                      "text": "tennis shoes"})
+
+    def test_confirmation_carries_the_proposed_text_as_editable(self):
+        from app.agent.config import Autonomy
+
+        self.start([calls("browser_get_page"), self._type_search, says("done")],
+                   autonomy=Autonomy.ASK_ALWAYS)
+        self.session.send("Search for something.")
+        self.assertTrue(pump(lambda: bool(self.confirmations), 15000))
+
+        request = self.confirmations[0]
+        self.assertEqual(request.editable_field, "text")
+        self.assertEqual(request.editable_value, "tennis shoes")
+        self.session.resolve_confirmation(False)
+
+    def test_approving_unedited_types_the_original_text(self):
+        from app.agent.config import Autonomy
+
+        self.start([calls("browser_get_page"), self._type_search, says("done")],
+                   autonomy=Autonomy.ASK_ALWAYS)
+        self.session.send("Search for something.")
+        self.assertTrue(pump(lambda: bool(self.confirmations), 15000))
+        self.session.resolve_confirmation(True, "tennis shoes")
+        self.assertTrue(pump(lambda: self.session.state == AgentState.IDLE, 15000))
+
+        structure = self.browser.get_page_structure().wait().data["structure"]
+        field = next(e for e in structure.text_fields if e.role == "searchbox")
+        self.assertEqual(field.value, "tennis shoes")
+        self.assertIn("Approved:", " ".join(self.actions))
+
+    def test_editing_before_approving_types_the_corrected_text(self):
+        from app.agent.config import Autonomy
+
+        self.start([calls("browser_get_page"), self._type_search, says("done")],
+                   autonomy=Autonomy.ASK_ALWAYS)
+        self.session.send("Search for something.")
+        self.assertTrue(pump(lambda: bool(self.confirmations), 15000))
+        self.session.resolve_confirmation(True, "running shoes")
+        self.assertTrue(pump(lambda: self.session.state == AgentState.IDLE, 15000))
+
+        structure = self.browser.get_page_structure().wait().data["structure"]
+        field = next(e for e in structure.text_fields if e.role == "searchbox")
+        self.assertEqual(field.value, "running shoes")
+        self.assertIn("Approved (edited before running):", " ".join(self.actions))
+
+    def test_a_password_field_is_never_offered_as_editable(self):
+        """The value itself is the secret here - editable_field must stay
+        empty, or the confirmation bar would put a password in a text box
+        for anyone looking over the user's shoulder to read."""
+        def type_password(messages):
+            return calls("browser_type", {"ref": find_ref(messages, input_type="password"),
+                                          "text": "hunter2"})
+
+        self.start([calls("browser_get_page"), type_password, says("done")])
+        self.session.send("Log me in.")
+        self.assertTrue(pump(lambda: bool(self.confirmations), 15000))
+        self.assertEqual(self.confirmations[0].editable_field, "")
+        self.assertEqual(self.confirmations[0].editable_value, "")
+        self.session.resolve_confirmation(False)
+
+    def test_declining_ignores_any_edited_text(self):
+        from app.agent.config import Autonomy
+
+        self.start([calls("browser_get_page"), self._type_search, says("stopped")],
+                   autonomy=Autonomy.ASK_ALWAYS)
+        self.session.send("Search for something.")
+        self.assertTrue(pump(lambda: bool(self.confirmations), 15000))
+        self.session.resolve_confirmation(False, "running shoes")
+        self.assertTrue(pump(lambda: self.session.state == AgentState.IDLE, 15000))
+
+        result = json.loads(self.fake.tool_results()[-1])
+        self.assertEqual(result["error"]["code"], "USER_DECLINED")
+
+    def test_a_click_confirmation_has_nothing_editable(self):
+        def buy(messages):
+            return calls("browser_click", {"ref": find_ref(messages, "button", "Buy now")})
+
+        self.start([calls("browser_get_page"), buy, says("done")])
+        self.session.send("Buy it.")
+        self.assertTrue(pump(lambda: bool(self.confirmations), 15000))
+        self.assertEqual(self.confirmations[0].editable_field, "")
+        self.session.resolve_confirmation(False)
+
+
+# ---------------------------------------------------------------------------
 class SensitiveDataTests(AgentTestCase):
     def test_typed_password_is_not_shown_in_the_activity_log(self):
         def type_password(messages):

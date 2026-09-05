@@ -106,6 +106,14 @@ class ConfirmationRequest:
     submits: list[str] = field(default_factory=list)
     #: True when one of those fields is a password or payment field.
     sensitive_fields: bool = False
+    #: The argument name the user may edit before approving - e.g. "text" for
+    #: a browser_type call - and the value the agent proposed for it. Empty
+    #: when this action has nothing sensible to hand-edit. This is the
+    #: human-agent handoff: instead of only approve/decline, the user can
+    #: fix one field ("that's the wrong dates") and let the agent continue
+    #: with their correction rather than declining and re-explaining.
+    editable_field: str = ""
+    editable_value: str = ""
 
     @property
     def site(self) -> str:
@@ -436,16 +444,29 @@ class AgentSession(QObject):
         self.activity.emit("Stopped.")
         self._finish()
 
-    def resolve_confirmation(self, allowed: bool) -> None:
-        """Answer the outstanding confirmation. Called by the UI."""
+    def resolve_confirmation(self, allowed: bool, edited_value: str | None = None) -> None:
+        """Answer the outstanding confirmation. Called by the UI.
+
+        ``edited_value`` is the handoff path: when the request named an
+        ``editable_field`` and the user changed it before approving, the
+        agent continues with their correction instead of the value it
+        originally proposed. Ignored when there is nothing editable, or the
+        value is unchanged.
+        """
         if self._state != AgentState.AWAITING_CONFIRMATION or self._confirming_call is None:
             return
         call, request = self._confirming_call, self._confirmation
         self._confirming_call = None
         self._confirmation = None
         if allowed:
-            self.trace.record(tracing.APPROVAL_GRANTED, tool=call.name)
-            self.activity.emit(f"Approved: {request.description}")
+            edited = bool(
+                edited_value is not None and request.editable_field
+                and edited_value != request.editable_value)
+            if edited:
+                call.arguments[request.editable_field] = edited_value
+            self.trace.record(tracing.APPROVAL_GRANTED, tool=call.name, edited=edited)
+            label = "Approved (edited before running)" if edited else "Approved"
+            self.activity.emit(f"{label}: {request.description}")
             self._set_state(AgentState.ACTING)
             self._execute(call, step=False)
             return
@@ -667,6 +688,7 @@ class AgentSession(QObject):
         if assessment.get("requires_confirmation"):
             self._confirming_call = call
             submits, sensitive = self._describe_submission(call)
+            editable_field, editable_value = self._editable_field(call, assessment)
             self._confirmation = ConfirmationRequest(
                 tool_call_id=call.id,
                 tool_name=call.name,
@@ -675,6 +697,8 @@ class AgentSession(QObject):
                 url=self._browser.get_current_page().page.url,
                 submits=submits,
                 sensitive_fields=sensitive,
+                editable_field=editable_field,
+                editable_value=editable_value,
             )
             self._set_state(AgentState.AWAITING_CONFIRMATION)
             self.trace.record(tracing.APPROVAL_REQUESTED, tool=call.name,
@@ -700,7 +724,10 @@ class AgentSession(QObject):
         if step:
             self._begin_step(description, tool=call.name)
         else:
-            self._update_step(StepState.RUNNING)
+            # Recomputed from the (possibly just-edited) arguments, so a
+            # user who corrected a field before approving sees the checklist
+            # reflect what is actually about to run, not what was proposed.
+            self._update_step(StepState.RUNNING, description=description)
         self.activity.emit(description)
         self.trace.record(tracing.TOOL_STARTED, tool=call.name)
         try:
@@ -823,6 +850,37 @@ class AgentSession(QObject):
         except Exception:  # noqa: BLE001 - teaching a Routine must not break a task
             pass
 
+    #: Substrings of a safety reason that mean the value itself is the
+    #: sensitive part (a password, a card number) - as opposed to merely the
+    #: *action* of typing being consequential. Guards against ever putting a
+    #: secret in an editable box: that would be showing it back to the user
+    #: exactly as classify_type's own docstring says never to.
+    _SECRET_VALUE_REASONS = ("password", "credential", "payment", "financial")
+
+    def _editable_field(self, call: ToolCall, assessment: dict[str, Any]) -> tuple[str, str]:
+        """Which argument, if any, the user could sensibly hand-edit before
+        approving this call - the human-agent handoff.
+
+        Only ``browser_type`` qualifies, and only when the *value itself*
+        isn't the sensitive part: it is the one action whose value is
+        ordinary free text a person can judge and correct at a glance
+        ("that's the wrong check-in date"). A password or payment field is
+        typed the same way but must never appear in an editable box - that
+        would be echoing the secret back to the person who just typed it.
+        Everything else - which element to click, which form to submit - is
+        a choice of *what*, not a value worth editing in place; declining and
+        re-asking is the right tool there.
+        """
+        if call.name != "browser_type":
+            return "", ""
+        text = call.arguments.get("text")
+        if not isinstance(text, str):
+            return "", ""
+        reasons = " ".join(assessment.get("reasons", [])).lower()
+        if any(marker in reasons for marker in self._SECRET_VALUE_REASONS):
+            return "", ""
+        return "text", text
+
     def _describe_submission(self, call: ToolCall) -> tuple[list[str], bool]:
         """Which fields a form submission would send. Names only, never values.
 
@@ -858,12 +916,19 @@ class AgentSession(QObject):
         self.step_changed.emit(step)
         return step
 
-    def _update_step(self, state: str, detail: str = "") -> None:
+    def _update_step(self, state: str, detail: str = "", *,
+                     description: str | None = None) -> None:
         if not self._steps:
             return
         from dataclasses import replace
 
-        step = replace(self._steps[-1], state=state, detail=detail)
+        changes: dict[str, Any] = {"state": state, "detail": detail}
+        if description is not None:
+            # Only passed when the step's description no longer matches what
+            # is about to run - an approved action whose editable field the
+            # user changed. Ordinary progress updates leave it alone.
+            changes["description"] = description
+        step = replace(self._steps[-1], **changes)
         self._steps[-1] = step
         self.step_changed.emit(step)
 

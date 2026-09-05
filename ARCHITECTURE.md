@@ -246,6 +246,19 @@ call budget runs out:
 All three are `ContextLimits` fields, so a test (or a future settings UI)
 can tune them the same way `max_turns`/`max_tool_calls` already are.
 
+**Human-agent handoff.** A confirmation is not only Allow/Deny: when the
+paused call is `browser_type` and the value itself isn't the sensitive part,
+`ConfirmationRequest.editable_field`/`editable_value` carry the proposed text
+and `AgentSession._editable_field` gates it off `assessment["reasons"]` -
+anything mentioning a password, credential, payment, or financial field never
+gets offered, so a secret is never echoed back into an editable box. The
+panel (`ConfirmationBar`) shows a pre-filled `QLineEdit` for these; approving
+with a changed value updates `call.arguments[editable_field]` before the tool
+runs, and the waiting step's description is recomputed from the (now
+corrected) arguments so the checklist reflects what actually ran, not what
+was proposed. `resolve_confirmation(allowed, edited_value=None)` carries the
+correction through; declining ignores it.
+
 ---
 
 ## Untrusted content

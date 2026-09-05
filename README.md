@@ -66,7 +66,7 @@ nss alsa-lib`.
 ## Tests
 
 ```bash
-python -m unittest discover -s tests -v          # 1265 tests
+python -m unittest discover -s tests -v          # 1276 tests
 python scripts/smoke_test.py                     # headless end-to-end run
 python scripts/feature_check.py                  # 28-point feature checklist
 python scripts/agent_demo.py                     # the research demo, offline
@@ -463,6 +463,17 @@ grinding on: repeating the exact same action back to back, clicking the same
 broken element over and over, or opening far more tabs than one task should
 need each end the task with a plain reason, the same recovery affordances
 (Retry / Continue mission / Try another approach) a failed task always gets.
+
+### Fixing a field instead of declining outright
+
+A confirmation for typing text carries the proposed value in an editable box,
+not just a description of the action. Approve/Deny still exist, but there's a
+third option: correct the one thing that's wrong ("that's the wrong dates")
+and let Py continue with the correction, instead of declining and re-explaining
+the whole request from scratch in the chat. This is the one field the browser
+knows is safe to hand back to you for editing — a password or payment value is
+never put in that box, because the confirmation prompt is not a place to echo
+a secret back to whoever just typed it.
 
 ### Keeping the cost down
 
