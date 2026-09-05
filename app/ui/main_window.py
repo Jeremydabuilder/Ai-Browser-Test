@@ -993,8 +993,10 @@ class MainWindow(QMainWindow):
         QMessageBox.about(
             self,
             f"About {APP_NAME}",
-            f"<b>{APP_NAME}</b><br>"
-            "A desktop web browser built with Python and Qt WebEngine.<br><br>"
+            f"<b>{APP_NAME}</b> — the browser that finishes internet tasks.<br>"
+            "Browse normally, or give Py a goal and let it research, compare, "
+            "and act across the web.<br><br>"
+            "Built with Python and Qt WebEngine.<br><br>"
             f"Qt {qVersion()}",
         )
 

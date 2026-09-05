@@ -542,6 +542,19 @@ it on their behalf, and a dismiss that persists via the existing
 `SettingsStore` (`onboarding_dismissed`) - no new storage mechanism, the same
 one workspace IDs and provider credentials already use.
 
+### Recovering from a failed task
+
+`AgentPanel` shows a recovery row - Retry, Continue mission, Try another
+approach - whenever a task ends in `AgentSession.error` rather than a plain
+finish, and hides it again the moment the user sends anything new (a stopped
+task is not a failure and gets no row: the user chose to end it). None of
+the three options is "starting over": Mission progress, findings, and the
+persisted action log were already saved as the agent went, so a failure
+mid-task loses only what happened since its last recorded step. Retry
+resends the user's exact last words; the other two send a plain follow-up
+message through the ordinary `send()` path, so recovery is not a separate
+code path from an ordinary turn - just a pre-written one.
+
 ### Routines (Teach Py)
 
 A Routine is a taught sequence of the agent's own tool calls, saved while

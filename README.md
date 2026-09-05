@@ -1,5 +1,10 @@
 # PyBrowser
 
+**The browser that finishes internet tasks.** Browse normally, or give Py a
+goal and let it research, compare, and act across the web - as a Mission it
+keeps track of, checks with you before anything real, and picks back up
+whenever you return.
+
 A real desktop web browser written in Python. It renders actual websites with
 Qt WebEngine (Chromium) — no Node.js, no Electron, no npm, no mocked pages.
 
@@ -7,6 +12,9 @@ Qt WebEngine (Chromium) — no Node.js, no Electron, no npm, no mocked pages.
 SQLite, keyboard shortcuts.
 **Phase 2:** a Claude-powered AI agent that operates web pages through the
 browser's structured API — see [`docs/ai_agent.md`](docs/ai_agent.md).
+**Missions:** a goal survives across tabs and restarts as a Mission - its
+pages, findings, decisions and progress kept together and resumable - see
+the Mission Library sections of [`ARCHITECTURE.md`](ARCHITECTURE.md).
 
 > ⚠️ **This is an experimental AI browser, not a production one.** The agent
 > mitigates prompt injection but does not solve it, and its sensitivity
@@ -58,7 +66,7 @@ nss alsa-lib`.
 ## Tests
 
 ```bash
-python -m unittest discover -s tests -v          # 1187 tests
+python -m unittest discover -s tests -v          # 1204 tests
 python scripts/smoke_test.py                     # headless end-to-end run
 python scripts/feature_check.py                  # 28-point feature checklist
 python scripts/agent_demo.py                     # the research demo, offline

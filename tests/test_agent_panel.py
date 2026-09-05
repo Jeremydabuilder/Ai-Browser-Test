@@ -316,3 +316,73 @@ class ErrorReportingTests(unittest.TestCase):
         self.assertTrue(self.panel._failed)
         # And a failed task must never wear the success face.
         self.assertNotEqual(self.panel.mascot.state(), MascotState.COMPLETE)
+
+
+class RecoveryTests(PanelTests):
+    """A task that breaks mid-mission must offer a way back in, not just an
+    error message - see the note in agent_panel.py on self.recovery."""
+
+    @staticmethod
+    def _error(text: str):
+        from app.agent.claude_client import ClaudeError
+
+        return ClaudeError(text)
+
+    def test_recovery_is_hidden_before_anything_happens(self) -> None:
+        panel = self.start([self._error("boom")])
+        self.assertTrue(panel.recovery.isHidden())
+
+    def test_a_failed_task_shows_the_recovery_row(self) -> None:
+        panel = self.start([self._error("boom")])
+        self.run_task(panel, "find me some shoes")
+        self.assertFalse(panel.recovery.isHidden())
+
+    def test_a_successful_task_never_shows_recovery(self) -> None:
+        panel = self.start([says("done")])
+        self.run_task(panel, "find me some shoes")
+        self.assertTrue(panel.recovery.isHidden())
+
+    def test_stopping_a_task_does_not_show_recovery(self) -> None:
+        panel = self.start([says("done")])
+        panel.input.setPlainText("find me some shoes")
+        panel._send()
+        panel._stop()
+        self.assertTrue(pump(lambda: not self.session.busy))
+        self.assertTrue(panel.recovery.isHidden())
+
+    def test_retry_sends_the_same_words_again(self) -> None:
+        panel = self.start([self._error("boom"), says("found them")])
+        self.run_task(panel, "find me some shoes")
+        done = []
+        self.session.finished.connect(lambda: done.append(True))
+        panel.retry_button.click()
+        self.assertTrue(pump(lambda: done))
+        self.assertEqual(
+            panel.transcript.toPlainText().count("find me some shoes"), 2,
+            "retry must send the request again, not just re-show it")
+        self.assertTrue(panel.recovery.isHidden())
+
+    def test_continue_mission_sends_a_continue_message(self) -> None:
+        panel = self.start([self._error("boom"), says("continuing")])
+        self.run_task(panel, "find me some shoes")
+        done = []
+        self.session.finished.connect(lambda: done.append(True))
+        panel.continue_button.click()
+        self.assertTrue(pump(lambda: done))
+        self.assertIn("continue", self.panel.transcript.toPlainText().lower())
+
+    def test_try_another_approach_sends_a_different_message(self) -> None:
+        panel = self.start([self._error("boom"), says("trying something else")])
+        self.run_task(panel, "find me some shoes")
+        done = []
+        self.session.finished.connect(lambda: done.append(True))
+        panel.retry_differently_button.click()
+        self.assertTrue(pump(lambda: done))
+        self.assertIn("different approach", self.panel.transcript.toPlainText().lower())
+
+    def test_sending_a_new_message_hides_recovery_again(self) -> None:
+        panel = self.start([self._error("boom"), says("ok")])
+        self.run_task(panel, "find me some shoes")
+        self.assertFalse(panel.recovery.isHidden())
+        self.run_task(panel, "something else entirely")
+        self.assertTrue(panel.recovery.isHidden())

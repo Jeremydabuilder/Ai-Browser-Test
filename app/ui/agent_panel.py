@@ -220,6 +220,10 @@ class AgentPanel(QWidget):
         self._answered = False
         self._failed = False
         self._stopped = False
+        #: The last thing the user (or a quick action) actually asked, so
+        #: "Retry" after a failure can send the same words again rather than
+        #: needing them retyped.
+        self._last_user_message = ""
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(8, 8, 8, 8)
@@ -334,6 +338,34 @@ class AgentPanel(QWidget):
         self.status.setProperty("kind", "muted")
         self.status.setStyleSheet(f"color:{c.muted}; font-size:{m.text_sm}px;")
         layout.addWidget(self.status)
+
+        # Shown only after a task ends in failure: a task that broke midway
+        # must not just leave the user staring at an error with nothing to
+        # do about it. Three ways forward, never a fourth silent option -
+        # the mission's own progress and findings were already saved as they
+        # happened, so none of these are starting over.
+        self.recovery = QWidget(self)
+        recovery_row = QHBoxLayout(self.recovery)
+        recovery_row.setContentsMargins(0, m.space_1, 0, 0)
+        recovery_row.setSpacing(m.space_1)
+        self.retry_button = QPushButton("Retry", self.recovery)
+        self.retry_button.setProperty("kind", "chip")
+        self.retry_button.setToolTip("Send the same request again")
+        self.retry_button.clicked.connect(self._retry)
+        recovery_row.addWidget(self.retry_button)
+        self.continue_button = QPushButton("Continue mission", self.recovery)
+        self.continue_button.setProperty("kind", "chip")
+        self.continue_button.clicked.connect(
+            lambda: self._ask("Please continue the mission from where you left off."))
+        recovery_row.addWidget(self.continue_button)
+        self.retry_differently_button = QPushButton("Try another approach", self.recovery)
+        self.retry_differently_button.setProperty("kind", "chip")
+        self.retry_differently_button.clicked.connect(
+            lambda: self._ask("That did not work - please try a different approach."))
+        recovery_row.addWidget(self.retry_differently_button)
+        recovery_row.addStretch(1)
+        self.recovery.hide()
+        layout.addWidget(self.recovery)
 
         # Spend, shown while it is still possible to do something about it.
         # Hidden entirely until the first task, so an idle panel is not
@@ -451,9 +483,17 @@ class AgentPanel(QWidget):
             return
         self.input.clear()
         self._answered = self._failed = self._stopped = False
+        self.recovery.hide()
+        self._last_user_message = text
         self._begin_conversation()
         self._append("user", text)
         self._session.send(text)
+
+    def _retry(self) -> None:
+        """Send the same request again, exactly as the user last phrased it."""
+        if not self._last_user_message:
+            return
+        self._ask(self._last_user_message)
 
     def _stop(self) -> None:
         if self._session is not None:
@@ -466,6 +506,8 @@ class AgentPanel(QWidget):
         if self._session.busy:
             self._append("system", "Stop the current task before clearing.")
             return
+        self.recovery.hide()
+        self._last_user_message = ""
         self._session.clear()
 
     def ask(self, text: str) -> None:
@@ -482,6 +524,8 @@ class AgentPanel(QWidget):
         if self._session is None or self._session.busy:
             return
         self._answered = self._failed = self._stopped = False
+        self.recovery.hide()
+        self._last_user_message = text
         self._begin_conversation()
         self._append("user", text)
         self._session.send(text)
@@ -715,6 +759,10 @@ class AgentPanel(QWidget):
         self._end_stream()
         self.confirmation.hide()
         self.status.setText("")
+        # A stopped task was the user's own choice and needs no way back in;
+        # a failed one broke on its own, mid-mission, and must not leave them
+        # with nothing to do but retype the whole request.
+        self.recovery.setVisible(self._failed and not self._stopped)
         self.input.setFocus()
 
     def begin_routine_run(self, name: str) -> None:
