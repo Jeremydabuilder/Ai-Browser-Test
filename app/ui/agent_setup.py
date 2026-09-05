@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QDialog,
     QLabel,
@@ -213,9 +214,22 @@ class ApiKeyDialog(QDialog):
         layout.addWidget(key_row)
 
         layout.addWidget(QLabel("<hr><b>Model</b>", box))
+        # Not editable: a plain click-to-pick list, the same as Provider
+        # above it. Typing a model id is still possible - see the checkbox
+        # below - but as an explicit, opt-in fallback, not the default way
+        # to interact with what is supposed to read as a dropdown.
         self._other_model_box = QComboBox(box)
-        self._other_model_box.setEditable(True)
+        self._other_model_box.setEditable(False)
         layout.addWidget(self._other_model_box)
+
+        self._other_custom_check = QCheckBox("Use a custom model ID instead", box)
+        self._other_custom_check.toggled.connect(self._toggle_other_custom_model)
+        layout.addWidget(self._other_custom_check)
+
+        self._other_custom_field = QLineEdit(box)
+        self._other_custom_field.setPlaceholderText("exact model id, e.g. some-org/some-model")
+        self._other_custom_field.setVisible(False)
+        layout.addWidget(self._other_custom_field)
 
         model_row = QWidget(box)
         model_layout = QVBoxLayout(model_row)
@@ -335,6 +349,8 @@ class ApiKeyDialog(QDialog):
             "already set - paste a new key to replace it" if credential.available else "")
         self._other_clear_button.setVisible(credential.mode == "keyring")
         self._other_result.setText("")
+        self._other_custom_check.setChecked(False)
+        self._other_custom_field.clear()
 
         client_class = self._other_client_class(provider_id)
         remembered = self._remembered_other_model(provider_id)
@@ -345,6 +361,16 @@ class ApiKeyDialog(QDialog):
             models = client_class.list_models(key)
             if models:
                 self._populate_model_combo(provider_id, models, remembered)
+            else:
+                # A silent fallback here would look identical to "the seed
+                # list is what's actually live" - which it is not, and the
+                # seed can go stale. Say so, since Test Connection is the
+                # only way left to know if the selected model is real.
+                self._other_result.setText(
+                    f"Could not load {client_class.label}'s current model list - "
+                    "showing the offline seed list instead. Use “Refresh model "
+                    "list” to try again, or Test Connection to check the "
+                    "selected model directly.")
 
     def _refresh_other_models(self) -> None:
         provider_id = self._current_other_provider()
@@ -365,41 +391,40 @@ class ApiKeyDialog(QDialog):
             return
         self._populate_model_combo(provider_id, models, current)
 
-    def _selected_other_model(self) -> str:
-        """The model id currently selected or typed.
+    def _toggle_other_custom_model(self, checked: bool) -> None:
+        self._other_model_box.setEnabled(not checked)
+        self._other_custom_field.setVisible(checked)
+        if checked:
+            self._other_custom_field.setFocus()
 
-        ``currentIndex()`` on an editable combobox does NOT reset to -1 when
-        the user types over the displayed text of a real selection - it
-        keeps pointing at the old item, so trusting it unconditionally would
-        silently ignore anything typed that doesn't happen to end in a fresh
-        selection. Comparing the displayed text against that item's own
-        label is what actually detects "the user typed something else."
-        """
+    def _selected_other_model(self) -> str:
+        """The model id currently selected from the list, or typed into the
+        advanced custom-id field when that checkbox is on."""
+        if self._other_custom_check.isChecked():
+            return self._other_custom_field.text().strip()
         index = self._other_model_box.currentIndex()
-        text = self._other_model_box.currentText().strip()
-        if index >= 0 and self._other_model_box.itemText(index) == self._other_model_box.currentText():
-            data = self._other_model_box.itemData(index)
-            if data:
-                return data
-        return text
+        return self._other_model_box.itemData(index) if index >= 0 else ""
 
     def _selected_other_model_supported(self) -> bool:
         """Whether the currently selected/typed model may be saved.
 
         Checked two ways, because a model can reach this method by either
         path: chosen from the populated list (its capability flag already
-        set by _populate_model_combo), or typed by hand into the editable
+        set by _populate_model_combo), or typed into the advanced custom-id
         field - which must still be refused if it names a model this client
         already knows cannot do PyBrowser's custom tool calling, even though
         typing bypasses the list entirely. This is what keeps manual entry
         from silently overriding the denylist.
         """
         model_id = self._selected_other_model()
+        if not model_id:
+            return True
         if self._other_client_class().is_denylisted(model_id):
             return False
+        if self._other_custom_check.isChecked():
+            return True  # unconfirmed, not refused - Test Connection is the proof
         index = self._other_model_box.currentIndex()
-        if index < 0 or self._other_model_box.itemData(index) != model_id:
-            # Typed text with no matching list entry - unconfirmed, not refused.
+        if index < 0:
             return True
         supported = self._other_model_box.itemData(index, Qt.ItemDataRole.UserRole + 1)
         return supported is not False

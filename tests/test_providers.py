@@ -807,6 +807,48 @@ class ModelSelectionTests(unittest.TestCase):
               for i in range(dialog._other_model_box.count())}
         self.assertIn("some-new-model", ids)
 
+    def test_a_failed_automatic_live_fetch_is_shown_not_silent(self):
+        """A key is configured but the live listing fails (network hiccup,
+        the exact failure the real 404 report traced back to) - the dialog
+        must say so, not silently look identical to "the seed list is what
+        is actually live"."""
+        with mock.patch.object(creds, "resolve_for",
+                               return_value=creds.Credential(
+                                   creds.Mode.ENV_KEY, "Groq", secret="gsk_x", provider="groq")):
+            with mock.patch.object(GroqClient, "list_models", return_value=[]):
+                dialog = self._dialog()
+                self._switch_to(dialog, "groq")
+        self.assertIn("Could not load Groq's current model list", dialog._other_result.text())
+
+    def test_the_model_box_is_not_editable(self):
+        """The whole point of this pass: Model must read as a click-to-pick
+        list, the same as Provider - not a text field."""
+        dialog = self._dialog()
+        self._switch_to(dialog, "groq")
+        self.assertFalse(dialog._other_model_box.isEditable())
+
+    def test_the_custom_model_field_is_hidden_until_the_checkbox_is_checked(self):
+        # isHidden() reflects the widget's own explicit shown/hidden flag
+        # regardless of whether the dialog itself is on screen - unlike
+        # isVisible(), which is always False for a QDialog that was never
+        # shown, no matter what setVisible() was called with underneath it.
+        dialog = self._dialog()
+        self._switch_to(dialog, "groq")
+        self.assertTrue(dialog._other_custom_field.isHidden())
+        self.assertTrue(dialog._other_model_box.isEnabled())
+        dialog._other_custom_check.setChecked(True)
+        self.assertFalse(dialog._other_custom_field.isHidden())
+        self.assertFalse(dialog._other_model_box.isEnabled())
+
+    def test_switching_provider_resets_the_custom_model_checkbox(self):
+        dialog = self._dialog()
+        self._switch_to(dialog, "groq")
+        dialog._other_custom_check.setChecked(True)
+        dialog._other_custom_field.setText("something")
+        self._switch_to(dialog, "openrouter")
+        self.assertFalse(dialog._other_custom_check.isChecked())
+        self.assertEqual(dialog._other_custom_field.text(), "")
+
     def test_incompatible_models_are_present_but_disabled_not_selectable(self):
         live = [{"id": "llama-3.3-70b-versatile"}, {"id": "whisper-large-v3"}]
         dialog = self._dialog()
@@ -825,8 +867,10 @@ class ModelSelectionTests(unittest.TestCase):
         index = box.findData("groq/compound-mini")
         self.assertGreaterEqual(index, 0)
         self.assertFalse(box.model().item(index).isEnabled())
-        # And even typed by hand, it is refused rather than silently saved.
-        box.setCurrentText("groq/compound-mini")
+        # And even typed by hand via the advanced fallback, it is refused
+        # rather than silently saved.
+        dialog._other_custom_check.setChecked(True)
+        dialog._other_custom_field.setText("groq/compound-mini")
         self.assertEqual(dialog._selected_other_model(), "groq/compound-mini")
         self.assertFalse(dialog._selected_other_model_supported())
         dialog._save_other_model()
@@ -835,7 +879,8 @@ class ModelSelectionTests(unittest.TestCase):
     def test_compound_mini_test_connection_fails_locally_without_a_network_call(self):
         dialog = self._dialog()
         self._switch_to(dialog, "groq")
-        dialog._other_model_box.setCurrentText("groq/compound-mini")
+        dialog._other_custom_check.setChecked(True)
+        dialog._other_custom_field.setText("groq/compound-mini")
         with mock.patch.object(GroqClient, "test_connection") as tc:
             dialog._test_other_connection()
             self.assertFalse(tc.called)
@@ -885,7 +930,8 @@ class ModelSelectionTests(unittest.TestCase):
         must still be provable, not a way to skip verification."""
         dialog = self._dialog()
         self._switch_to(dialog, "groq")
-        dialog._other_model_box.setCurrentText("a-brand-new-model-not-in-any-list")
+        dialog._other_custom_check.setChecked(True)
+        dialog._other_custom_field.setText("a-brand-new-model-not-in-any-list")
         with mock.patch.object(GroqClient, "test_connection",
                                return_value=(True, "ok")) as tc:
             dialog._test_other_connection()
