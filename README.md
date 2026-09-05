@@ -117,6 +117,29 @@ an unrelated HTTP client cannot reach a host either, it reports "not testable
 on this network" rather than blaming the browser — and it only calls something
 a browser bug when the real origin served another client successfully.
 
+## Performance
+
+```bash
+python scripts/perf_check.py     # measures the numbers below, on your machine
+```
+
+Real numbers, not estimates — measured with this script in the container this
+was developed in (headless, offscreen, no GPU, software rendering; expect a
+real desktop to start faster):
+
+| What | Measured |
+|---|---|
+| Cold start (fresh interpreter → window shown, one tab loaded) | ~11s in this container; dominated by Qt/QtWebEngine's software-rendering fallback where there is no GPU — re-measure on a real desktop for a true baseline |
+| Memory with one tab open | ~234 MB |
+| Marginal memory per additional tab (5 more, all `about:blank`) | ~6 MB/tab |
+| Loading a 1 MB single-page (one large text node) | ~1.7s, +~155 MB RSS |
+| `browser_get_page_text` on that same page | returns the capped 20,000 chars, not the full 1,080,000 — the agent's context-limit cap (`ContextLimits`, `app/agent/config.py`) is doing its job, not silently dumping the whole DOM to the model |
+
+The one number worth watching is the per-page memory jump on a large page —
+QtWebEngine's own renderer process, not anything PyBrowser adds, but it is
+real and worth knowing about before assuming "just open more tabs" is free.
+Tab overhead itself is cheap: six tabs cost barely more than one.
+
 ## Keyboard shortcuts
 
 | Shortcut | Action | | Shortcut | Action |
