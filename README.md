@@ -187,11 +187,27 @@ sqlite3 ~/.local/share/PyBrowser/browser.sqlite3 \
 
 New tabs open **PyBrowser New Tab**, a real page served from `pybrowser://newtab/`
 inside the browser — instant, works offline, sends nothing anywhere. It carries
-the search box, recent pages, bookmarks and an entry point to the AI panel.
+the search box, recent pages, bookmarks, a Recent Missions column and an entry
+point to the AI panel.
 
 The search provider is where searches *go*; it is not the home page. Change
 either in **Tools → Settings** (`Ctrl+,`): new tabs can open PyBrowser New Tab,
 your search provider's home page, a custom address, or a blank page.
+
+Before a first Mission has been started, the page also shows a one-time
+explainer card - four lines on what PyBrowser is, a "Try a demo mission"
+button, and a dismiss. It never appears again once either happens.
+
+## Missions
+
+Give Py a goal, and it keeps the pages, findings and decisions for that goal
+together as a Mission - resumable later, paused without losing anything, and
+browsable as a real page at `pybrowser://missions/`. A Mission tracks a
+current-stage progress label, an optional structured result (rendered as a
+table or list where the text is shaped like one, not just prose), and a log
+of what Py actually did - all of it persisted, so closing the browser costs
+nothing. See [`ARCHITECTURE.md`](ARCHITECTURE.md) for how the pieces fit
+together.
 
 ## Architecture
 
