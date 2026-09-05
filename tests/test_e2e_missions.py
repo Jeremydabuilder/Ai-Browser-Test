@@ -260,6 +260,109 @@ class ComparisonMissionTests(_MissionTestCase):
 
 
 # ---------------------------------------------------------------------------
+# Mission: plan a trip - several *different kinds* of fact (a flight, a
+# hotel, the weather), synthesised into one decision rather than a table of
+# like-for-like options. Differentiator (F) - multi-source synthesis - and
+# the "Decision Memory" concept (a decision, with evidence and assumptions,
+# distinct from a bare finding) neither of the other missions exercise.
+# ---------------------------------------------------------------------------
+
+
+class TripPlanningMissionTests(_MissionTestCase):
+    """"Plan a weekend trip" from the product spec: unlike the comparison
+    mission (three sources on the same question), this one gathers three
+    unrelated facts - a flight, a hotel, the weather - and has to weigh them
+    against each other to reach a single decision, with its own rationale
+    and assumptions, not just a result table."""
+
+    def _script(self):
+        def read_flight(messages):
+            return calls("browser_navigate", {"url": _server.url("plan/flight")})
+
+        def save_flight(messages):
+            return calls("mission_save_finding",
+                        {"text": "Cheapest nonstop flight is Friday 7:10am, $214 "
+                                 "round trip"})
+
+        def read_hotel(messages):
+            return calls("browser_navigate", {"url": _server.url("plan/hotel")})
+
+        def save_hotel(messages):
+            return calls("mission_save_finding",
+                        {"text": "The Nines is $189/night, 4.5 stars, downtown"})
+
+        def read_weather(messages):
+            return calls("browser_navigate", {"url": _server.url("plan/weather")})
+
+        def save_weather(messages):
+            return calls("mission_save_finding",
+                        {"text": "Mild weather expected, 55-65F, slight chance of "
+                                 "rain Saturday"})
+
+        def note_progress(messages):
+            return calls("mission_set_progress", {"label": "Finalizing the plan"})
+
+        def save_decision(messages):
+            return calls("mission_save_decision",
+                        {"decision": "Fly out Friday morning, stay at The Nines",
+                         "rationale": "Cheapest nonstop flight of the options, and a "
+                                      "well-rated downtown hotel; mild weather means "
+                                      "the dates don't need to change.",
+                         "evidence": ["F1", "F2", "F3"],
+                         "assumptions": ["flight and hotel prices hold until booked"]})
+
+        return [
+            calls("browser_get_page_text"),
+            read_flight, calls("browser_get_page_text"), save_flight,
+            read_hotel, calls("browser_get_page_text"), save_hotel,
+            read_weather, calls("browser_get_page_text"), save_weather,
+            note_progress, save_decision,
+            says("Fly out Friday morning and stay at The Nines - cheapest nonstop "
+                "flight, a well-rated downtown hotel, and the weather won't get in "
+                "the way."),
+        ]
+
+    def test_the_mission_ends_with_three_findings_and_a_decision(self):
+        self.start_mission("Plan a weekend trip to Portland", self._script())
+        self.assertTrue(self.run_task("Plan a weekend trip to Portland for me."))
+        self.assertEqual(self.errors, [])
+        self.assertEqual(self.confirmations, [])
+
+        mission = self.reload_mission()
+        self.assertEqual(len(mission.findings), 3)
+        texts = " ".join(f.text for f in mission.findings)
+        self.assertIn("$214", texts)
+        self.assertIn("The Nines", texts)
+        self.assertIn("55-65F", texts)
+
+        self.assertIsNotNone(mission.decision)
+        self.assertIn("The Nines", mission.decision.decision)
+        self.assertIn("Cheapest nonstop", mission.decision.rationale)
+        self.assertEqual(len(mission.decision.evidence), 3)
+        self.assertEqual(len(mission.decision.assumptions), 1)
+        # A decision is a record, not permission to act - it did not, in
+        # fact, book anything, and nothing here asked it to.
+        self.assertFalse(mission.has_result)
+
+    def test_the_three_different_kinds_of_page_are_all_recorded_as_sources(self):
+        self.start_mission("Plan a weekend trip to Portland", self._script())
+        self.assertTrue(self.run_task("Plan a weekend trip to Portland for me."))
+
+        mission = self.reload_mission()
+        urls = {p.url for p in mission.pages}
+        self.assertIn(_server.url("plan/flight"), urls)
+        self.assertIn(_server.url("plan/hotel"), urls)
+        self.assertIn(_server.url("plan/weather"), urls)
+
+    def test_progress_is_left_at_its_last_reported_stage(self):
+        self.start_mission("Plan a weekend trip to Portland", self._script())
+        self.assertTrue(self.run_task("Plan a weekend trip to Portland for me."))
+
+        mission = self.reload_mission()
+        self.assertEqual(mission.progress, "Finalizing the plan")
+
+
+# ---------------------------------------------------------------------------
 # Mission 4: fill a form, then stop for approval before submitting it
 # ---------------------------------------------------------------------------
 

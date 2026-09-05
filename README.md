@@ -66,7 +66,7 @@ nss alsa-lib`.
 ## Tests
 
 ```bash
-python -m unittest discover -s tests -v          # 1276 tests
+python -m unittest discover -s tests -v          # 1307 tests
 python scripts/smoke_test.py                     # headless end-to-end run
 python scripts/feature_check.py                  # 28-point feature checklist
 python scripts/agent_demo.py                     # the research demo, offline
@@ -91,11 +91,13 @@ model catalogue.
   and where each unbuilt AI capability would go.
 * **`tests/test_e2e_missions.py`** — whole Missions end to end against a real
   multi-page fixture site: a multi-source research/comparison mission that
-  ends in a structured result, a "type routine fields, then stop for
-  approval before submitting" mission, and a mission that hits a hostile
-  page partway through and keeps only the real finding. Wired the same way
-  `main_window.py` wires a live session (the action log and blocker state
-  included), not just a single mocked tool call.
+  ends in a structured result, a trip-planning mission that weighs three
+  *different kinds* of fact (a flight, a hotel, the weather) into a single
+  decision rather than a table of like-for-like options, a "type routine
+  fields, then stop for approval before submitting" mission, and a mission
+  that hits a hostile page partway through and keeps only the real finding.
+  Wired the same way `main_window.py` wires a live session (the action log
+  and blocker state included), not just a single mocked tool call.
 * **`tests/`** — 39 pure unit tests (URL parsing, SQLite stores, background
   writer, error mapping, navigation guard), 88 BrowserController tests, 60
   agent tests, 52 Phase 3 tests (shadow DOM, element targeting, multi-step

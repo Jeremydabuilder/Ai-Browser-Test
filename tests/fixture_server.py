@@ -252,6 +252,17 @@ class _Handler(BaseHTTPRequestHandler):
                 self.send_error(404)
                 return
             self._send(page)
+        elif path.startswith("/plan"):
+            # A small trip - flight, hotel, weather - so a planning mission
+            # has several distinct kinds of fact to gather and weigh against
+            # each other, rather than several instances of the same kind of
+            # fact (as /research's three power-source articles are).
+            key = path[len("/plan"):].strip("/") or "index"
+            page = PLAN.get(key)
+            if page is None:
+                self.send_error(404)
+                return
+            self._send(page)
         elif path == "/frames":
             # A cross-origin child too: localhost and 127.0.0.1 are different
             # origins to the browser even on the same port, which is exactly
@@ -309,6 +320,31 @@ Maintenance is the hard part, because everything is underwater.</p>
 <p>Barrages change the tidal range behind them, which reshapes the mudflats
 wading birds feed on. Stream turbines avoid that, but pose a collision risk to
 marine mammals. Both are quieter in operation than their critics expect.</p>
+</body></html>""",
+}
+
+PLAN = {
+    "index": """<!doctype html><html><head><title>Weekend in Portland</title></head>
+<body><h1>Weekend in Portland</h1>
+<ul>
+  <li><a href="/plan/flight">Flights</a></li>
+  <li><a href="/plan/hotel">Hotels</a></li>
+  <li><a href="/plan/weather">Weather</a></li>
+</ul></body></html>""",
+    "flight": """<!doctype html><html><head><title>Flights to Portland</title></head>
+<body><h1>Flights to Portland</h1>
+<p>The cheapest nonstop is Friday 7:10am, arriving 9:50am, $214 round trip.
+Saturday departures run about $80 more and all connect through Denver.</p>
+</body></html>""",
+    "hotel": """<!doctype html><html><head><title>Portland Hotels</title></head>
+<body><h1>Portland Hotels</h1>
+<p>The Nines: $189/night, 4.5 stars, downtown, 10 minute walk to the river.
+Hotel Vance: $129/night, 3.8 stars, near the airport, needs a taxi downtown.</p>
+</body></html>""",
+    "weather": """<!doctype html><html><head><title>Portland Weather</title></head>
+<body><h1>Portland Weather</h1>
+<p>This weekend: mild, 55-65F, a 30% chance of light rain Saturday afternoon.
+Nothing that would change travel plans.</p>
 </body></html>""",
 }
 
