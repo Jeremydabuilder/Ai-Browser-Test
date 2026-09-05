@@ -312,6 +312,19 @@ class ApiKeyDialog(QDialog):
                 if item is not None:
                     item.setEnabled(False)
 
+        if not rows and not preferred_model:
+            # No seed list (OpenRouter has none - see OpenRouterClient), no
+            # live fetch yet, nothing remembered: an empty dropdown reads as
+            # broken, indistinguishable from a bug. Say what to do instead
+            # of leaving it blank.
+            self._other_model_box.addItem(
+                "Enter your API key, then click Refresh model list", "")
+            item = self._other_model_box.model().item(0)
+            if item is not None:
+                item.setEnabled(False)
+            self._other_model_box.setCurrentIndex(0)
+            return
+
         target = preferred_model or ""
         picked = self._other_model_box.findData(target) if target else -1
         if picked < 0 and target:

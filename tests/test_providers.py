@@ -794,6 +794,17 @@ class ModelSelectionTests(unittest.TestCase):
         self.assertIn("llama-3.3-70b-versatile", ids)
         self.assertGreater(dialog._other_model_box.count(), 1)
 
+    def test_openrouter_with_no_key_shows_a_clear_placeholder_not_an_empty_box(self):
+        """OpenRouter has no seed list (unlike Groq's six), so with no key
+        configured yet the dropdown would otherwise just be empty - which
+        reads as broken, not as "nothing to show yet"."""
+        dialog = self._dialog()
+        self._switch_to(dialog, "openrouter")
+        self.assertEqual(dialog._other_model_box.count(), 1)
+        self.assertIn("Refresh model list", dialog._other_model_box.itemText(0))
+        self.assertFalse(dialog._other_model_box.model().item(0).isEnabled())
+        self.assertEqual(dialog._selected_other_model(), "")
+
     def test_a_configured_key_triggers_an_automatic_live_fetch_no_click_needed(self):
         live = [{"id": "llama-3.3-70b-versatile"}, {"id": "some-new-model"}]
         with mock.patch.object(creds, "resolve_for",
