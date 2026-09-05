@@ -894,6 +894,10 @@ _TEMPLATE = """<!doctype html>
     var rename = el("button", "act", "Rename");
     rename.addEventListener("click", function () { act("rename", { id: mission.id }); });
     actions.appendChild(rename);
+    var editGoal = el("button", "act", "Edit goal");
+    editGoal.title = "Change what this mission is for - Py sees the new goal next time it resumes";
+    editGoal.addEventListener("click", function () { act("edit-goal", { id: mission.id }); });
+    actions.appendChild(editGoal);
     var remove = el("button", "act danger", "Delete");
     remove.addEventListener("click", function () { act("delete", { id: mission.id }); });
     actions.appendChild(remove);

@@ -197,6 +197,28 @@ class MissionService(QObject):
         self._announce(mission_id)
         return True
 
+    def set_goal(self, mission_id: int, goal: str) -> bool:
+        """Edit what a Mission is actually for - distinct from rename(),
+        which only changes its title.
+
+        The goal is what the agent is briefed with (see briefing()), but the
+        briefing is sent once per activation, not per turn (Warm Resume - see
+        the note on briefing() and prompt caching), so this reaches Py at the
+        *next* activation, never the live one already in progress. Editing
+        the goal is not a way to redirect a conversation mid-turn; it is a
+        way to correct or refine what the mission means before it is next
+        picked up.
+        """
+        if not self._store.set_goal(mission_id, goal):
+            return False
+        updated = self._store.get(mission_id)
+        self.missions_changed.emit(updated)
+        if self._active is not None and self._active.id == mission_id:
+            self._active = updated
+            self.active_changed.emit(self._active)
+        self._announce(mission_id)
+        return True
+
     @property
     def activation(self) -> int:
         """Which activation this is. See the note in __init__."""

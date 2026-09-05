@@ -765,6 +765,18 @@ the same restriction MissionCard's own Pause button already had. A window
 looking at a Mission active somewhere else gets a status message, not a
 pause that reaches across windows.
 
+**Editing the goal is distinct from renaming, and has a real limit worth
+being honest about.** `MissionService.set_goal` changes what the agent is
+briefed with (`briefing()`), unlike `rename()` which only changes the
+title shown to the user - so an edit here is where a mission's constraints
+("size 8, under $120, prefer Nike or Adidas") actually live, there being no
+separate field for them. But Warm Resume sends the briefing once per
+activation, not per turn, specifically to keep the system prompt's cache
+marker useful (see the note on `briefing()`), so an edit made mid-
+conversation reaches Py at the *next* activation - it is not a way to
+redirect a live turn. The Library's "Edit goal" button and its tooltip say
+so plainly rather than implying an effect the architecture cannot deliver.
+
 `app/missions/bus.py` is a process-wide announcement channel: a Mission deleted
 in one window must not stay live in another. It carries an id and nothing else -
 listeners re-read from the store, which is the only place the truth lives.

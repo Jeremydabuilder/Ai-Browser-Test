@@ -488,6 +488,28 @@ class LibraryInTheBrowserTests(unittest.TestCase):
         self.assertIsNotNone(self.service.active)
         self.assertEqual(self.service.active.id, self.shoes.id)
 
+    def test_editing_the_goal_updates_the_stored_mission(self) -> None:
+        from unittest import mock
+
+        from PySide6.QtWidgets import QInputDialog
+
+        with mock.patch.object(QInputDialog, "getMultiLineText",
+                              return_value=("find shoes under exactly $75", True)):
+            self.window._edit_goal(self.shoes.id)
+        self.assertEqual(self.service.store.get(self.shoes.id).goal,
+                         "find shoes under exactly $75")
+
+    def test_cancelling_the_edit_goal_dialog_changes_nothing(self) -> None:
+        from unittest import mock
+
+        from PySide6.QtWidgets import QInputDialog
+
+        original = self.service.store.get(self.shoes.id).goal
+        with mock.patch.object(QInputDialog, "getMultiLineText",
+                              return_value=("something else", False)):
+            self.window._edit_goal(self.shoes.id)
+        self.assertEqual(self.service.store.get(self.shoes.id).goal, original)
+
     def test_an_unknown_mission_id_is_ignored_rather_than_crashing(self) -> None:
         self.window._on_mission_action("open", {"id": "99999"})
         self.window._on_mission_action("resume", {"id": "99999"})
@@ -542,6 +564,16 @@ class WorkspaceLayoutTests(unittest.TestCase):
         self.window._open_mission(mission_id)
         QTest.qWait(2200)
         return self.window.tabs.current_tab()
+
+    def test_every_mission_shows_an_edit_goal_button(self) -> None:
+        # Unlike Pause, editing the goal is not restricted to an active
+        # mission - a paused or completed mission's goal is just as
+        # editable, it only affects the next activation either way.
+        for mission_id in (self.shoes.id, self.trip.id):
+            tab = self._open_detail(mission_id)
+            self.assertTrue(self.harness.js(
+                tab, "Array.from(document.querySelectorAll('.actions .act'))"
+                     ".some(function(b){return b.textContent === 'Edit goal';})"))
 
     def test_a_paused_mission_shows_no_pause_button(self) -> None:
         tab = self._open_detail(self.shoes.id)

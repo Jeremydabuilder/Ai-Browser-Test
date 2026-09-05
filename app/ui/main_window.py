@@ -463,6 +463,8 @@ class MainWindow(QMainWindow):
             self._pause_mission(mission_id)
         elif name == "rename" and mission_id is not None:
             self._rename_mission(mission_id)
+        elif name == "edit-goal" and mission_id is not None:
+            self._edit_goal(mission_id)
         elif name == "delete" and mission_id is not None:
             self._delete_mission(mission_id)
         elif name == "edit-decision" and mission_id is not None:
@@ -528,6 +530,26 @@ class MainWindow(QMainWindow):
                                          text=mission.title)
         if ok and title.strip():
             self.missions.rename(mission_id, title)
+            self._reload_mission_views(mission_id)
+
+    def _edit_goal(self, mission_id: int) -> None:
+        """Change what a Mission is actually for, not just its title.
+
+        Distinct from rename(): the goal is what Py is briefed with, and
+        constraints ("size 8, under $120") live there too since there is no
+        separate field for them. The change reaches Py at its next
+        activation, not the conversation already in progress - see the note
+        on MissionService.set_goal.
+        """
+        from PySide6.QtWidgets import QInputDialog
+
+        mission = self.missions.store.get(mission_id)
+        if mission is None:
+            return
+        goal, ok = QInputDialog.getMultiLineText(
+            self, "Edit mission goal", "What is this mission for?", mission.goal)
+        if ok and goal.strip():
+            self.missions.set_goal(mission_id, goal)
             self._reload_mission_views(mission_id)
 
     def _delete_mission(self, mission_id: int) -> None:

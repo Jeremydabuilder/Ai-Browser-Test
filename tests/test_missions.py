@@ -371,6 +371,30 @@ class LifecycleTests(unittest.TestCase):
         self.assertTrue(self.service.rename(mission.id, "Shoe Hunt"))
         self.assertEqual(self.service.active.title, "Shoe Hunt")
 
+    def test_editing_the_goal_updates_what_is_active(self) -> None:
+        mission = self.service.start("find shoes")
+        self.assertTrue(self.service.set_goal(
+            mission.id, "find shoes, size 8, under $120, prefer Nike or Adidas"))
+        self.assertEqual(self.service.active.goal,
+                         "find shoes, size 8, under $120, prefer Nike or Adidas")
+
+    def test_editing_the_goal_is_reflected_in_the_next_briefing(self) -> None:
+        # Warm Resume sends the briefing once per activation, not per turn
+        # (see the note on briefing() and prompt caching) - so an edit made
+        # mid-conversation reaches Py at the *next* activation, not the live
+        # one. Editing still changes what is stored and what a fresh resume
+        # briefs with, which is the part this test can actually observe.
+        mission = self.service.start("find shoes")
+        self.service.pause()
+        self.service.set_goal(mission.id, "find shoes under exactly $75")
+        self.service.resume(mission.id)
+        self.assertIn("find shoes under exactly $75", self.service.briefing())
+
+    def test_an_empty_goal_is_refused(self) -> None:
+        mission = self.service.start("find shoes")
+        self.assertFalse(self.service.set_goal(mission.id, "   "))
+        self.assertEqual(self.service.active.goal, "find shoes")
+
 
 class AssociationTests(unittest.TestCase):
     """The five rules, against real tabs and the real controller."""
