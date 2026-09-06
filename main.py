@@ -57,6 +57,7 @@ def main(argv: list[str] | None = None) -> int:
 
     window = MainWindow(profile, database, start_urls=args.urls or None)
     window.show()
+    window.show_first_run_if_needed()
 
     exit_code = app.exec()
     database.close()

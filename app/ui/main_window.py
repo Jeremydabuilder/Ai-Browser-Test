@@ -322,6 +322,30 @@ class MainWindow(QMainWindow):
         except Exception:  # noqa: BLE001 - a new tab must appear regardless
             return False
 
+    def show_first_run_if_needed(self) -> None:
+        """The three-screen welcome dialog - shown once, at first launch.
+
+        Called explicitly by main.py after the window is shown, rather than
+        from __init__: showing a modal dialog before the window itself has
+        appeared reads as the app hanging on startup.
+        """
+        try:
+            if self.settings.get_bool("first_run_dialog_shown", False):
+                return
+        except Exception:  # noqa: BLE001 - a broken settings read must not block startup
+            return
+        from app.ui.onboarding import FirstRunDialog
+
+        dialog = FirstRunDialog(self)
+        dialog.configure_provider_requested.connect(self._configure_agent)
+        dialog.try_mission_requested.connect(self._open_agent_with)
+        dialog.exec()
+        # Also dismisses the new-tab page's own onboarding card: this dialog
+        # already made the same pitch once, and showing it again on the very
+        # next new tab would just be saying it twice.
+        self.settings.set_bool("first_run_dialog_shown", True)
+        self.settings.set_bool("onboarding_dismissed", True)
+
     def _agent_configured(self) -> bool:
         """Whether the AI entry point should promise anything.
 
