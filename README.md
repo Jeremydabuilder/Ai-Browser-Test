@@ -66,7 +66,7 @@ nss alsa-lib`.
 ## Tests
 
 ```bash
-python -m unittest discover -s tests -v          # 1373 tests
+python -m unittest discover -s tests -v          # 1383 tests
 python scripts/smoke_test.py                     # headless end-to-end run
 python scripts/feature_check.py                  # 28-point feature checklist
 python scripts/agent_demo.py                     # the research demo, offline
@@ -449,6 +449,21 @@ Or paste an API key into **Tools → Configure AI Agent…**, which stores it in
 your OS keyring. That dialog shows every option and which one is currently in
 use. Nothing is ever written to the database, the repository, or any config
 file. Details: [`docs/ai_agent.md`](docs/ai_agent.md) §3.
+
+### Ask Py from anywhere
+
+Two non-intrusive ways in, besides the panel itself:
+
+- **The address bar** shows a small sparkle icon when what you typed reads as
+  a goal rather than a search ("find the cheapest flight to tokyo") -
+  clicking it hands that text to Py. Enter still does exactly what it always
+  did - an ordinary search or navigation - so nothing about normal typing
+  changes.
+- **Right-click** on selected text for "Ask Py about '...'" - Explain,
+  Summarize, Research, Verify this claim, or Compare - or right-click with
+  nothing selected for "Ask Py about this page". Either opens the panel with
+  the prompt written out for you to read and send, the same as any quick
+  action; nothing is sent on your behalf without you seeing it first.
 
 **"Identity-linked" API keys.** Some Anthropic API keys are scoped to a
 person rather than a workspace, and the API refuses a request from one of

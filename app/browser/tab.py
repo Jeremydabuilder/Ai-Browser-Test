@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import QUrl, Signal
+from PySide6.QtCore import QUrl, Qt, Signal
 from PySide6.QtGui import QIcon
 from PySide6.QtWebEngineCore import QWebEnginePage, QWebEngineScript
 from PySide6.QtWebEngineWidgets import QWebEngineView
-from PySide6.QtWidgets import QVBoxLayout, QWidget
+from PySide6.QtWidgets import QMenu, QVBoxLayout, QWidget
 
 from app.browser.load_error import LoadError
 from app.browser.profile import BrowserProfile
@@ -39,6 +39,11 @@ class BrowserTab(QWidget):
     load_error = Signal(object)  # payload: LoadError
     # An action requested by PyBrowser's own new-tab page.
     internal_action = Signal(str, dict)
+    # "Ask Py" chosen from this tab's right-click menu - carries the prompt
+    # to hand to the AI panel, exactly like a new-tab quick action. Handled
+    # by whoever owns this tab (see main_window.py), never here: a tab knows
+    # nothing about the agent, only that its context menu can offer this.
+    ask_py_requested = Signal(str)
 
     def __init__(
         self,
@@ -61,6 +66,10 @@ class BrowserTab(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
         layout.addWidget(self._view)
+
+        # Chromium's own menu, plus an "Ask Py" way in - see _show_context_menu.
+        self._view.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self._view.customContextMenuRequested.connect(self._show_context_menu)
 
         self._connect_signals()
 
@@ -131,6 +140,70 @@ class BrowserTab(QWidget):
             window.showFullScreen()
         else:
             window.showNormal()
+
+    #: Selection-based "Ask Py" offers: (label, prompt template). The
+    #: template's one placeholder is filled with the selected text, quoted -
+    #: never executed, never treated as an instruction, just handed to the
+    #: AI panel exactly the way a typed message would be.
+    _SELECTION_ASKS = (
+        ("Explain this", 'Explain this: "{text}"'),
+        ("Summarize this", 'Summarize this: "{text}"'),
+        ("Research this", 'Research this and give me a few good sources: "{text}"'),
+        ("Verify this claim", 'Verify this claim: "{text}"'),
+        ("Compare this", 'Compare this with the relevant alternatives: "{text}"'),
+    )
+
+    def _build_ask_menu(self, selected: str) -> QMenu:
+        """The "Ask Py" portion of the context menu, standalone.
+
+        Kept apart from Chromium's own menu (see _show_context_menu) so it
+        can be tested on its own: QWebEngineView.createStandardContextMenu()
+        reads Chromium's last-context-menu-event data, which is only valid
+        during a real right-click, and building it outside of one - exactly
+        what a test calling it directly would do - crashes the renderer
+        process rather than raising a catchable error.
+        """
+        menu = QMenu()
+        if selected:
+            condensed = " ".join(selected.split())
+            shown = condensed if len(condensed) <= 60 else condensed[:59].rstrip() + "…"
+            menu.setTitle(f'Ask Py about "{shown}"')
+            for label, template in self._SELECTION_ASKS:
+                action = menu.addAction(label)
+                action.triggered.connect(
+                    lambda _checked=False, t=template: self._ask_py(t.format(text=selected)))
+            menu.addSeparator()
+            custom = menu.addAction("Ask something else…")
+            custom.triggered.connect(
+                lambda _checked=False: self._ask_py(f'About this: "{selected}"\n'))
+        else:
+            action = menu.addAction("Ask Py about this page")
+            action.triggered.connect(lambda _checked=False: self._ask_py(""))
+        return menu
+
+    def _show_context_menu(self, pos) -> None:
+        """Chromium's own menu (copy, back, inspect...), with an "Ask Py"
+        way in appended - a submenu of specific offers when text is
+        selected, or one page-level offer when it is not.
+
+        Built fresh each time rather than kept around: the selection and the
+        page can both have changed since the last right-click, and a stale
+        menu that still offered yesterday's selection would be worse than
+        no menu at all.
+        """
+        selected = self._page.selectedText().strip()
+        menu = self._view.createStandardContextMenu()
+        menu.addSeparator()
+        ask_menu = self._build_ask_menu(selected)
+        ask_menu.setParent(menu)
+        if selected:
+            menu.addMenu(ask_menu)
+        else:
+            menu.addActions(ask_menu.actions())
+        menu.exec(self._view.mapToGlobal(pos))
+
+    def _ask_py(self, prompt: str) -> None:
+        self.ask_py_requested.emit(prompt)
 
     # -- accessors ------------------------------------------------------
     @property

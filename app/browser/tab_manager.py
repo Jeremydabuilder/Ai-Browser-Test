@@ -42,6 +42,8 @@ class TabManager(QTabWidget):
     all_tabs_closed = Signal()
     # An action requested by the new-tab page in any tab.
     internal_action = Signal(str, dict)
+    # "Ask Py" chosen from any tab's right-click menu - see BrowserTab.
+    ask_py_requested = Signal(str)
     # Emitted when the user switches tab; payload is that tab's loading state.
     current_tab_switched = Signal(bool)
 
@@ -330,6 +332,7 @@ class TabManager(QTabWidget):
         tab.load_finished.connect(lambda ok, t=tab: self._on_tab_load_finished(t, ok))
         tab.status_message.connect(self.status_message)
         tab.internal_action.connect(self.internal_action)
+        tab.ask_py_requested.connect(self.ask_py_requested)
         tab.load_error.connect(lambda err, t=tab: self._forward_if_current(t, self.load_error, err))
         tab.page.certificate_rejected.connect(
             lambda host, desc, t=tab: self._on_security_event(
