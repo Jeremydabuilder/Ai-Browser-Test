@@ -188,6 +188,56 @@ class MissionFinding:
                            url=self.source_url).domain
 
 
+#: Longest a question or its answer may be. Same reasoning as MAX_FINDING_CHARS
+#: - refused rather than truncated, since a shortened question can turn into a
+#: different, easier one without anyone deciding that on purpose.
+MAX_QUESTION_CHARS = 200
+MAX_ANSWER_CHARS = 300
+
+#: *Open* questions one mission may hold at once. Answered ones do not count
+#: against it - a mission that resolves what it raises can keep raising new
+#: questions without ever hitting a wall built for one that never resolves any.
+MAX_OPEN_QUESTIONS_PER_MISSION = 20
+
+
+class QuestionStatus:
+    OPEN = "open"          # still unresolved
+    ANSWERED = "answered"  # settled, with its answer kept alongside it
+    ALL = (OPEN, ANSWERED)
+
+
+def question_key(text: str) -> str:
+    """Same normalisation as finding_key - see its docstring - plus '?',
+    since "is X better" and "is X better?" are the same question."""
+    return " ".join((text or "").split()).strip(" .,;:!-–—?").lower()
+
+
+@dataclass(frozen=True)
+class MissionQuestion:
+    """Something the mission has not settled yet.
+
+    Tracked apart from findings (settled facts) so "what do we still not
+    know" stays visible on its own account rather than being inferred from an
+    absence. Py raises one when research turns up a genuine uncertainty worth
+    flagging, and resolves it once a later source answers it - the answer is
+    kept alongside the question rather than the row being deleted, so a later
+    reader can see it was actually settled, not just forgotten about.
+    """
+
+    id: int
+    mission_id: int
+    text: str
+    key: str = ""
+    status: str = QuestionStatus.OPEN
+    answer: str = ""
+    created_at: str = ""
+    answered_at: str = ""
+
+    @property
+    def age(self) -> str:
+        return relative_age(self.created_at)
+
+
 #: Recorded activity kept per mission. Unlike findings, this is an
 #: operational log, not a fact a decision might cite - so it is trimmed
 #: (oldest dropped) rather than refused once full. Generous enough to cover
@@ -737,6 +787,9 @@ class Mission:
     #: Recent recorded activity, filled by the store when asked for it - see
     #: MissionAction. Empty unless requested, same convention as pages/findings.
     actions: tuple["MissionAction", ...] = field(default_factory=tuple)
+    #: What the mission has not settled yet - see MissionQuestion. Includes
+    #: both open and answered questions; the UI separates them by .status.
+    questions: tuple[MissionQuestion, ...] = field(default_factory=tuple)
 
     @property
     def is_branch(self) -> bool:

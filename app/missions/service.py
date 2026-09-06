@@ -26,12 +26,15 @@ from PySide6.QtCore import QObject, Signal
 from app.missions import briefing as briefing_text
 from app.missions.bus import bus
 from app.missions.model import (
+    MAX_ANSWER_CHARS,
     MAX_DECISION_CHARS,
     MAX_FINDING_CHARS,
     MAX_CHALLENGE_SUMMARY,
     MAX_FINDINGS_PER_MISSION,
     MAX_FOLLOW_UP_CHARS,
     MAX_FOLLOW_UPS,
+    MAX_OPEN_QUESTIONS_PER_MISSION,
+    MAX_QUESTION_CHARS,
     MAX_RATIONALE_CHARS,
     MAX_RESULT_CHARS,
     BLOCKED_LABEL,
@@ -39,11 +42,13 @@ from app.missions.model import (
     GhostRun,
     MissionChallenge,
     MissionDecision,
+    QuestionStatus,
     TargetKind,
     clean_result,
     collapse,
     finding_ref,
     parse_finding_ref,
+    question_key,
     MissionFinding,
     MissionPage,
     MissionStatus,
@@ -670,6 +675,53 @@ class MissionService(QObject):
             result["limit"] = MAX_FINDING_CHARS
         if outcome == self._store.FULL:
             result["limit"] = MAX_FINDINGS_PER_MISSION
+        return result
+
+    def save_question(self, text: str) -> dict:
+        """Raise an open question against the active Mission.
+
+        For when research turns up a genuine uncertainty worth flagging -
+        "reviews disagree on battery life past 18 months" - rather than either
+        dropping it or forcing it into a finding, which is for settled facts.
+        """
+        mission = self._active
+        if mission is None:
+            return {"status": "no_mission"}
+        outcome, question = self._store.add_question(mission.id, text)
+        self._refresh()
+        self._announce(mission.id)
+        result = {"status": outcome}
+        if question is not None:
+            result["question_id"] = question.id
+        if outcome == self._store.TOO_LONG:
+            result["limit"] = MAX_QUESTION_CHARS
+        if outcome == self._store.FULL:
+            result["limit"] = MAX_OPEN_QUESTIONS_PER_MISSION
+        return result
+
+    def resolve_question(self, question: str, answer: str) -> dict:
+        """Answer an open question, by its wording.
+
+        Matched the same way a finding is deduplicated - normalised, not
+        exact - so the model does not need to quote the question back
+        character-for-character to resolve it. No match is a normal, explicit
+        outcome ("not_found"): the model may be misremembering an open
+        question, and guessing which one it meant would risk answering the
+        wrong one.
+        """
+        mission = self._active
+        if mission is None:
+            return {"status": "no_mission"}
+        existing = self._store.find_question(
+            mission.id, question_key(question), QuestionStatus.OPEN)
+        if existing is None:
+            return {"status": "not_found"}
+        outcome, _saved = self._store.answer_question(existing.id, answer)
+        self._refresh()
+        self._announce(mission.id)
+        result = {"status": outcome}
+        if outcome == self._store.TOO_LONG:
+            result["limit"] = MAX_ANSWER_CHARS
         return result
 
     # -- blockers ------------------------------------------------------------

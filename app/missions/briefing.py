@@ -22,6 +22,8 @@ from app.missions.model import (
     MissionChallenge,
     MissionDecision,
     MissionFinding,
+    MissionQuestion,
+    QuestionStatus,
 )
 
 #: The fence. Everything board-derived goes inside it - the findings, their
@@ -39,6 +41,12 @@ FINDINGS_CLOSE = "</mission_findings>"
 DECISION_OPEN = "<mission_decision>"
 DECISION_CLOSE = "</mission_decision>"
 
+#: The open-questions fence. A sibling of the findings fence: a question is
+#: not an observation and not a decision, and keeping it in its own fence
+#: means the model can tell "what I don't know yet" apart from both.
+QUESTIONS_OPEN = "<mission_open_questions>"
+QUESTIONS_CLOSE = "</mission_open_questions>"
+
 #: Findings carried into a resumed conversation, most recent first. A resumed
 #: Mission is picking up a thread, and the recent end of the board is the
 #: thread.
@@ -53,6 +61,7 @@ MAX_BRIEFING_CHARS = 4000
 #: the fence early and promote the rest to plain conversation; the untrusted
 #: markers would let a finding fake the start or end of page content later on.
 _FORGEABLE = (FINDINGS_OPEN, FINDINGS_CLOSE, DECISION_OPEN, DECISION_CLOSE,
+              QUESTIONS_OPEN, QUESTIONS_CLOSE,
               "<untrusted_web_page_content>", "</untrusted_web_page_content>")
 
 
@@ -132,6 +141,21 @@ def findings_block(findings, verdicts: dict[int, str] | None = None) -> str:
     return f"{FINDINGS_OPEN}\n{body}\n{FINDINGS_CLOSE}"
 
 
+def questions_block(questions) -> str:
+    """The fenced record of what the mission has not settled yet.
+
+    Only OPEN questions - an answered one has already been folded back into
+    what is known, and repeating it here forever would just be noise once it
+    is no longer true that it is unresolved.
+    """
+    open_questions = [q for q in questions if q.status == QuestionStatus.OPEN]
+    if not open_questions:
+        return ""
+    lines = [f"- {neutralise(' '.join(q.text.split()))}" for q in open_questions]
+    body = "\n".join(lines)
+    return f"{QUESTIONS_OPEN}\n{body}\n{QUESTIONS_CLOSE}"
+
+
 def decision_block(decision: MissionDecision | None,
                    challenge: MissionChallenge | None = None) -> str:
     """The fenced record of what was decided, or "".
@@ -177,8 +201,14 @@ def compose(mission: Mission | None) -> str:
     block = findings_block(mission.findings, _verdicts(mission))
     if block:
         parts.append("Notes I recorded earlier on this mission:\n" + block)
+    questions = questions_block(mission.questions)
+    if questions:
+        parts.append(
+            "Questions still open on this mission - resolve one with "
+            "mission_resolve_question once a source answers it:\n" + questions)
     parts.append("Keep this goal in mind for the requests that follow. "
                  "Pages you open or read will be filed under this mission "
                  "automatically, and you can record what you learn with "
-                 "mission_save_finding.")
+                 "mission_save_finding, or flag a genuine uncertainty with "
+                 "mission_save_question.")
     return "\n\n".join(parts)

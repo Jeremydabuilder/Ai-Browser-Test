@@ -499,7 +499,8 @@ class ToolTests(unittest.TestCase):
         added = {name for name in TOOL_NAMES if name.startswith("mission_")}
         self.assertEqual(added, {"mission_save_finding", "mission_save_decision",
                                  "mission_save_challenge", "mission_save_ghost_run",
-                                 "mission_set_progress", "mission_save_result"})
+                                 "mission_set_progress", "mission_save_result",
+                                 "mission_save_question", "mission_resolve_question"})
 
 
 class PermissionTests(unittest.TestCase):

@@ -35,6 +35,7 @@ from app.missions.model import (
     MissionFinding,
     MissionPage,
     MissionStatus,
+    QuestionStatus,
 )
 from app.ui import theme
 
@@ -45,6 +46,10 @@ VISIBLE_FINDINGS = 4
 #: Pages listed before the rest are summarised. Fewer than the findings above
 #: them, on purpose - a Mission panel is a reminder, not a file manager.
 VISIBLE_PAGES = 3
+
+#: Open questions listed before the rest are summarised. Same reasoning as
+#: VISIBLE_PAGES - the card is a glance, the full list lives on the mission.
+VISIBLE_QUESTIONS = 3
 
 #: A finding is folded to this many lines in the panel. The whole text stays in
 #: the tooltip and in the editor - this is display, never storage.
@@ -365,6 +370,20 @@ class MissionCard(QFrame):
         self.more_findings.hide()
         outer.addWidget(self.more_findings)
 
+        # What the mission has not settled yet - see MissionQuestion. Only
+        # open ones: an answered question is folded back into what is known,
+        # and belongs with the findings, not repeated here as unfinished.
+        self.questions_label = QLabel("", self)
+        self.questions_label.setStyleSheet(
+            f"color:{c.disabled}; font-size:{m.text_xs}px; font-weight:600;"
+            " letter-spacing:0.06em;")
+        self.questions_label.hide()
+        outer.addWidget(self.questions_label)
+
+        self._questions_box = QVBoxLayout()
+        self._questions_box.setSpacing(0)
+        outer.addLayout(self._questions_box)
+
         self.pages_label = QLabel("", self)
         self.pages_label.setStyleSheet(
             f"color:{c.disabled}; font-size:{m.text_xs}px; font-weight:600;"
@@ -435,6 +454,7 @@ class MissionCard(QFrame):
         self._render_decision(mission)
         self._render_result(mission)
         self._render_findings(mission)
+        self._render_questions(mission)
         self._render_pages(mission)
         self.show()
 
@@ -504,6 +524,33 @@ class MissionCard(QFrame):
             self.more_findings.show()
         else:
             self.more_findings.hide()
+
+    def _render_questions(self, mission: Mission) -> None:
+        """Only OPEN questions, and only the section at all when there is at
+        least one - unlike findings, "no open questions" is the common case
+        for a simple mission and saying so every time would be noise, not
+        information."""
+        self._clear(self._questions_box)
+        open_questions = [q for q in mission.questions if q.status == QuestionStatus.OPEN]
+        if not open_questions:
+            self.questions_label.hide()
+            return
+
+        self.questions_label.setText(f"OPEN QUESTIONS · {len(open_questions)}")
+        self.questions_label.show()
+        c, m = self._colours, theme.METRICS
+        for question in open_questions[:VISIBLE_QUESTIONS]:
+            row = QLabel(f"?  {question.text}", self)
+            row.setWordWrap(True)
+            row.setStyleSheet(f"color:{c.text}; font-size:{m.text_sm}px;")
+            row.setToolTip("Not yet resolved")
+            self._questions_box.addWidget(row)
+
+        hidden = len(open_questions) - VISIBLE_QUESTIONS
+        if hidden > 0:
+            more = QLabel(f"and {hidden} more", self)
+            more.setStyleSheet(f"color:{c.disabled}; font-size:{m.text_xs}px;")
+            self._questions_box.addWidget(more)
 
     def _render_pages(self, mission: Mission) -> None:
         self._clear(self._pages_box)

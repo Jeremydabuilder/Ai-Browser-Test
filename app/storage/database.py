@@ -25,7 +25,7 @@ import threading
 from pathlib import Path
 from typing import Any, Iterable, Sequence
 
-SCHEMA_VERSION = 11
+SCHEMA_VERSION = 12
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS history (
@@ -127,6 +127,23 @@ CREATE INDEX IF NOT EXISTS idx_mission_findings_mission
     ON mission_findings(mission_id, created_at);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_finding_ref
     ON mission_findings(mission_id, ref);
+
+-- What the mission has not settled yet - see MissionQuestion. UNIQUE only
+-- while a question is genuinely a duplicate is not enforceable in plain SQL
+-- (the same wording answered once and raised again is legitimate), so
+-- dedup happens in the repository layer against OPEN rows only, not here.
+CREATE TABLE IF NOT EXISTS mission_questions (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    mission_id  INTEGER NOT NULL REFERENCES missions(id) ON DELETE CASCADE,
+    text        TEXT NOT NULL,
+    key         TEXT NOT NULL,
+    status      TEXT NOT NULL DEFAULT 'open',
+    answer      TEXT NOT NULL DEFAULT '',
+    created_at  TEXT NOT NULL,
+    answered_at TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_mission_questions_mission
+    ON mission_questions(mission_id, created_at);
 
 -- What Py did, or tried to do - the persisted twin of AgentSession's
 -- transient Step. page_id is ON DELETE SET NULL: losing the page a step
@@ -565,6 +582,22 @@ CREATE TABLE IF NOT EXISTS decision_alternatives (
     );
     CREATE INDEX IF NOT EXISTS idx_mission_actions_mission
         ON mission_actions(mission_id, created_at);
+    """,
+    # v11 -> v12: Mission questions - what a mission has not settled yet,
+    # tracked apart from findings. Identical to the block in _SCHEMA above.
+    11: """
+    CREATE TABLE IF NOT EXISTS mission_questions (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        mission_id  INTEGER NOT NULL REFERENCES missions(id) ON DELETE CASCADE,
+        text        TEXT NOT NULL,
+        key         TEXT NOT NULL,
+        status      TEXT NOT NULL DEFAULT 'open',
+        answer      TEXT NOT NULL DEFAULT '',
+        created_at  TEXT NOT NULL,
+        answered_at TEXT NOT NULL DEFAULT ''
+    );
+    CREATE INDEX IF NOT EXISTS idx_mission_questions_mission
+        ON mission_questions(mission_id, created_at);
     """,
 }
 

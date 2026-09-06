@@ -66,7 +66,7 @@ nss alsa-lib`.
 ## Tests
 
 ```bash
-python -m unittest discover -s tests -v          # 1336 tests
+python -m unittest discover -s tests -v          # 1373 tests
 python scripts/smoke_test.py                     # headless end-to-end run
 python scripts/feature_check.py                  # 28-point feature checklist
 python scripts/agent_demo.py                     # the research demo, offline
@@ -241,8 +241,17 @@ browsable as a real page at `pybrowser://missions/`. A Mission tracks a
 current-stage progress label, an optional structured result (rendered as a
 table or list where the text is shaped like one, not just prose), and a log
 of what Py actually did - all of it persisted, so closing the browser costs
-nothing. See [`ARCHITECTURE.md`](ARCHITECTURE.md) for how the pieces fit
-together.
+nothing.
+
+It also tracks what it has **not** settled yet: `mission_save_question` lets
+Py flag a genuine uncertainty ("reviews disagree on battery life past 18
+months") as an open question, separate from findings (settled facts) and
+shown on its own in the mission card and the mission page;
+`mission_resolve_question` answers one, by wording, once a later source
+settles it. Answered questions fold back into what's known and stop being
+repeated to the model on a resumed mission - only open ones are briefed.
+
+See [`ARCHITECTURE.md`](ARCHITECTURE.md) for how the pieces fit together.
 
 ## Architecture
 

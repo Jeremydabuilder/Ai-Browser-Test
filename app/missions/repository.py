@@ -51,21 +51,27 @@ from app.missions.model import (
     Verdict,
     MissionFinding,
     MissionPage,
+    MissionQuestion,
     MissionStatus,
     PageSource,
+    QuestionStatus,
     clean_goal,
     clean_title,
     clean_finding,
     clean_result,
     collapse,
+    MAX_ANSWER_CHARS,
     MAX_GHOST_RUN_EFFECT_CHARS,
     MAX_GHOST_RUN_EFFECTS,
     MAX_GHOST_RUN_OPTION_CHARS,
+    MAX_OPEN_QUESTIONS_PER_MISSION,
+    MAX_QUESTION_CHARS,
     finding_key,
     finding_ref,
     is_associable,
     now,
     page_key,
+    question_key,
 )
 from app.storage.database import Database
 
@@ -206,8 +212,10 @@ class MissionStore:
         decision = self.decision(mission_id) if with_pages else None
         challenges = tuple(self.challenges(mission_id)) if with_pages else ()
         actions = tuple(self.actions(mission_id)) if with_pages else ()
+        asked = tuple(self.questions(mission_id)) if with_pages else ()
         return Mission(**self._mission_kwargs(row), pages=pages, findings=found,
-                       decision=decision, challenges=challenges, actions=actions)
+                       decision=decision, challenges=challenges, actions=actions,
+                       questions=asked)
 
     def recent(self, limit: int = 20, *, with_pages: bool = False) -> list[Mission]:
         """Missions, most recently touched first."""
@@ -575,6 +583,90 @@ class MissionStore:
     def remove_finding(self, finding_id: int) -> bool:
         cursor = self._db.execute("DELETE FROM mission_findings WHERE id = ?",
                                   (finding_id,))
+        return bool(cursor is not None and cursor.rowcount)
+
+    # -- questions ---------------------------------------------------------
+    #
+    # What the mission has not settled yet - see MissionQuestion. The same
+    # dedup-by-key shape as findings, but keyed against OPEN questions only:
+    # an answered question sharing the wording of a new one is a coincidence,
+    # not a reason to silently no-op raising it again.
+
+    def add_question(self, mission_id: int, text: str) -> tuple[str, MissionQuestion | None]:
+        """Raise an open question. Returns (outcome, question)."""
+        text = collapse(text)
+        if not text:
+            return self.NO_TEXT, None
+        if len(text) > MAX_QUESTION_CHARS:
+            return self.TOO_LONG, None
+
+        key = question_key(text)
+        existing = self.find_question(mission_id, key, QuestionStatus.OPEN)
+        if existing is not None:
+            return self.UPDATED, existing
+        if self.open_question_count(mission_id) >= MAX_OPEN_QUESTIONS_PER_MISSION:
+            return self.FULL, None
+        stamp = now()
+        cursor = self._db.execute(
+            "INSERT INTO mission_questions (mission_id, text, key, status, created_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (mission_id, text, key, QuestionStatus.OPEN, stamp))
+        if cursor is None:
+            return self.NO_TEXT, None
+        self._touch_mission(mission_id)
+        return self.SAVED, self.get_question(int(cursor.lastrowid))
+
+    def answer_question(self, question_id: int, answer: str) -> tuple[str, MissionQuestion | None]:
+        """Resolve an open question. The answer is kept alongside it, not
+        left implicit - see the docstring on MissionQuestion."""
+        answer = collapse(answer)
+        if not answer:
+            return self.NO_TEXT, None
+        if len(answer) > MAX_ANSWER_CHARS:
+            return self.TOO_LONG, None
+        current = self.get_question(question_id)
+        if current is None:
+            return self.NO_TEXT, None
+        self._db.execute(
+            "UPDATE mission_questions SET status = ?, answer = ?, answered_at = ? "
+            "WHERE id = ?",
+            (QuestionStatus.ANSWERED, answer, now(), question_id))
+        self._touch_mission(current.mission_id)
+        return self.UPDATED, self.get_question(question_id)
+
+    _QUESTION_COLUMNS = (
+        "SELECT id, mission_id, text, key, status, answer, created_at, answered_at "
+        "FROM mission_questions ")
+
+    def questions(self, mission_id: int) -> list[MissionQuestion]:
+        rows = self._db.query(
+            self._QUESTION_COLUMNS + "WHERE mission_id = ? ORDER BY created_at, id",
+            (mission_id,))
+        return [MissionQuestion(**dict(row)) for row in rows]
+
+    def get_question(self, question_id: int) -> MissionQuestion | None:
+        row = self._db.query_one(self._QUESTION_COLUMNS + "WHERE id = ?", (question_id,))
+        return MissionQuestion(**dict(row)) if row else None
+
+    def find_question(self, mission_id: int, key: str,
+                      status: str | None = None) -> MissionQuestion | None:
+        sql = self._QUESTION_COLUMNS + "WHERE mission_id = ? AND key = ?"
+        params: list = [mission_id, key]
+        if status is not None:
+            sql += " AND status = ?"
+            params.append(status)
+        row = self._db.query_one(sql, tuple(params))
+        return MissionQuestion(**dict(row)) if row else None
+
+    def open_question_count(self, mission_id: int) -> int:
+        row = self._db.query_one(
+            "SELECT COUNT(*) AS n FROM mission_questions WHERE mission_id = ? AND status = ?",
+            (mission_id, QuestionStatus.OPEN))
+        return int(row["n"]) if row else 0
+
+    def remove_question(self, question_id: int) -> bool:
+        cursor = self._db.execute("DELETE FROM mission_questions WHERE id = ?",
+                                  (question_id,))
         return bool(cursor is not None and cursor.rowcount)
 
     # -- decisions -------------------------------------------------------

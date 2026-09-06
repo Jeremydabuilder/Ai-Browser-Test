@@ -16,8 +16,8 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
-from app.missions.model import Mission, MissionStatus  # noqa: E402
-from app.ui.missions.mission_card import MissionCard  # noqa: E402
+from app.missions.model import Mission, MissionQuestion, MissionStatus, QuestionStatus  # noqa: E402
+from app.ui.missions.mission_card import MissionCard, VISIBLE_QUESTIONS  # noqa: E402
 
 _app: QApplication | None = None
 
@@ -117,6 +117,70 @@ class ResultLineTests(unittest.TestCase):
         self.card.show_mission(self._mission(result="Some findings.", decision=decision))
         self.assertFalse(self.card.result_line.isVisible())
         self.assertTrue(self.card.decision.isVisible())
+
+
+class QuestionsSectionTests(unittest.TestCase):
+    """Only OPEN questions show, and only when there is at least one - see
+    the docstring on MissionCard._render_questions."""
+
+    def setUp(self) -> None:
+        self.card = MissionCard(_FakeService())
+
+    def tearDown(self) -> None:
+        self.card.deleteLater()
+        _app.processEvents()
+
+    def _question(self, id_, status=QuestionStatus.OPEN, text="Is X better?"):
+        return MissionQuestion(id=id_, mission_id=1, text=text, status=status)
+
+    def _mission(self, **overrides):
+        base = dict(id=1, title="Research", goal="research something",
+                   status=MissionStatus.ACTIVE, questions=())
+        base.update(overrides)
+        return Mission(**base)
+
+    def test_no_open_questions_hides_the_whole_section(self) -> None:
+        self.card.show_mission(self._mission(questions=()))
+        self.assertFalse(self.card.questions_label.isVisible())
+
+    def test_an_open_question_shows_the_section_with_its_text(self) -> None:
+        self.card.show_mission(self._mission(questions=(self._question(1),)))
+        self.assertTrue(self.card.questions_label.isVisible())
+        self.assertIn("Is X better?", self._questions_text())
+
+    def _questions_text(self) -> str:
+        texts = []
+        for i in range(self.card._questions_box.count()):
+            widget = self.card._questions_box.itemAt(i).widget()
+            if widget is not None:
+                texts.append(widget.text())
+        return " ".join(texts)
+
+    def test_an_answered_question_does_not_appear(self) -> None:
+        self.card.show_mission(self._mission(
+            questions=(self._question(1, status=QuestionStatus.ANSWERED),)))
+        self.assertFalse(self.card.questions_label.isVisible())
+
+    def test_a_mix_of_open_and_answered_counts_only_the_open_ones(self) -> None:
+        self.card.show_mission(self._mission(questions=(
+            self._question(1, status=QuestionStatus.OPEN, text="Open one?"),
+            self._question(2, status=QuestionStatus.ANSWERED, text="Answered one?"),
+        )))
+        self.assertIn("1", self.card.questions_label.text())
+        self.assertIn("Open one?", self._questions_text())
+        self.assertNotIn("Answered one?", self._questions_text())
+
+    def test_more_than_the_visible_limit_shows_a_count_of_the_rest(self) -> None:
+        many = tuple(self._question(i, text=f"Question {i}?")
+                    for i in range(VISIBLE_QUESTIONS + 2))
+        self.card.show_mission(self._mission(questions=many))
+        self.assertIn("2 more", self._questions_text())
+
+    def test_switching_to_a_mission_with_no_questions_clears_the_section(self) -> None:
+        self.card.show_mission(self._mission(id=1, questions=(self._question(1),)))
+        self.assertTrue(self.card.questions_label.isVisible())
+        self.card.show_mission(self._mission(id=2, questions=()))
+        self.assertFalse(self.card.questions_label.isVisible())
 
 
 if __name__ == "__main__":

@@ -32,6 +32,7 @@ from app.browser.results import ActionResult
 # store enforces can never drift apart.
 from app.missions.model import (
     MAX_ALTERNATIVES,
+    MAX_ANSWER_CHARS,
     MAX_ASSUMPTION_CHARS,
     MAX_ASSUMPTIONS,
     MAX_CHALLENGE_SUMMARY,
@@ -46,6 +47,7 @@ from app.missions.model import (
     MAX_POINT_CHARS,
     MAX_POINTS,
     MAX_PROGRESS_CHARS,
+    MAX_QUESTION_CHARS,
     MAX_RATIONALE_CHARS,
     MAX_RESULT_CHARS,
     Confidence,
@@ -235,6 +237,32 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                                      "Omit to use the tab in front. An id that is not "
                                      "open is an error, never a fallback."}},
           ["text"]),
+
+    _tool("mission_save_question",
+          "Raise an open question against the mission - something research has "
+          "surfaced that is not yet settled: sources disagree, a fact could not be "
+          "confirmed, or answering the user's goal properly depends on something "
+          "still unknown. This is not a to-do list and not a place to think out "
+          "loud - only for a genuine uncertainty worth the user seeing. Resolve it "
+          "later with mission_resolve_question once a source answers it. "
+          f"Maximum {MAX_QUESTION_CHARS} characters. Raising the same question "
+          "again is a harmless no-op, not a duplicate.",
+          {"text": {"type": "string",
+                    "description": "The open question, as a self-contained sentence "
+                                   "the user can read on its own."}},
+          ["text"]),
+
+    _tool("mission_resolve_question",
+          "Answer a question previously raised with mission_save_question, once a "
+          "source settles it. Matched by wording, not by an id - close paraphrasing "
+          "is fine, but answering a question that does not match any open one is an "
+          f"error, not a guess. Maximum {MAX_ANSWER_CHARS} characters for the answer.",
+          {"question": {"type": "string",
+                        "description": "The open question being answered, close to "
+                                       "how it was originally raised."},
+           "answer": {"type": "string",
+                     "description": "What settled it, in one self-contained sentence."}},
+          ["question", "answer"]),
 
     _tool("mission_save_decision",
           "Record what the user has decided on the active mission, and why. "
@@ -447,7 +475,8 @@ _UNCLASSIFIED_SAFE = {"browser_select_tab", "browser_close_tab",
 #: nor any other is still treated as a write.
 LOCAL_WRITE_TOOLS = {"mission_save_finding", "mission_save_decision",
                      "mission_save_challenge", "mission_save_ghost_run",
-                     "mission_set_progress", "mission_save_result"}
+                     "mission_set_progress", "mission_save_result",
+                     "mission_save_question", "mission_resolve_question"}
 
 #: Tools that only read. Used to skip confirmation checks entirely.
 READ_ONLY_TOOLS = {
@@ -608,6 +637,72 @@ def _finding_error(result: dict) -> dict:
     code, message, hint = _FINDING_ERRORS.get(
         result.get("status", ""),
         ("FINDING_FAILED", "The finding could not be saved.", "Carry on with the task."))
+    if "limit" in result:
+        message = f"{message} The limit is {result['limit']}."
+    return _error(code, message, hint=hint)
+
+
+def _question_activity(text: str) -> str:
+    condensed = " ".join(text.split())
+    if len(condensed) > 60:
+        condensed = condensed[:59].rstrip() + "…"
+    return f'Flagging an open question: "{condensed}"'
+
+
+def _answer_activity(text: str) -> str:
+    condensed = " ".join(text.split())
+    if len(condensed) > 60:
+        condensed = condensed[:59].rstrip() + "…"
+    return f'Resolving a question: "{condensed}"'
+
+
+#: Why raising a question was refused, and what to do about it.
+_QUESTION_ERRORS: dict[str, tuple[str, str, str]] = {
+    "no_mission": ("NO_ACTIVE_MISSION",
+                   "There is no mission active, so there is nothing to flag.",
+                   "Answer the user directly. Do not try again."),
+    "too_long": ("QUESTION_TOO_LONG",
+                 "The question is over the limit and was NOT saved.",
+                 "Shorten it to the actual uncertainty and call the tool again."),
+    "full": ("TOO_MANY_OPEN_QUESTIONS",
+             "This mission already has as many open questions as it can hold.",
+             "Resolve one first, or decide the remaining uncertainty is not "
+             "worth tracking and carry on."),
+    "no_text": ("EMPTY_QUESTION", "A question needs some text.",
+                "Write the uncertainty as one sentence and try again."),
+}
+
+
+def _question_error(result: dict) -> dict:
+    code, message, hint = _QUESTION_ERRORS.get(
+        result.get("status", ""),
+        ("QUESTION_FAILED", "The question could not be saved.", "Carry on with the task."))
+    if "limit" in result:
+        message = f"{message} The limit is {result['limit']}."
+    return _error(code, message, hint=hint)
+
+
+#: Why resolving a question was refused, and what to do about it.
+_RESOLVE_ERRORS: dict[str, tuple[str, str, str]] = {
+    "no_mission": ("NO_ACTIVE_MISSION",
+                   "There is no mission active, so there is nothing to resolve.",
+                   "Answer the user directly. Do not try again."),
+    "not_found": ("QUESTION_NOT_FOUND",
+                  "No open question matches that wording, so nothing was resolved.",
+                  "Check the mission's open questions and use their exact wording, "
+                  "or raise this as a new question instead."),
+    "too_long": ("ANSWER_TOO_LONG",
+                 "The answer is over the limit and was NOT saved.",
+                 "Shorten it to what actually settled it and call the tool again."),
+    "no_text": ("EMPTY_ANSWER", "An answer needs some text.",
+                "Write what settled it as one sentence and try again."),
+}
+
+
+def _resolve_error(result: dict) -> dict:
+    code, message, hint = _RESOLVE_ERRORS.get(
+        result.get("status", ""),
+        ("RESOLVE_FAILED", "The question could not be resolved.", "Carry on with the task."))
     if "limit" in result:
         message = f"{message} The limit is {result['limit']}."
     return _error(code, message, hint=hint)
@@ -870,6 +965,10 @@ class ToolRegistry:
                 return self._string(args, "label") or "Updating progress"
             if name == "mission_save_result":
                 return "Recording the result"
+            if name == "mission_save_question":
+                return _question_activity(self._string(args, "text"))
+            if name == "mission_resolve_question":
+                return _answer_activity(self._string(args, "answer"))
             if name == "browser_get_page":
                 return "Reading the page"
             if name == "browser_get_page_text":
@@ -958,6 +1057,42 @@ class ToolRegistry:
                            **({"source": source} if source else {})},
                 activity=_finding_activity(text))
         return ToolOutcome(immediate=_finding_error(result), activity="Saving a finding")
+
+    def _run_save_question(self, args: dict) -> ToolOutcome:
+        """Raise an open question against the active Mission."""
+        text = self._string(args, "text", required=True)
+        if self._missions is None:
+            return ToolOutcome(immediate=_error(
+                "NO_MISSION", "Missions are not available in this window.",
+                hint="Carry on with the task; nothing needs recording."),
+                activity="Flagging an open question")
+
+        result = self._missions.save_question(text)
+        status = result.get("status")
+        if status in ("saved", "updated"):
+            return ToolOutcome(
+                immediate={"ok": True, "status": status,
+                          "question_id": result.get("question_id")},
+                activity=_question_activity(text))
+        return ToolOutcome(immediate=_question_error(result),
+                           activity="Flagging an open question")
+
+    def _run_resolve_question(self, args: dict) -> ToolOutcome:
+        """Answer a previously raised open question."""
+        question = self._string(args, "question", required=True)
+        answer = self._string(args, "answer", required=True)
+        if self._missions is None:
+            return ToolOutcome(immediate=_error(
+                "NO_MISSION", "Missions are not available in this window.",
+                hint="Carry on with the task; nothing needs recording."),
+                activity="Resolving a question")
+
+        result = self._missions.resolve_question(question, answer)
+        status = result.get("status")
+        if status == "updated":
+            return ToolOutcome(immediate={"ok": True, "status": status},
+                              activity=_answer_activity(answer))
+        return ToolOutcome(immediate=_resolve_error(result), activity="Resolving a question")
 
     def _run_save_decision(self, args: dict) -> ToolOutcome:
         """Record a decision against the active Mission.
