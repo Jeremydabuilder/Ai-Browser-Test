@@ -227,6 +227,38 @@ _EFFORT_IDS = {level for level, _ in EFFORT_LEVELS}
 
 
 # ---------------------------------------------------------------------------
+# Presets: a shortcut over (model, effort), not a third setting
+# ---------------------------------------------------------------------------
+
+#: Named combinations of an existing model and effort level, for someone who
+#: would rather pick "Fast" than reason about two independent dropdowns. Each
+#: entry names a real catalogue choice already described honestly above -
+#: this is a shortcut to an existing pair, never a new capability or a
+#: hidden model. The settings dialog offers these above the two dropdowns,
+#: which still work on their own for anyone who wants to choose by hand.
+PRESETS: tuple[tuple[str, str, str, str], ...] = (
+    # (id, label, model_id, effort)
+    ("fast", "Fast - quick answers, lower cost", "claude-sonnet-5", "low"),
+    ("balance", "Best balance (default)", DEFAULT_MODEL, DEFAULT_EFFORT),
+    ("smartest", "Smartest - most capable, most expensive", "claude-fable-5", "max"),
+    ("cheapest", "Lowest cost", "claude-haiku-4-5", "default"),
+)
+
+
+def preset_for(model_id: str, effort: str) -> str:
+    """Which preset (if any) this exact (model, effort) pair matches.
+
+    Empty when it matches none - the two dropdowns disagree with every
+    preset, which is a perfectly normal thing for someone who chose by hand,
+    not an error.
+    """
+    for preset_id, _label, preset_model, preset_effort in PRESETS:
+        if preset_model == model_id and preset_effort == effort:
+            return preset_id
+    return ""
+
+
+# ---------------------------------------------------------------------------
 # Autonomy
 # ---------------------------------------------------------------------------
 

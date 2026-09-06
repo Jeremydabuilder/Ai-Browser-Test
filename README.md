@@ -66,7 +66,7 @@ nss alsa-lib`.
 ## Tests
 
 ```bash
-python -m unittest discover -s tests -v          # 1319 tests
+python -m unittest discover -s tests -v          # 1328 tests
 python scripts/smoke_test.py                     # headless end-to-end run
 python scripts/feature_check.py                  # 28-point feature checklist
 python scripts/agent_demo.py                     # the research demo, offline
@@ -523,6 +523,14 @@ get expensive quickly. Three things are done about it, cheapest first:
    about a tenth of Opus 5 per question and answers 63% of them correctly
    against 92%, which suits short checkable tasks rather than long browsing
    sessions.
+
+**Tools → Configure AI Agent…** also offers four named presets over these two
+settings — Fast, Best balance (the default), Smartest, and Lowest cost — for
+anyone who would rather pick one of those than reason about model and effort
+separately. Each is just a shortcut to a specific (model, effort) pair already
+described above; the two dropdowns underneath still work on their own; picking
+either by hand shows "Custom", or the matching preset if it happens to land on
+one exactly.
 
 Model and effort live in **Tools → Configure AI Agent…**, or:
 

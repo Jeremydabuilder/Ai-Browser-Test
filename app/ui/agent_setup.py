@@ -660,7 +660,9 @@ class ApiKeyDialog(QDialog):
             KEY_AGENT_EFFORT,
             KEY_AGENT_MODEL,
             MODELS,
+            PRESETS,
             AgentConfig,
+            preset_for,
         )
 
         current = AgentConfig.from_environment(self._settings)
@@ -677,6 +679,17 @@ class ApiKeyDialog(QDialog):
             "involve a trade-off.</span>", box)
         heading.setWordWrap(True)
         column.addWidget(heading)
+
+        # A shortcut over the two dropdowns below, for anyone who would
+        # rather pick "Fast" than reason about model and effort separately -
+        # they still work perfectly well on their own, and picking one by
+        # hand is exactly how this box ends up back on "Custom".
+        column.addWidget(QLabel("<b>Preset</b>", box))
+        self.preset_box = QComboBox(box)
+        self.preset_box.addItem("Custom (choose model and effort below)", "")
+        for preset_id, label, _model_id, _effort in PRESETS:
+            self.preset_box.addItem(label, preset_id)
+        column.addWidget(self.preset_box)
 
         column.addWidget(QLabel("<b>Model</b>", box))
         self.model_box = QComboBox(box)
@@ -701,6 +714,15 @@ class ApiKeyDialog(QDialog):
         index = self.effort_box.findData(current.effort)
         self.effort_box.setCurrentIndex(index if index >= 0 else 0)
         column.addWidget(self.effort_box)
+
+        # Wired after both dropdowns exist, so the initial sync below has
+        # something to read. One direction each: picking a preset writes the
+        # dropdowns; changing either dropdown (by a preset or by hand) reads
+        # them back to decide which preset, if any, that now matches.
+        self.preset_box.currentIndexChanged.connect(self._apply_preset)
+        self.model_box.currentIndexChanged.connect(self._sync_preset_from_dropdowns)
+        self.effort_box.currentIndexChanged.connect(self._sync_preset_from_dropdowns)
+        self._sync_preset_from_dropdowns()
 
         apply_button = QPushButton("Save model and effort", box)
         apply_button.clicked.connect(
@@ -835,6 +857,32 @@ class ApiKeyDialog(QDialog):
         from app.agent.config import describe_model
 
         self._model_note.setText(describe_model(self.model_box.currentData()).note)
+
+    def _apply_preset(self) -> None:
+        from app.agent.config import PRESETS
+
+        preset_id = self.preset_box.currentData()
+        if not preset_id:
+            return
+        _id, _label, model_id, effort = next(p for p in PRESETS if p[0] == preset_id)
+        model_index = self.model_box.findData(model_id)
+        if model_index >= 0:
+            self.model_box.setCurrentIndex(model_index)
+        effort_index = self.effort_box.findData(effort)
+        if effort_index >= 0:
+            self.effort_box.setCurrentIndex(effort_index)
+
+    def _sync_preset_from_dropdowns(self) -> None:
+        from app.agent.config import preset_for
+
+        matched = preset_for(self.model_box.currentData(), self.effort_box.currentData())
+        index = self.preset_box.findData(matched)
+        # Blocked rather than just set: setCurrentIndex would otherwise fire
+        # currentIndexChanged -> _apply_preset, which would then rewrite the
+        # very dropdowns this method is reading from mid-read.
+        self.preset_box.blockSignals(True)
+        self.preset_box.setCurrentIndex(index if index >= 0 else 0)
+        self.preset_box.blockSignals(False)
 
     def _save_preferences(self, model_key: str, effort_key: str) -> None:
         if self._settings is None:
