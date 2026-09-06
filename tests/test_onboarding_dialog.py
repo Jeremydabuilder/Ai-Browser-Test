@@ -20,17 +20,19 @@ import app.browser  # noqa: E402,F401
 
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
-from app.browser.profile import BrowserProfile  # noqa: E402
 from app.storage.database import Database  # noqa: E402
 from app.ui.main_window import MainWindow  # noqa: E402
 from app.ui.onboarding import FirstRunDialog  # noqa: E402
+from tests.qt_profile import shared_profile  # noqa: E402
 
 _app: QApplication | None = None
+_profile = None
 
 
 def setUpModule() -> None:
-    global _app
+    global _app, _profile
     _app = QApplication.instance() or QApplication(sys.argv[:1])
+    _profile = shared_profile()
 
 
 class FirstRunDialogTests(unittest.TestCase):
@@ -95,8 +97,7 @@ class ShowFirstRunTests(unittest.TestCase):
     def setUp(self) -> None:
         path = os.path.join(tempfile.mkdtemp(prefix="onboard-db-"), "browser.sqlite3")
         self.db = Database(path)
-        self.profile = BrowserProfile(_app)
-        self.window = MainWindow(self.profile, self.db, start_urls=["about:blank"])
+        self.window = MainWindow(_profile, self.db, start_urls=["about:blank"])
 
     def tearDown(self) -> None:
         self.window.close()
