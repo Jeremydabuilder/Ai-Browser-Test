@@ -66,7 +66,7 @@ nss alsa-lib`.
 ## Tests
 
 ```bash
-python -m unittest discover -s tests -v          # 1383 tests
+python -m unittest discover -s tests -v          # 1390 tests
 python scripts/smoke_test.py                     # headless end-to-end run
 python scripts/feature_check.py                  # 28-point feature checklist
 python scripts/agent_demo.py                     # the research demo, offline
@@ -242,6 +242,17 @@ current-stage progress label, an optional structured result (rendered as a
 table or list where the text is shaped like one, not just prose), and a log
 of what Py actually did - all of it persisted, so closing the browser costs
 nothing.
+
+You do not have to start one explicitly. Typing a goal-shaped request
+straight into the chat box - "research the best budget mechanical
+keyboards," not "what does this page say" - promotes it into a Mission
+automatically, using the same conservative heuristic as the address bar's
+"ask Py" icon (`app.utils.urls.looks_like_a_task`). Only from that box,
+never from a retry, a quick action, or "challenge this claim" - those carry
+requests the user did not compose themselves. A Mission already active is
+never replaced by this; getting the heuristic wrong just costs a glance and
+a Pause click, since a Mission is local bookkeeping with nothing sent
+anywhere on its own.
 
 It also tracks what it has **not** settled yet: `mission_save_question` lets
 Py flag a genuine uncertainty ("reviews disagree on battery life past 18

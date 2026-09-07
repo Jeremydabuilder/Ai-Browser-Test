@@ -515,7 +515,31 @@ class AgentPanel(QWidget):
         self._last_user_message = text
         self._begin_conversation()
         self._append("user", text)
+        self._maybe_start_mission(text)
         self._session.send(text)
+
+    def _maybe_start_mission(self, text: str) -> None:
+        """Auto-promote a typed, task-shaped message into a Mission, when
+        nothing is already active - "the browser should usually choose
+        intelligently" between a quick question and a trackable task,
+        without a separate form to fill in first.
+
+        Deliberately only from here, the box the user actually typed into -
+        not from _ask(), which also carries retries, quick actions and
+        "challenge this claim" requests the user did not compose themselves.
+        Getting the heuristic wrong costs a glance and a Pause click, not a
+        mistake: a Mission is local bookkeeping, visible the moment it
+        exists (the card appears right below), and free to leave.
+        """
+        if self._missions is None or self._missions.active is not None:
+            return
+        from app.utils.urls import looks_like_a_task
+
+        if not looks_like_a_task(text):
+            return
+        mission = self._missions.start(text)
+        if mission is not None:
+            self._append("system", f"Tracking this as a mission · {mission.title}")
 
     def _retry(self) -> None:
         """Send the same request again, exactly as the user last phrased it."""
