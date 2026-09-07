@@ -57,6 +57,8 @@ QUICK_ACTIONS: tuple[tuple[str, str], ...] = (
     ("Summarise", "Summarise the page I am looking at."),
     ("Key points", "What are the main points on this page? Answer as a short list."),
     ("Explain", "Explain what this page is and who it is for, in plain language."),
+    ("Compare my tabs", "Compare my open tabs and tell me how they differ, "
+                        "and which one looks best."),
 )
 
 

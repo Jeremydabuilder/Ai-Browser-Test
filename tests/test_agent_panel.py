@@ -141,6 +141,13 @@ class PanelTests(unittest.TestCase):
             self.assertTrue(label.strip())
             self.assertTrue(prompt.strip().endswith(("?", ".")), prompt)
 
+    def test_a_quick_action_offers_to_compare_open_tabs(self) -> None:
+        # "Ask Py Everywhere" for open tabs - no per-tab context needed, so
+        # it lives as an ordinary quick action rather than a menu tied to
+        # one specific tab.
+        labels = [label for label, _prompt in QUICK_ACTIONS]
+        self.assertIn("Compare my tabs", labels)
+
     # -- clearing ---------------------------------------------------------
     def test_clearing_empties_the_conversation_and_the_transcript(self) -> None:
         panel = self.start([says("First answer."), says("Second answer.")])
