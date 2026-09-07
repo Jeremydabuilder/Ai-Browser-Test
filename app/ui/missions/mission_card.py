@@ -566,7 +566,14 @@ class MissionCard(QFrame):
             self.more.hide()
             return
 
-        self.pages_label.setText(f"PAGES · {len(pages)}")
+        # "Useful" isn't a separate rating the agent makes - it's read
+        # straight off whether a page actually produced a finding, which is
+        # data the board already has. Cheaper and more honest than adding a
+        # rating the agent would have to remember to set, and it can never
+        # drift out of step with the findings themselves.
+        useful = len({f.page_id for f in mission.findings if f.page_id is not None})
+        detail = f"{len(pages)} · {useful} useful" if useful else str(len(pages))
+        self.pages_label.setText(f"PAGES · {detail}")
         live = self._service.open_keys()
         for page in pages[:VISIBLE_PAGES]:
             row = _PageRow(page, page.key in live, self)

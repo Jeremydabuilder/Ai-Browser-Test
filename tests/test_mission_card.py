@@ -16,7 +16,14 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
-from app.missions.model import Mission, MissionQuestion, MissionStatus, QuestionStatus  # noqa: E402
+from app.missions.model import (  # noqa: E402
+    Mission,
+    MissionFinding,
+    MissionPage,
+    MissionQuestion,
+    MissionStatus,
+    QuestionStatus,
+)
 from app.ui.missions.mission_card import MissionCard, VISIBLE_QUESTIONS  # noqa: E402
 
 _app: QApplication | None = None
@@ -181,6 +188,52 @@ class QuestionsSectionTests(unittest.TestCase):
         self.assertTrue(self.card.questions_label.isVisible())
         self.card.show_mission(self._mission(id=2, questions=()))
         self.assertFalse(self.card.questions_label.isVisible())
+
+
+class PagesUsefulCountTests(unittest.TestCase):
+    """"Useful" is read straight off whether a page produced a finding -
+    never a separate rating the agent has to remember to set. See the
+    comment in MissionCard._render_pages."""
+
+    def setUp(self) -> None:
+        self.card = MissionCard(_FakeService())
+
+    def tearDown(self) -> None:
+        self.card.deleteLater()
+        _app.processEvents()
+
+    def _page(self, id_, url="https://example.com/x"):
+        return MissionPage(id=id_, mission_id=1, url=url, title="A page")
+
+    def _finding(self, id_, page_id):
+        return MissionFinding(id=id_, mission_id=1, text="A fact", page_id=page_id)
+
+    def _mission(self, **overrides):
+        base = dict(id=1, title="Research", goal="research something",
+                   status=MissionStatus.ACTIVE, pages=(), findings=())
+        base.update(overrides)
+        return Mission(**base)
+
+    def test_no_useful_pages_shows_a_plain_count(self) -> None:
+        self.card.show_mission(self._mission(pages=(self._page(1), self._page(2))))
+        self.assertEqual(self.card.pages_label.text(), "PAGES · 2")
+
+    def test_pages_with_findings_are_counted_as_useful(self) -> None:
+        self.card.show_mission(self._mission(
+            pages=(self._page(1), self._page(2), self._page(3)),
+            findings=(self._finding(1, page_id=1),)))
+        self.assertEqual(self.card.pages_label.text(), "PAGES · 3 · 1 useful")
+
+    def test_two_findings_on_the_same_page_count_that_page_once(self) -> None:
+        self.card.show_mission(self._mission(
+            pages=(self._page(1),),
+            findings=(self._finding(1, page_id=1), self._finding(2, page_id=1))))
+        self.assertEqual(self.card.pages_label.text(), "PAGES · 1 · 1 useful")
+
+    def test_a_finding_with_no_page_does_not_count_as_a_useful_page(self) -> None:
+        self.card.show_mission(self._mission(
+            pages=(self._page(1),), findings=(self._finding(1, page_id=None),)))
+        self.assertEqual(self.card.pages_label.text(), "PAGES · 1")
 
 
 if __name__ == "__main__":
