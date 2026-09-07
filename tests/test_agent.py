@@ -406,6 +406,75 @@ class ErrorRecoveryTests(AgentTestCase):
         self.assertFalse(result["error"]["recoverable"])
 
 
+class ProviderRetryTests(AgentTestCase):
+    """A retryable provider failure (a rate limit, a timeout, a 5xx) gets a
+    bounded number of automatic retries before it is shown as a dead end -
+    see AgentSession._on_failure. Delays are kept tiny (retry_after in
+    hundredths of a second) so these tests run fast without needing to
+    fake the clock."""
+
+    def _retries_seen(self) -> list[tuple]:
+        seen = []
+        self.session.retry_scheduled.connect(
+            lambda message, delay, attempt, limit: seen.append((message, delay, attempt, limit)))
+        return seen
+
+    def test_a_retryable_failure_is_retried_automatically_and_succeeds(self):
+        self.start([
+            ClaudeError("Groq hit a temporary rate limit. Py can retry shortly.",
+                       retryable=True, retry_after=0.01),
+            says("Recovered after one retry."),
+        ])
+        retries = self._retries_seen()
+        self.assertTrue(self.run_task("Do something."))
+        self.assertEqual(self.said[-1], "Recovered after one retry.")
+        self.assertFalse(self.errors, "a retry that succeeds must never surface as an error")
+        self.assertEqual(len(retries), 1)
+        _message, delay, attempt, limit = retries[0]
+        self.assertEqual(delay, 0.01)
+        self.assertEqual(attempt, 1)
+        self.assertEqual(limit, self.session._MAX_AUTO_RETRIES)
+
+    def test_retries_are_bounded_then_surface_as_an_ordinary_error(self):
+        """A provider that never recovers still gets a fixed number of
+        chances, then the task ends the normal way rather than retrying
+        forever."""
+        always_fails = ClaudeError("Still rate limited.", retryable=True, retry_after=0.01)
+        self.start([always_fails, always_fails, always_fails, always_fails])
+        retries = self._retries_seen()
+        self.assertTrue(self.run_task("Do something."))
+        self.assertEqual(len(retries), self.session._MAX_AUTO_RETRIES)
+        self.assertTrue(self.errors, "retries must run out and surface as an error eventually")
+        self.assertEqual(self.session.state, AgentState.IDLE)
+
+    def test_a_non_retryable_failure_is_never_retried(self):
+        """An auth failure or an exhausted quota (retryable=False) must go
+        straight to the user - retrying it would just repeat the same
+        rejection while looking like Py is doing something."""
+        self.start([ClaudeError("Claude rejected the API key.", retryable=False)])
+        retries = self._retries_seen()
+        self.assertTrue(self.run_task("Do something."))
+        self.assertFalse(retries)
+        self.assertIn("API key", self.errors[-1])
+
+    def test_cancelling_during_the_retry_wait_stops_it_cleanly(self):
+        """Stop must win even while an automatic retry is pending - no
+        request should go out after the user asked the task to stop."""
+        self.start([
+            ClaudeError("Rate limited.", retryable=True, retry_after=5.0),
+            says("must never be reached"),
+        ])
+        retries = self._retries_seen()
+        self.assertTrue(self.session.send("Do something."))
+        self.assertTrue(pump(lambda: bool(retries), 5000))
+        self.session.cancel()
+        self.assertFalse(self.session.busy)
+        self.assertIsNone(self.session._retry_timer)
+        # No late request or crash from a retry timer that outlived cancel().
+        _app.processEvents()
+        self.assertNotIn("must never be reached", self.said)
+
+
 # ---------------------------------------------------------------------------
 class ConfirmationTests(AgentTestCase):
     """The browser's safety layer is authoritative, not the model."""

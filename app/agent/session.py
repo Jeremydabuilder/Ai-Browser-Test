@@ -36,7 +36,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
-from PySide6.QtCore import QObject, QThread, Signal, Slot
+from PySide6.QtCore import QObject, QThread, QTimer, Signal, Slot
 
 from app.agent.claude_client import AgentResponse, ClaudeError, ClaudeTransport, ToolCall
 from app.agent.config import AgentConfig
@@ -235,8 +235,24 @@ class AgentSession(QObject):
     assistant_delta = Signal(str)
     #: The conversation was reset.
     cleared = Signal()
+    #: A retryable provider failure (a rate limit, a timeout, a 5xx) is being
+    #: retried automatically rather than shown as a dead end. Carries the
+    #: message to show, the delay in seconds, and (attempt, limit) so the UI
+    #: can say "Retrying in 12s... (attempt 2 of 3)".
+    retry_scheduled = Signal(str, float, int, int)
     #: Emitted with the outgoing request so a worker thread can pick it up.
     _dispatch = Signal(str, list, list)
+
+    #: Automatic retries for one provider failure before giving up and
+    #: showing it as an ordinary error. Bounded so a provider that is truly
+    #: down does not retry forever - three tries is enough to ride out a
+    #: transient rate limit without the task ever announcing it needs one.
+    _MAX_AUTO_RETRIES = 3
+    #: Backoff when the provider does not say how long to wait (no
+    #: Retry-After header) - doubling from 2s, capped well under a minute so
+    #: a task that is going to succeed does not sit for a long time.
+    _RETRY_BACKOFF_BASE_S = 2.0
+    _RETRY_BACKOFF_CAP_S = 30.0
 
     def __init__(
         self,
@@ -261,6 +277,13 @@ class AgentSession(QObject):
         self._cancelled = False
         self._turns = 0
         self._tool_calls_made = 0
+        #: How many automatic retries this task has used for the provider
+        #: request that is in flight - see _on_failure. Reset with every
+        #: fresh task and every successful response.
+        self._retry_attempt = 0
+        #: The pending auto-retry timer, if one is scheduled - stopped on
+        #: cancel() so a late retry never fires after the user has moved on.
+        self._retry_timer: QTimer | None = None
         #: Recent (tool, arguments) signatures, oldest first - see the loop
         #: guard in _next_tool. Reset with every fresh task.
         self._call_history: list[tuple[str, str]] = []
@@ -347,6 +370,7 @@ class AgentSession(QObject):
         self._cancelled = False
         self._turns = 0
         self._tool_calls_made = 0
+        self._retry_attempt = 0
         self._call_history = []
         self._ref_failures = {}
         self._tabs_opened = 0
@@ -433,6 +457,9 @@ class AgentSession(QObject):
         if not self.busy:
             return
         self._cancelled = True
+        if self._retry_timer is not None:
+            self._retry_timer.stop()
+            self._retry_timer = None
         self.trace.record(tracing.TASK_CANCELLED, steps=len(self._steps))
         self._update_step(StepState.SKIPPED, "stopped")
         self._set_state(AgentState.CANCELLING)
@@ -484,6 +511,9 @@ class AgentSession(QObject):
     def shutdown(self) -> None:
         """Stop the worker thread. Called when the window closes."""
         self._cancelled = True
+        if self._retry_timer is not None:
+            self._retry_timer.stop()
+            self._retry_timer = None
         self._thread.quit()
         self._thread.wait(3000)
 
@@ -506,6 +536,9 @@ class AgentSession(QObject):
     def _on_response(self, response: AgentResponse) -> None:
         if self._cancelled:
             return
+        # A response means the provider is answering again - the retry count
+        # is for surviving one bad patch, not a lifetime ban on retrying.
+        self._retry_attempt = 0
         self.task_usage.add(response)
         self.session_usage.add(response)
         self.usage_updated.emit(self.task_usage)
@@ -555,17 +588,45 @@ class AgentSession(QObject):
     def _on_failure(self, error: ClaudeError) -> None:
         if self._cancelled:
             return
+        self.trace.record(tracing.TASK_ERROR, kind="model",
+                          retryable=error.retryable)
+        # A retryable failure (a rate limit, a timeout, a 5xx - never an
+        # auth problem or an exhausted quota, which come through with
+        # retryable=False) gets a bounded number of automatic tries before
+        # it is shown as a dead end. Nothing about the task's state changes
+        # here: no tool ran, no browser action happened, so re-sending the
+        # exact same request is always safe - unlike retrying a tool call,
+        # which this never does.
+        if error.retryable and self._retry_attempt < self._MAX_AUTO_RETRIES:
+            self._retry_attempt += 1
+            delay = (error.retry_after if error.retry_after and error.retry_after > 0
+                    else min(self._RETRY_BACKOFF_CAP_S,
+                            self._RETRY_BACKOFF_BASE_S * (2 ** (self._retry_attempt - 1))))
+            self.retry_scheduled.emit(
+                error.message, delay, self._retry_attempt, self._MAX_AUTO_RETRIES)
+            timer = QTimer(self)
+            timer.setSingleShot(True)
+            timer.timeout.connect(self._run_retry)
+            self._retry_timer = timer
+            timer.start(max(1, int(delay * 1000)))
+            return
         # Never `detail`: an SDK exception can quote a request header, and a
         # header can carry a credential. `api_message` is the other thing - the
         # server's own description of the request it refused, lifted out of the
         # parsed body - and withholding that just leaves the user staring at a
         # status code with no way to act on it.
-        self.trace.record(tracing.TASK_ERROR, kind="model",
-                          retryable=error.retryable)
         self.error.emit(error.message)
         if error.api_message:
             self.error_detail.emit(error.api_message)
         self._finish()
+
+    def _run_retry(self) -> None:
+        """Re-send the request an auto-retry was scheduled for."""
+        self._retry_timer = None
+        if self._cancelled:
+            return
+        self._set_state(AgentState.THINKING)
+        self._dispatch.emit(SYSTEM_PROMPT, self._messages, TOOL_SCHEMAS)
 
     def run_routine(self, steps: list[tuple[str, dict]]) -> bool:
         """Play back a taught sequence. Returns False if the agent is busy.
@@ -580,6 +641,7 @@ class AgentSession(QObject):
         self._cancelled = False
         self._routine_mode = True
         self._turns = 0
+        self._retry_attempt = 0
         self._tool_calls_made = 0
         self._call_history = []
         self._ref_failures = {}

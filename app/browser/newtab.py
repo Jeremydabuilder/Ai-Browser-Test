@@ -359,16 +359,31 @@ _TEMPLATE = """<!doctype html>
 
   .brand {
     display: flex; flex-direction: column; align-items: center;
-    gap: 10px; margin-bottom: 24px; user-select: none;
+    gap: 12px; margin-bottom: 20px; user-select: none;
+  }
+  /* The character's own stage: a soft radial glow behind Py so the artwork
+     reads as part of the page's composition rather than a sticker dropped on
+     top of it, plus generous padding on every side so nothing - hair, hands,
+     shoes - ever sits flush against an edge. A separate element from .mark
+     itself so a future subtle animation (a hover tilt, a floor shadow that
+     breathes with him) has somewhere to live without fighting the image's
+     own sizing. */
+  .mark-wrap {
+    display: flex; align-items: flex-end; justify-content: center;
+    padding: 20px 40px 4px;
+    cursor: pointer;
+    background: radial-gradient(closest-side, var(--glow), transparent 70%);
   }
   .mark {
     /* Full-body Py, so the box is taller than it is wide and the width
        follows the artwork rather than the other way round. Whatever aspect
-       the final drawing has, it keeps it. */
-    width: auto; height: 210px; color: var(--accent);
-    cursor: pointer;
-    border-radius: 50%;
-    transition: transform .16s ease;
+       the final drawing has, it keeps it - and nothing here ever clips it:
+       no border-radius, no fixed box the art has to fit inside. */
+    display: block;
+    width: auto; height: 272px; max-width: 100%; max-height: 40vh;
+    color: var(--accent);
+    filter: drop-shadow(0 16px 22px rgba(20, 20, 40, .16));
+    transition: transform .16s ease, filter .16s ease;
     /* Py breathes here the same way Py breathes in the agent panel. Slow, tiny,
        and off entirely for anyone who asked for less motion. */
     animation: breathe 5.5s ease-in-out infinite;
@@ -377,11 +392,16 @@ _TEMPLATE = """<!doctype html>
      little vertical space there is, so it steps down rather than dominating. */
   /* Py steps down before crowding the search box, rather than pushing it off
      the screen: on a short window the box is the thing you came for. */
+  @media (max-height: 760px) {
+    .mark { height: 208px; }
+  }
   @media (max-height: 640px) {
-    .mark { height: 150px; }
+    .mark { height: 158px; }
+    .mark-wrap { padding: 12px 28px 2px; }
   }
   @media (max-height: 520px), (max-width: 420px) {
-    .mark { height: 108px; }
+    .mark { height: 112px; }
+    .mark-wrap { padding: 6px 20px 0; }
     main { padding-top: clamp(20px, 6vh, 60px); }
     .brand { gap: 8px; margin-bottom: 18px; }
   }
@@ -392,11 +412,11 @@ _TEMPLATE = """<!doctype html>
     50%      { transform: translateY(-3px) }
   }
   .mark:hover {
-    transform: scale(1.06);
+    transform: scale(1.045);
     animation-play-state: paused;
-    filter: drop-shadow(0 0 18px var(--glow));
+    filter: drop-shadow(0 16px 26px var(--glow)) drop-shadow(0 0 24px var(--glow));
   }
-  .mark:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+  .mark:focus-visible { outline: 2px solid var(--accent); outline-offset: 6px; border-radius: 12px; }
   .wordmark {
     font-size: 23px; font-weight: 600; letter-spacing: -.022em;
   }
@@ -613,7 +633,7 @@ _TEMPLATE = """<!doctype html>
          mention it by name anywhere else in this file: the substitution is a
          plain string replace, and a second mention gets substituted too -
          which inlined the whole drawing a second time, inside a comment. -->
-    __MASCOT__
+    <div class="mark-wrap">__MASCOT__</div>
     <div class="wordmark">Py<span>Browser</span></div>
     <p class="greeting" id="greeting">Hey, I\u2019m Py. What do you want to get done?</p>
   </div>

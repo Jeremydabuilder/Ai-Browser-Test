@@ -137,6 +137,7 @@ def describe_model(model_id: str) -> ModelChoice:
 PROVIDER_ANTHROPIC = "anthropic"
 PROVIDER_GROQ = "groq"
 PROVIDER_OPENROUTER = "openrouter"
+PROVIDER_GEMINI = "gemini"
 
 DEFAULT_PROVIDER = PROVIDER_ANTHROPIC
 
@@ -169,6 +170,11 @@ PROVIDERS: tuple[ProviderInfo, ...] = (
         "ANTHROPIC_API_KEY",
         "Paid; see Tools → Configure AI Agent for every way to authenticate.",
         is_anthropic=True,
+    ),
+    ProviderInfo(
+        PROVIDER_GEMINI, "Google Gemini (recommended for testing)",
+        "GEMINI_API_KEY",
+        "Generous free tier, no SDK to install. Get a key at aistudio.google.com/apikey.",
     ),
     ProviderInfo(
         PROVIDER_GROQ, "Groq",

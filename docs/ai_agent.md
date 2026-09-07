@@ -135,13 +135,16 @@ keeps its ordinary message.
 exactly as the browser's settings-backed config would — the same path an
 identity-linked key needs to succeed against the real API.
 
-## 3a. Other providers — Groq, OpenRouter
+## 3a. Other providers — Gemini, Groq, OpenRouter
 
 Anthropic is the default, and the only provider with a cost/effort control or
 a workspace id. Testing the agent loop does not have to cost money though:
-Groq and OpenRouter both have a free tier and both speak an OpenAI-compatible
-`/chat/completions` endpoint, and PyBrowser can drive either one through the
-exact same agent loop.
+Gemini, Groq and OpenRouter all have a free tier and all three speak an
+OpenAI-compatible `/chat/completions` endpoint (Gemini via Google's own
+OpenAI-compatibility layer, rather than a separate SDK), and PyBrowser can
+drive any of them through the exact same agent loop. Gemini is the
+recommended one to start with - the free tier has real headroom, and there
+is nothing extra to install.
 
 **Why `AgentSession` never needed to change.** It only ever talks to a
 `ClaudeTransport`-shaped object - one method, `send(system, messages, tools,
@@ -162,18 +165,18 @@ asserts `ToolRegistry.__init__` takes no provider argument at all, and that
 
 **One factory, one dispatch point.** `build_transport()` in
 `app/ui/agent_setup.py` is the only place that branches on provider - it
-picks `ClaudeClient`, `GroqClient` or `OpenRouterClient` and hands it
-straight to `AgentSession`. Nowhere else does.
+picks `ClaudeClient`, `GroqClient`, `OpenRouterClient` or `GeminiClient` and
+hands it straight to `AgentSession`. Nowhere else does.
 
-**Credentials.** Groq and OpenRouter have no Bedrock/Vertex/OAuth-profile
+**Credentials.** Gemini, Groq and OpenRouter have no Bedrock/Vertex/OAuth-profile
 equivalent - just a key, in the OS keyring or an environment variable
-(`GROQ_API_KEY`, `OPENROUTER_API_KEY`). `credentials.resolve_for(provider)`
-handles all three providers; Anthropic's own `resolve()` is untouched and
-`resolve_for("anthropic")` simply calls it. Each provider gets its own
-keyring *account* (`ApiKeyStore(account="groq-api-key")`, etc.), so switching
-providers can never see or clobber another provider's stored key -
-`CredentialIsolationTests` in `tests/test_providers.py` asserts this
-directly.
+(`GEMINI_API_KEY`, `GROQ_API_KEY`, `OPENROUTER_API_KEY`).
+`credentials.resolve_for(provider)` handles all four providers; Anthropic's
+own `resolve()` is untouched and `resolve_for("anthropic")` simply calls it.
+Each provider gets its own keyring *account* (`ApiKeyStore(account="groq-api-key")`,
+etc.), so switching providers can never see or clobber another provider's
+stored key - `CredentialIsolationTests` in `tests/test_providers.py` asserts
+this directly.
 
 **Model selection.** Switching to Groq or OpenRouter in the dialog populates
 the model dropdown immediately from a small offline seed list, then - with no
@@ -216,6 +219,12 @@ dropdown - never silently hidden - but disabled (`QStandardItem.setEnabled`
 via a role flag `_populate_model_combo` sets on each item) so it cannot be
 selected from the list; tool-capable models sort first.
 
+`GeminiClient` has no metadata layer yet - Gemini's `/models` listing does
+not report tool-calling support, so `GeminiClient.capability_of` only rules
+out entries that are plainly not chat models by name (embeddings, image,
+audio), same as `GroqClient` does for its own non-chat models. **Test
+Connection** is the actual proof for everything else.
+
 **Errors.** `OpenAICompatibleClient._handle_response` and `test_connection`
 translate the common failures into the same `ClaudeError` shape Anthropic
 errors use - invalid key, no permission for this model, model not found,
@@ -227,6 +236,18 @@ specifically, which both surface as the exact sentence
 another model.") rather than the raw 400. The provider's own sentence is
 preserved as `api_message`; the raw response body never reaches the UI, and
 the API key is never included in any raised message.
+
+**Retries.** A retryable failure (a rate limit, a timeout, a 5xx - anything
+with `ClaudeError.retryable=True`) is retried automatically by
+`AgentSession`, not just reported: up to three tries, waiting however long
+the provider's own `Retry-After` header says if it sent one, otherwise a
+bounded exponential backoff (2s, 4s, 8s). Nothing about the task's state is
+touched while this happens - no tool has run, so re-sending the exact same
+request is always safe - and the panel shows *why* nothing seems to be
+happening (`AgentSession.retry_scheduled`) instead of going quiet. A
+non-retryable failure (a bad key, an exhausted quota) is never retried; a
+cancel during the wait stops it immediately. See `ProviderRetryTests` in
+`tests/test_agent.py`.
 
 ## 4. Tools
 

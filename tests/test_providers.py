@@ -36,6 +36,7 @@ from app.agent import credentials as creds  # noqa: E402
 from app.agent.claude_client import AgentResponse, ClaudeError, ToolCall  # noqa: E402
 from app.agent.config import AgentConfig, ContextLimits  # noqa: E402
 from app.agent.openai_compatible import (  # noqa: E402
+    GeminiClient,
     GroqClient,
     OpenRouterClient,
     messages_param,
@@ -52,7 +53,8 @@ _app: QApplication | None = None
 _server: FixtureServer | None = None
 _profile = None
 
-_VARS = ("GROQ_API_KEY", "OPENROUTER_API_KEY", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN")
+_VARS = ("GROQ_API_KEY", "OPENROUTER_API_KEY", "GEMINI_API_KEY",
+        "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN")
 
 
 def setUpModule() -> None:
@@ -277,7 +279,41 @@ class ClientTests(unittest.TestCase):
         with self.assertRaises(ClaudeError) as ctx:
             client.send(system="s", messages=[], tools=[])
         self.assertTrue(ctx.exception.retryable)
-        self.assertIn("rate limiting", ctx.exception.message)
+        self.assertIn("temporary rate limit", ctx.exception.message)
+        self.assertIsNone(ctx.exception.retry_after, "no Retry-After header was sent")
+
+    def test_a_429_with_retry_after_reports_the_delay(self):
+        client = GroqClient("k", AgentConfig(),
+                            transport=httpx.MockTransport(
+                                lambda r: httpx.Response(
+                                    429, headers={"retry-after": "17"},
+                                    json={"error": {"message": "slow down"}})))
+        with self.assertRaises(ClaudeError) as ctx:
+            client.send(system="s", messages=[], tools=[])
+        self.assertEqual(ctx.exception.retry_after, 17.0)
+
+    def test_an_exhausted_quota_carries_no_retry_after(self):
+        """A quota error is not retryable at all, so retry_after must never
+        be set even if the response carried a Retry-After header - retrying
+        an exhausted quota is never going to work."""
+        client = GroqClient("k", AgentConfig(),
+                            transport=httpx.MockTransport(
+                                lambda r: httpx.Response(
+                                    429, headers={"retry-after": "60"},
+                                    json={"error": {"message": "monthly quota exceeded"}})))
+        with self.assertRaises(ClaudeError) as ctx:
+            client.send(system="s", messages=[], tools=[])
+        self.assertFalse(ctx.exception.retryable)
+        self.assertIsNone(ctx.exception.retry_after)
+
+    def test_a_server_error_with_retry_after_reports_the_delay(self):
+        client = GroqClient("k", AgentConfig(),
+                            transport=httpx.MockTransport(
+                                lambda r: httpx.Response(503, headers={"retry-after": "5"})))
+        with self.assertRaises(ClaudeError) as ctx:
+            client.send(system="s", messages=[], tools=[])
+        self.assertTrue(ctx.exception.retryable)
+        self.assertEqual(ctx.exception.retry_after, 5.0)
 
     def test_a_model_unavailable_404_is_translated_clearly(self):
         client = GroqClient("k", AgentConfig(model="not-a-real-model"),
@@ -334,6 +370,28 @@ class ClientTests(unittest.TestCase):
 # ---------------------------------------------------------------------------
 # Model listing and capability metadata
 # ---------------------------------------------------------------------------
+
+
+class GeminiClientTests(unittest.TestCase):
+    """Gemini follows the same OpenAICompatibleClient contract as Groq and
+    OpenRouter - these are the Gemini-specific parts of it."""
+
+    def test_seed_models_are_never_empty(self):
+        self.assertTrue(GeminiClient.seed_models())
+
+    def test_an_ordinary_model_reports_unconfirmed_tool_support(self):
+        supported, note = GeminiClient.capability_of({"id": "gemini-2.5-flash"})
+        self.assertTrue(supported)
+        self.assertIn("unconfirmed", note)
+
+    def test_an_embedding_model_is_flagged_as_not_a_chat_model(self):
+        supported, note = GeminiClient.capability_of({"id": "text-embedding-004"})
+        self.assertFalse(supported)
+        self.assertIn("not a chat model", note)
+
+    def test_label_and_base_url_are_set(self):
+        self.assertEqual(GeminiClient.label, "Gemini")
+        self.assertIn("generativelanguage.googleapis.com", GeminiClient.base_url)
 
 
 class CapabilityTests(unittest.TestCase):
@@ -432,6 +490,19 @@ class CredentialIsolationTests(unittest.TestCase):
         self.assertEqual(creds.resolve_for("groq").mode, creds.Mode.NONE)
         self.assertFalse(creds.resolve_for("groq").available)
 
+    def test_gemini_has_its_own_keyring_account(self):
+        _label, env, account = creds.PROVIDER_KEY_INFO["gemini"]
+        groq_account = creds.PROVIDER_KEY_INFO["groq"][2]
+        self.assertNotEqual(account, groq_account)
+        self.assertEqual(env, "GEMINI_API_KEY")
+
+    def test_a_gemini_key_is_invisible_to_groq_resolution(self):
+        os.environ["GEMINI_API_KEY"] = "AIza_only_for_gemini"
+        gemini = creds.resolve_for("gemini")
+        groq = creds.resolve_for("groq")
+        self.assertEqual(gemini.secret, "AIza_only_for_gemini")
+        self.assertFalse(groq.available)
+
 
 # ---------------------------------------------------------------------------
 # Building the right client for the configured provider
@@ -462,6 +533,14 @@ class TransportSelectionTests(unittest.TestCase):
         credential = creds.Credential(creds.Mode.ENV_KEY, "k", secret="or_x", provider="openrouter")
         transport = build_transport(credential, AgentConfig())
         self.assertIsInstance(transport, OpenRouterClient)
+
+    def test_gemini_builds_a_gemini_client(self):
+        from app.agent.openai_compatible import GeminiClient
+        from app.ui.agent_setup import build_transport
+
+        credential = creds.Credential(creds.Mode.ENV_KEY, "k", secret="AIza_x", provider="gemini")
+        transport = build_transport(credential, AgentConfig())
+        self.assertIsInstance(transport, GeminiClient)
 
     def test_build_session_reports_a_clean_error_with_no_groq_key(self):
         from app.ui.agent_setup import build_session
@@ -792,6 +871,17 @@ class ModelSelectionTests(unittest.TestCase):
         test that triggers one must pump the event loop until it delivers
         its result rather than asserting immediately after."""
         pump(lambda: dialog._other_worker is None)
+
+    def test_gemini_is_offered_in_the_provider_dropdown(self):
+        dialog = self._dialog()
+        self.assertGreaterEqual(dialog.provider_box.findData("gemini"), 0)
+
+    def test_switching_to_gemini_populates_the_dropdown_from_the_seed_list(self):
+        dialog = self._dialog()
+        self._switch_to(dialog, "gemini")
+        ids = {dialog._other_model_box.itemData(i)
+              for i in range(dialog._other_model_box.count())}
+        self.assertIn("gemini-2.5-flash", ids)
 
     def test_switching_to_groq_populates_the_dropdown_from_the_seed_list(self):
         dialog = self._dialog()

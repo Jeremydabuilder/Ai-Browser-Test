@@ -81,9 +81,11 @@ class Metrics:
     tab_min_width: int = 120
     tab_max_width: int = 220
 
-    # Py. Big enough to read an expression, small enough to stay furniture.
-    mascot_panel: int = 44
-    mascot_panel_small: int = 34   # when the panel is narrow
+    # Py. This is the browser's identity, not an icon - big enough to read
+    # an expression at a glance, sized like the character it is rather than
+    # like a favicon.
+    mascot_panel: int = 76
+    mascot_panel_small: int = 56   # when the panel is narrow
     mascot_newtab: int = 56
 
 

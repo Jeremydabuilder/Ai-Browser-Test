@@ -448,6 +448,7 @@ class AgentPanel(QWidget):
         session.activity.connect(self._on_activity)
         session.error.connect(self._on_error)
         session.error_detail.connect(self._on_error_detail)
+        session.retry_scheduled.connect(self._on_retry_scheduled)
         session.state_changed.connect(self._on_state)
         session.confirmation_required.connect(self.confirmation.ask)
         session.finished.connect(self._on_finished)
@@ -766,6 +767,16 @@ class AgentPanel(QWidget):
         self._failed = True
         self._append("error", text)
 
+    def _on_retry_scheduled(self, message: str, delay: float, attempt: int, limit: int) -> None:
+        """A provider hiccup that is being retried automatically, not shown
+        as a failure - see AgentSession._on_failure. Said plainly, with the
+        wait time and how many tries are left, so a rate limit reads as
+        "Py is handling this" rather than "Py is broken"."""
+        seconds = max(1, round(delay))
+        plural = "s" if seconds != 1 else ""
+        self._append("retry", f"{message} Retrying in {seconds} second{plural}… "
+                              f"(attempt {attempt} of {limit})")
+
     def _on_error_detail(self, text: str) -> None:
         """What the API said, under what we said about it.
 
@@ -857,6 +868,13 @@ class AgentPanel(QWidget):
                       f'border-radius:{m.radius_md}px;color:{c.danger}">{escaped}</div>'),
             "system": (f'<div style="margin:{m.space_2}px 0;color:{c.muted};'
                        f'font-size:{m.text_sm}px">{escaped}</div>'),
+            # A provider hiccup Py is already recovering from - distinct from
+            # "error", which is a dead end the user has to act on. Reusing
+            # the same warm/amber tone the rest of the app uses for "not
+            # broken, just waiting" (see NoticeBar) rather than red.
+            "retry": (f'<div style="margin:{m.space_2}px 0;padding:{m.space_2}px '
+                      f'{m.space_3}px;background:{c.warning_soft};'
+                      f'border-radius:{m.radius_md}px;color:{c.warning_text}">{escaped}</div>'),
         }.get(kind, f"<div>{escaped}</div>")
         self.transcript.moveCursor(QTextCursor.MoveOperation.End)
         self.transcript.insertHtml(html)

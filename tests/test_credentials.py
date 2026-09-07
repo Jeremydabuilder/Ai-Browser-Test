@@ -331,5 +331,26 @@ class WorkspaceIdConfigTests(unittest.TestCase):
         self.assertEqual(AgentConfig.from_environment(None).workspace_id, "")
 
 
+class CredentialKindTests(unittest.TestCase):
+    """The USER_API/PY_HOSTED axis prepared for a future hosted offering -
+    see Credential.kind's docstring. Nothing today produces a PY_HOSTED
+    credential; this only guards that the default stays correct and the
+    constant stays spelled the way resolve()'s callers would check for it."""
+
+    def test_every_credential_this_app_can_produce_today_is_user_api(self):
+        os.environ["ANTHROPIC_API_KEY"] = "sk-ant-test"
+        try:
+            self.assertEqual(creds.resolve().kind, creds.CredentialKind.USER_API)
+        finally:
+            os.environ.pop("ANTHROPIC_API_KEY", None)
+
+    def test_a_credential_with_no_kind_specified_defaults_to_user_api(self):
+        credential = creds.Credential(creds.Mode.ENV_KEY, "test", secret="x")
+        self.assertEqual(credential.kind, creds.CredentialKind.USER_API)
+
+    def test_the_hosted_kind_is_a_distinct_value(self):
+        self.assertNotEqual(creds.CredentialKind.PY_HOSTED, creds.CredentialKind.USER_API)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -28,6 +28,27 @@ from PySide6.QtWidgets import (
 from app.ui import theme
 
 
+def _load_anthropic_status(store) -> dict:
+    """Everything the Anthropic section needs to know, in one background-
+    thread call: which credential is active, every way in and whether each
+    is available, and whether a keyring key specifically exists (the active
+    credential can be a cloud backend even when a keyring key is *also*
+    present, so this cannot always be inferred from ``active`` alone).
+    """
+    from app.agent.credentials import options_summary, resolve
+
+    active = resolve(store)
+    try:
+        has_keyring_key = bool(store.get_keyring_key())
+    except Exception:  # noqa: BLE001 - a broken keyring is not fatal
+        has_keyring_key = False
+    return {
+        "active": active,
+        "options": options_summary(has_keyring_key=has_keyring_key),
+        "has_keyring_key": has_keyring_key,
+    }
+
+
 def _muted() -> str:
     """The current theme's secondary-text colour, for the inline HTML notes
     scattered through this dialog - a literal hex code here would stay the
@@ -83,6 +104,9 @@ class ApiKeyDialog(QDialog):
         #: reply meant for it apart from one meant for a call it superseded.
         self._other_worker: _BackgroundCall | None = None
         self._other_refresh_token = 0
+        #: Same idea, for the Anthropic section's own "currently using" /
+        #: available-options / stored-key lookups - see _refresh_anthropic_status.
+        self._anthropic_worker: _BackgroundCall | None = None
 
         self.setWindowTitle("Configure AI Agent")
         self.resize(640, 680)
@@ -113,6 +137,7 @@ class ApiKeyDialog(QDialog):
         layout.addStretch()
 
         self._show_provider(self.provider_box.currentData())
+        self._refresh_anthropic_status()
 
     # -- which provider ----------------------------------------------------
     def _provider_picker(self, parent: QWidget) -> QWidget:
@@ -153,37 +178,33 @@ class ApiKeyDialog(QDialog):
 
     # -- Anthropic: the full cascade, unchanged from before providers -----
     def _anthropic_section(self, parent: QWidget) -> QWidget:
-        from app.agent.credentials import SETUP_HELP, options_summary, resolve
+        """Build the section's skeleton only - no keyring/credential reads.
 
+        Every "which way in is active right now" fact here (resolve(),
+        options_summary(), whether a keyring key exists at all) comes from a
+        real OS keyring round trip, which can take anywhere from
+        imperceptible to several seconds depending on the platform's backend
+        - and on a machine where the keyring daemon is locked or unresponsive,
+        it can block far longer than that. Doing three of those in a row
+        synchronously while building this dialog is exactly what made
+        "Configure AI Agent" feel like it was freezing the browser. So this
+        method only lays out placeholders; _refresh_anthropic_status() fills
+        them in once a single background call returns - see there.
+        """
         box = QWidget(parent)
         layout = QVBoxLayout(box)
         layout.setContentsMargins(0, 0, 0, 0)
 
-        active = resolve(self._store)
-        layout.addWidget(QLabel(f"<b>Currently using:</b> {active.describe()}", box))
+        self._anthropic_active_label = QLabel("<b>Currently using:</b> checking…", box)
+        layout.addWidget(self._anthropic_active_label)
 
         # An API key is only one of several ways in, and the least good one -
         # say so, rather than implying a key is required.
-        rows = []
-        for mode, present, help_text in options_summary():
-            mark = "✓" if present else "–"
-            name = {"oauth_profile": "Sign in with the Anthropic CLI",
-                    "keyring": "API key in the OS keyring",
-                    "env_key": "ANTHROPIC_API_KEY",
-                    "auth_token": "ANTHROPIC_AUTH_TOKEN",
-                    "bedrock": "Amazon Bedrock",
-                    "vertex": "Google Vertex AI"}.get(mode, mode)
-            weight = "b" if present else "span"
-            rows.append(f"<tr><td>{mark}</td><td><{weight}>{name}</{weight}></td>"
-                        f"<td style='color:{_muted()}'>{help_text}</td></tr>")
-        options = QLabel(
-            "<p>You do <b>not</b> need to paste an API key. Any of these works, "
-            "and the first is preferred - it stores no secret at all:</p>"
-            "<table cellpadding=3>" + "".join(rows) + "</table>",
-            box)
-        options.setWordWrap(True)
-        options.setTextFormat(Qt.TextFormat.RichText)
-        layout.addWidget(options)
+        self._anthropic_options_label = QLabel(
+            "<p>Checking which sign-in options are available on this machine…</p>", box)
+        self._anthropic_options_label.setWordWrap(True)
+        self._anthropic_options_label.setTextFormat(Qt.TextFormat.RichText)
+        layout.addWidget(self._anthropic_options_label)
 
         layout.addWidget(self._cost_section(box))
         layout.addWidget(self._workspace_section(box))
@@ -207,12 +228,59 @@ class ApiKeyDialog(QDialog):
         save.clicked.connect(self._save)
         layout.addWidget(save)
 
-        if self._store.get_keyring_key():
-            clear = QPushButton("Remove stored key", box)
-            clear.setProperty("kind", "danger")
-            clear.clicked.connect(self._clear)
-            layout.addWidget(clear)
+        # Whether to show this at all depends on a keyring read, so it starts
+        # hidden and _refresh_anthropic_status() reveals it if needed - never
+        # built conditionally up front, which would need the same read here.
+        self._anthropic_clear_button = QPushButton("Remove stored key", box)
+        self._anthropic_clear_button.setProperty("kind", "danger")
+        self._anthropic_clear_button.clicked.connect(self._clear)
+        self._anthropic_clear_button.setVisible(False)
+        layout.addWidget(self._anthropic_clear_button)
         return box
+
+    def _refresh_anthropic_status(self) -> None:
+        """The one place that actually reads the keyring for this section.
+
+        Bundled into a single background-thread call rather than the three
+        separate synchronous ones this replaced, so the dialog paints
+        immediately and the real state fills in a moment later.
+        """
+        worker = _BackgroundCall(_load_anthropic_status, self._store, parent=self)
+
+        def finished() -> None:
+            result = worker.result
+            worker.deleteLater()
+            if self._anthropic_worker is worker:
+                self._anthropic_worker = None
+            if result is not None:
+                self._apply_anthropic_status(result)
+
+        worker.finished.connect(finished)
+        self._anthropic_worker = worker
+        worker.start()
+
+    def _apply_anthropic_status(self, result: dict) -> None:
+        active = result["active"]
+        self._anthropic_active_label.setText(f"<b>Currently using:</b> {active.describe()}")
+
+        rows = []
+        for mode, present, help_text in result["options"]:
+            mark = "✓" if present else "–"
+            name = {"oauth_profile": "Sign in with the Anthropic CLI",
+                    "keyring": "API key in the OS keyring",
+                    "env_key": "ANTHROPIC_API_KEY",
+                    "auth_token": "ANTHROPIC_AUTH_TOKEN",
+                    "bedrock": "Amazon Bedrock",
+                    "vertex": "Google Vertex AI"}.get(mode, mode)
+            weight = "b" if present else "span"
+            rows.append(f"<tr><td>{mark}</td><td><{weight}>{name}</{weight}></td>"
+                        f"<td style='color:{_muted()}'>{help_text}</td></tr>")
+        self._anthropic_options_label.setText(
+            "<p>You do <b>not</b> need to paste an API key. Any of these works, "
+            "and the first is preferred - it stores no secret at all:</p>"
+            "<table cellpadding=3>" + "".join(rows) + "</table>")
+
+        self._anthropic_clear_button.setVisible(result["has_keyring_key"])
 
     # -- Groq / OpenRouter: a key, a model, and a way to prove it works ----
     def _other_provider_section(self, parent: QWidget) -> QWidget:
@@ -306,21 +374,22 @@ class ApiKeyDialog(QDialog):
         whole app for up to 20 seconds on every such call, which is what this
         dialog did before.
         """
-        worker = self._other_worker
-        if worker is not None and worker.isRunning():
-            if not worker.wait(3000):
-                worker.terminate()
-                worker.wait()
+        for worker in (self._other_worker, self._anthropic_worker):
+            if worker is not None and worker.isRunning():
+                if not worker.wait(3000):
+                    worker.terminate()
+                    worker.wait()
         super().closeEvent(event)
 
     def _current_other_provider(self) -> str:
         return self.provider_box.currentData()
 
     def _other_client_class(self, provider_id: str | None = None):
-        from app.agent.openai_compatible import GroqClient, OpenRouterClient
+        from app.agent.openai_compatible import GeminiClient, GroqClient, OpenRouterClient
 
         provider_id = provider_id or self._current_other_provider()
-        return {"groq": GroqClient, "openrouter": OpenRouterClient}[provider_id]
+        return {"groq": GroqClient, "openrouter": OpenRouterClient,
+               "gemini": GeminiClient}[provider_id]
 
     def _remembered_other_model(self, provider_id: str) -> str:
         from app.agent.config import model_settings_key
@@ -416,20 +485,16 @@ class ApiKeyDialog(QDialog):
         from app.agent.config import describe_provider
         from app.agent.credentials import resolve_for
 
-        # Bumped unconditionally, even when this switch starts no new fetch
-        # of its own: a fetch already in flight for the provider just left
-        # must never be allowed to land here and repopulate the combo with
-        # the wrong provider's models once this section has moved on.
-        self._other_refresh_token += 1
-
         info = describe_provider(provider_id)
-        credential = resolve_for(provider_id)
-        self._other_status.setText(f"<b>Currently using:</b> {credential.describe()}")
+        # "Currently using" needs a real keyring read to answer - the same
+        # kind of call that made the Anthropic section slow (see
+        # _refresh_anthropic_status) - so it is backgrounded here too rather
+        # than blocking this provider switch on the GUI thread.
+        self._other_status.setText("<b>Currently using:</b> checking…")
         self._other_help.setText(info.key_help)
         self._other_field.clear()
-        self._other_field.setPlaceholderText(
-            "already set - paste a new key to replace it" if credential.available else "")
-        self._other_clear_button.setVisible(credential.mode == "keyring")
+        self._other_field.setPlaceholderText("")
+        self._other_clear_button.setVisible(False)
         self._other_result.setText("")
         self._other_custom_check.setChecked(False)
         self._other_custom_field.clear()
@@ -438,13 +503,23 @@ class ApiKeyDialog(QDialog):
         remembered = self._remembered_other_model(provider_id)
         self._populate_model_combo(provider_id, client_class.seed_models(), remembered)
 
-        key = credential.secret or ""
-        if key:
-            self._other_result.setText(f"Loading {client_class.label}'s model list…")
-            self._run_other_call(
-                client_class.list_models, (key,),
-                lambda models: self._on_other_models_loaded(
-                    provider_id, client_class, remembered, models))
+        def on_credential(credential) -> None:
+            # No staleness check needed here: _run_other_call already drops
+            # this reply if the provider (or another call) moved on before
+            # it landed - see its own token guard.
+            self._other_status.setText(f"<b>Currently using:</b> {credential.describe()}")
+            self._other_field.setPlaceholderText(
+                "already set - paste a new key to replace it" if credential.available else "")
+            self._other_clear_button.setVisible(credential.mode == "keyring")
+            key = credential.secret or ""
+            if key:
+                self._other_result.setText(f"Loading {client_class.label}'s model list…")
+                self._run_other_call(
+                    client_class.list_models, (key,),
+                    lambda models: self._on_other_models_loaded(
+                        provider_id, client_class, remembered, models))
+
+        self._run_other_call(resolve_for, (provider_id,), on_credential)
 
     def _on_other_models_loaded(self, provider_id: str, client_class, remembered: str,
                                 models: list) -> None:
@@ -962,13 +1037,15 @@ def build_transport(credential, config):
     Missions, safety.py) branches on provider at all.
     """
     from app.agent.claude_client import ClaudeClient
-    from app.agent.config import PROVIDER_GROQ, PROVIDER_OPENROUTER
-    from app.agent.openai_compatible import GroqClient, OpenRouterClient
+    from app.agent.config import PROVIDER_GEMINI, PROVIDER_GROQ, PROVIDER_OPENROUTER
+    from app.agent.openai_compatible import GeminiClient, GroqClient, OpenRouterClient
 
     if credential.provider == PROVIDER_GROQ:
         return GroqClient(credential.secret or "", config)
     if credential.provider == PROVIDER_OPENROUTER:
         return OpenRouterClient(credential.secret or "", config)
+    if credential.provider == PROVIDER_GEMINI:
+        return GeminiClient(credential.secret or "", config)
     return ClaudeClient(credential, config)
 
 

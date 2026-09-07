@@ -175,6 +175,26 @@ def error_message(response: "httpx.Response") -> str:
     return ""
 
 
+def _retry_after_of(response: "httpx.Response") -> float | None:
+    """Seconds until the provider is willing to be asked again, if it said.
+
+    ``Retry-After`` is standard on a 429, but not every provider sends it
+    (Groq does inconsistently; OpenRouter passes through whatever the
+    upstream model host sent, which varies). Either an integer count of
+    seconds or an HTTP-date is legal per RFC 9110 - only the former is worth
+    parsing here, since a model provider has no reason to send the latter
+    and a wrong guess is worse than falling back to plain backoff.
+    """
+    value = response.headers.get("retry-after")
+    if not value:
+        return None
+    try:
+        seconds = float(value.strip())
+    except ValueError:
+        return None
+    return seconds if seconds > 0 else None
+
+
 #: The friendly sentence shown for a request an API rejected specifically
 #: because the model does not do tool calling - as opposed to a bad key, a
 #: missing model, or a rate limit, which get their own messages.
@@ -343,11 +363,13 @@ class OpenAICompatibleClient:
             quota = "quota" in api_message.lower() or "credit" in api_message.lower()
             raise ClaudeError(
                 f"{self.label}'s free quota is exhausted for this key." if quota else
-                f"{self.label} is rate limiting this key. Wait a moment and try again.",
-                retryable=not quota, detail=response.text[:1000], api_message=api_message)
+                f"{self.label} hit a temporary rate limit. Py can retry shortly.",
+                retryable=not quota, detail=response.text[:1000], api_message=api_message,
+                retry_after=_retry_after_of(response))
         if status >= 500:
             raise ClaudeError(f"{self.label} returned a server error.",
-                              retryable=True, detail=response.text[:1000])
+                              retryable=True, detail=response.text[:1000],
+                              retry_after=_retry_after_of(response))
         if status >= 400:
             api_message = error_message(response)
             if _looks_like_tool_unsupported(api_message):
@@ -495,6 +517,46 @@ class GroqClient(OpenAICompatibleClient):
             return False, cls.DENYLIST_REASON
         if any(marker in model_id for marker in cls._NOT_CHAT_MODELS):
             return False, "not a chat model (audio/moderation) - cannot run the agent loop"
+        return True, "tool support unconfirmed - use Test Connection to check"
+
+    @classmethod
+    def seed_models(cls) -> list[dict[str, str]]:
+        return [{"id": model_id} for model_id in cls._SEED_MODEL_IDS]
+
+
+class GeminiClient(OpenAICompatibleClient):
+    """https://ai.google.dev - Gemini, via Google's own OpenAI-compatible
+    endpoint (no separate SDK dependency this project has to carry).
+
+    Recommended as the easiest provider to try PyBrowser with: a free tier
+    with real headroom, and setup is the same three steps as Groq or
+    OpenRouter - paste a key, pick a model, test it.
+    """
+
+    base_url = "https://generativelanguage.googleapis.com/v1beta/openai"
+    label = "Gemini"
+
+    #: A small, curated starting point so the dropdown is never empty before
+    #: a key is entered or a live refresh completes - see GroqClient's own
+    #: seed list for why this is deliberately not treated as authoritative.
+    _SEED_MODEL_IDS = (
+        "gemini-2.5-flash",
+        "gemini-2.5-pro",
+        "gemini-2.5-flash-lite",
+    )
+
+    #: Gemini's /models listing does not report tool-calling support per
+    #: model, so this only rules out entries that plainly are not chat
+    #: models - everything else is left to Test Connection.
+    _NOT_CHAT_MODELS = ("embedding", "imagen", "aqa", "tts")
+
+    @classmethod
+    def capability_of(cls, entry: dict[str, Any]) -> tuple[bool, str]:
+        model_id = (entry.get("id") or "").lower()
+        if cls.is_denylisted(model_id):
+            return False, cls.DENYLIST_REASON
+        if any(marker in model_id for marker in cls._NOT_CHAT_MODELS):
+            return False, "not a chat model - cannot run the agent loop"
         return True, "tool support unconfirmed - use Test Connection to check"
 
     @classmethod

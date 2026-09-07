@@ -89,7 +89,7 @@ class FirstRunDialog(QDialog):
         self._colours = c = theme.palette_for(QApplication.instance())
         m = theme.METRICS
         self.setWindowTitle("Welcome")
-        self.setFixedSize(440, 420)
+        self.setFixedSize(460, 480)
         self.setStyleSheet(f"QDialog {{ background:{c.bg}; }}")
 
         # A row of dots naming which of the three screens this is - the one
@@ -149,7 +149,7 @@ class FirstRunDialog(QDialog):
         if with_mascot:
             from app.ui.mascot import Mascot
 
-            mascot = Mascot(56, page)
+            mascot = Mascot(108, page)
             mascot_row = QHBoxLayout()
             mascot_row.addStretch(1)
             mascot_row.addWidget(mascot)

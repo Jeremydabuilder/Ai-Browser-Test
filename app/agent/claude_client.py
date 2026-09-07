@@ -70,7 +70,7 @@ class ClaudeError(RuntimeError):
     """
 
     def __init__(self, message: str, *, retryable: bool = False, detail: str = "",
-                 api_message: str = "") -> None:
+                 api_message: str = "", retry_after: float | None = None) -> None:
         super().__init__(message)
         self.message = message
         self.retryable = retryable
@@ -83,6 +83,33 @@ class ClaudeError(RuntimeError):
         #: between "Claude rejected the request (400)" and knowing which
         #: parameter it objected to.
         self.api_message = api_message
+        #: Seconds the provider itself asked us to wait, from a `Retry-After`
+        #: response header - None when it did not send one, in which case a
+        #: caller falls back to its own bounded backoff. Only ever set on a
+        #: retryable error; a provider does not get to schedule a retry of a
+        #: request we are not going to retry at all.
+        self.retry_after = retry_after if retryable else None
+
+
+def retry_after_of(exc: Any) -> float | None:
+    """Seconds until Claude is willing to be asked again, from the SDK
+    exception's own ``Retry-After`` response header, if it sent one.
+
+    Every SDK exception this module catches for a retryable condition
+    (``RateLimitError``, ``APIStatusError`` for a 5xx) carries the raw
+    ``httpx.Response`` at ``exc.response``; reading a header off it is not
+    the same risk ``api_message_of`` guards against - a header value here is
+    just a number of seconds, never a copy of the request.
+    """
+    response = getattr(exc, "response", None)
+    value = getattr(response, "headers", {}).get("retry-after") if response is not None else None
+    if not value:
+        return None
+    try:
+        seconds = float(str(value).strip())
+    except ValueError:
+        return None
+    return seconds if seconds > 0 else None
 
 
 def api_message_of(exc: Any) -> str:
@@ -430,8 +457,8 @@ class ClaudeClient:
             ) from exc
         except anthropic.RateLimitError as exc:
             raise ClaudeError(
-                "Claude is rate limiting this key. Wait a moment and try again.",
-                retryable=True, detail=str(exc),
+                "Claude hit a temporary rate limit. Py can retry shortly.",
+                retryable=True, detail=str(exc), retry_after=retry_after_of(exc),
             ) from exc
         except anthropic.APITimeoutError as exc:
             raise ClaudeError(
@@ -456,6 +483,7 @@ class ClaudeClient:
                 else f"Claude rejected the request ({exc.status_code}).",
                 retryable=retryable, detail=str(exc),
                 api_message=api_message,
+                retry_after=retry_after_of(exc) if retryable else None,
             ) from exc
 
         return self._normalise(response)

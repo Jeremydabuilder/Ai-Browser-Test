@@ -48,6 +48,25 @@ class Mode:
     NONE = "none"
 
 
+class CredentialKind:
+    """Where a credential comes from - see ``Credential.kind``.
+
+    Not a feature switch: nothing in this codebase branches on this today,
+    because PY_HOSTED has no backend to point at yet. It documents the axis
+    a future hosted offering would use, so that work starts from a named
+    place rather than a special case invented under deadline.
+    """
+
+    #: A secret (or IAM role, or CLI sign-in) the user supplied themselves -
+    #: every credential this app can produce today.
+    USER_API = "user_api"
+    #: PyBrowser's own backend holds the provider credential; this app would
+    #: hold only a session token scoped to the user's account, never a
+    #: provider secret. Reserved for a future hosted offering - see the
+    #: docstring on ``Credential.kind``.
+    PY_HOSTED = "py_hosted"
+
+
 #: What to tell the user about each way in, and how to set it up.
 SETUP_HELP: dict[str, str] = {
     Mode.OAUTH_PROFILE: "Sign in with the Anthropic CLI: `ant auth login`. "
@@ -78,6 +97,19 @@ class Credential:
     #: existing caller of resolve() - which only ever returns an Anthropic
     #: credential - keeps working without change.
     provider: str = "anthropic"
+    #: Where the credential itself comes from - not which provider it talks
+    #: to. Every credential this app can produce today is USER_API: a secret
+    #: (or cloud IAM role, or CLI sign-in) the person configured themselves.
+    #: The one other value this axis exists for, PY_HOSTED, names a future
+    #: shape - "Py AI, included with your plan" - where PyBrowser's own
+    #: backend holds the provider credential and this app never sees one at
+    #: all, only a session token scoped to that user's account. No such
+    #: backend exists yet and this field does not build one; it exists so
+    #: that when it does, every place that already asks "is there a
+    #: credential" (``available``) keeps working unchanged, and the one place
+    #: that would need to branch - offering the hosted option at all - has
+    #: somewhere to check. See CredentialKind below.
+    kind: str = CredentialKind.USER_API
 
     @property
     def available(self) -> bool:
@@ -199,17 +231,23 @@ def resolve(store: ApiKeyStore | None = None) -> Credential:
     return Credential(Mode.NONE, "no credential configured")
 
 
-def options_summary() -> list[tuple[str, bool, str]]:
+def options_summary(has_keyring_key: bool | None = None) -> list[tuple[str, bool, str]]:
     """Every way in, whether it is currently available, and how to set it up.
 
     Used by the setup dialog so a user can see the alternatives to pasting a
     key rather than assuming a key is the only way.
+
+    ``has_keyring_key`` lets a caller that already looked the keyring up once
+    (the setup dialog, bundling this with ``resolve()`` into a single
+    background-thread call) pass the answer in rather than paying for a
+    second real keyring round trip right next to the first.
     """
-    store = ApiKeyStore()
-    try:
-        has_keyring_key = bool(store.get_keyring_key())
-    except Exception:  # noqa: BLE001
-        has_keyring_key = False
+    if has_keyring_key is None:
+        store = ApiKeyStore()
+        try:
+            has_keyring_key = bool(store.get_keyring_key())
+        except Exception:  # noqa: BLE001
+            has_keyring_key = False
     return [
         (Mode.OAUTH_PROFILE, _has_oauth_profile(), SETUP_HELP[Mode.OAUTH_PROFILE]),
         (Mode.KEYRING, has_keyring_key, SETUP_HELP[Mode.KEYRING]),
@@ -236,6 +274,7 @@ def options_summary() -> list[tuple[str, bool, str]]:
 PROVIDER_KEY_INFO: dict[str, tuple[str, str, str]] = {
     "groq": ("Groq", "GROQ_API_KEY", "groq-api-key"),
     "openrouter": ("OpenRouter", "OPENROUTER_API_KEY", "openrouter-api-key"),
+    "gemini": ("Gemini", "GEMINI_API_KEY", "gemini-api-key"),
 }
 
 
