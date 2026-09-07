@@ -1347,11 +1347,6 @@ class NoticeBar(QFrame):
     failed load, a crashed page - which a status-bar line is too easy to miss.
     """
 
-    _STYLES = {
-        "info": "background:#e8f0fe; color:#1a3a6b; border-bottom:1px solid #c6d9f7;",
-        "warning": "background:#fdf1d6; color:#6b4e00; border-bottom:1px solid #f0d79a;",
-    }
-
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         from app.ui import theme
@@ -1381,6 +1376,23 @@ class NoticeBar(QFrame):
 
         self.hide()
 
+    @staticmethod
+    def _style_for(level: str) -> str:
+        """The bar's colours, read from the live theme rather than a fixed
+        pair of hex codes - a light-mode-only blue/yellow bar would clash
+        badly with the rest of a dark window instead of receding the way a
+        notice should."""
+        from PySide6.QtWidgets import QApplication
+
+        from app.ui import theme
+
+        c = theme.palette_for(QApplication.instance())
+        if level == "warning":
+            return (f"background:{c.warning_soft}; color:{c.warning_text};"
+                    f" border-bottom:1px solid {c.warning};")
+        return (f"background:{c.accent_soft}; color:{c.text};"
+                f" border-bottom:1px solid {c.accent};")
+
     def show_message(
         self,
         text: str,
@@ -1392,7 +1404,7 @@ class NoticeBar(QFrame):
     ) -> None:
         self._label.setText(text)
         self._label.setToolTip(tooltip)
-        self.setStyleSheet(self._STYLES.get(level, self._STYLES["info"]))
+        self.setStyleSheet(self._style_for(level))
         self._action = action
         if action_text and action is not None:
             self._action_button.setText(action_text)

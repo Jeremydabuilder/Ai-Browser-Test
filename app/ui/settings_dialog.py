@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
+    QApplication,
     QButtonGroup,
     QDialog,
     QDialogButtonBox,
@@ -29,6 +30,7 @@ from app.storage.settings import (
     NEW_TAB_MODES,
     SettingsStore,
 )
+from app.ui import theme
 
 _SEARCH_PRESETS = (
     ("DuckDuckGo", "https://duckduckgo.com/?q={query}"),
@@ -48,13 +50,28 @@ class SettingsDialog(QDialog):
     def __init__(self, settings: SettingsStore, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._settings = settings
+        c = theme.palette_for(QApplication.instance())
+        m = theme.METRICS
         self.setWindowTitle("Settings")
         self.resize(520, 460)
 
         layout = QVBoxLayout(self)
-        layout.setSpacing(8)
+        layout.setContentsMargins(m.space_5, m.space_5, m.space_5, m.space_4)
+        layout.setSpacing(m.space_2)
 
-        heading = QLabel("<b>When I open a new tab or press Home</b>", self)
+        def section_heading(text: str) -> QLabel:
+            label = QLabel(text, self)
+            label.setStyleSheet(
+                f"color:{c.text}; font-size:{m.text}px; font-weight:600;")
+            return label
+
+        def note(text: str) -> QLabel:
+            label = QLabel(text, self)
+            label.setWordWrap(True)
+            label.setStyleSheet(f"color:{c.muted}; font-size:{m.text_sm}px;")
+            return label
+
+        heading = section_heading("When I open a new tab or press Home")
         layout.addWidget(heading)
 
         self._modes = QButtonGroup(self)
@@ -71,15 +88,12 @@ class SettingsDialog(QDialog):
         self._modes.idToggled.connect(self._sync_custom)
         self._sync_custom()
 
-        note = QLabel(
-            "<span style='color:#666'>PyBrowser New Tab is a page inside the "
-            "browser. It opens instantly, works offline, and sends nothing "
-            "anywhere.</span>", self)
-        note.setWordWrap(True)
-        layout.addWidget(note)
+        layout.addWidget(note(
+            "PyBrowser New Tab is a page inside the browser. It opens "
+            "instantly, works offline, and sends nothing anywhere."))
 
-        layout.addSpacing(10)
-        layout.addWidget(QLabel("<b>Search with</b>", self))
+        layout.addSpacing(m.space_3)
+        layout.addWidget(section_heading("Search with"))
 
         self.search = QLineEdit(settings.search_url, self)
         self.search.setPlaceholderText("https://example.com/search?q={query}")
@@ -89,18 +103,16 @@ class SettingsDialog(QDialog):
             "  ".join(f"<a href='{url}'>{name}</a>" for name, url in _SEARCH_PRESETS),
             self)
         presets.setTextFormat(Qt.TextFormat.RichText)
+        presets.setStyleSheet(f"font-size:{m.text_sm}px;")
         presets.linkActivated.connect(self.search.setText)
         layout.addWidget(presets)
 
-        search_note = QLabel(
-            "<span style='color:#666'>Must contain <code>{query}</code>, which is "
-            "replaced with what you typed. This is where searches go — it is not "
-            "the browser's home page.</span>", self)
-        search_note.setWordWrap(True)
-        layout.addWidget(search_note)
+        layout.addWidget(note(
+            "Must contain <code>{query}</code>, which is replaced with what you "
+            "typed. This is where searches go — it is not the browser's home page."))
 
         self.problem = QLabel("", self)
-        self.problem.setStyleSheet("color:#a11;")
+        self.problem.setStyleSheet(f"color:{c.danger}; font-size:{m.text_sm}px;")
         self.problem.setWordWrap(True)
         layout.addWidget(self.problem)
 
@@ -108,6 +120,9 @@ class SettingsDialog(QDialog):
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel,
             self)
+        save_button = buttons.button(QDialogButtonBox.StandardButton.Save)
+        if save_button is not None:
+            save_button.setProperty("kind", "primary")
         buttons.accepted.connect(self._save)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)

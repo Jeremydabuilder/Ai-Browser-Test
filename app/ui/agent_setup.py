@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from PySide6.QtCore import Qt, QThread, Signal
 from PySide6.QtWidgets import (
+    QApplication,
     QCheckBox,
     QComboBox,
     QDialog,
@@ -23,6 +24,16 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+
+from app.ui import theme
+
+
+def _muted() -> str:
+    """The current theme's secondary-text colour, for the inline HTML notes
+    scattered through this dialog - a literal hex code here would stay the
+    same shade of grey in dark mode, reading as too bright against a dark
+    background instead of receding the way secondary text should."""
+    return theme.palette_for(QApplication.instance()).muted
 
 
 class _BackgroundCall(QThread):
@@ -164,7 +175,7 @@ class ApiKeyDialog(QDialog):
                     "vertex": "Google Vertex AI"}.get(mode, mode)
             weight = "b" if present else "span"
             rows.append(f"<tr><td>{mark}</td><td><{weight}>{name}</{weight}></td>"
-                        f"<td style='color:#555'>{help_text}</td></tr>")
+                        f"<td style='color:{_muted()}'>{help_text}</td></tr>")
         options = QLabel(
             "<p>You do <b>not</b> need to paste an API key. Any of these works, "
             "and the first is preferred - it stores no secret at all:</p>"
@@ -192,11 +203,13 @@ class ApiKeyDialog(QDialog):
         layout.addWidget(self.field)
 
         save = QPushButton("Save to keyring", box)
+        save.setProperty("kind", "primary")
         save.clicked.connect(self._save)
         layout.addWidget(save)
 
         if self._store.get_keyring_key():
             clear = QPushButton("Remove stored key", box)
+            clear.setProperty("kind", "danger")
             clear.clicked.connect(self._clear)
             layout.addWidget(clear)
         return box
@@ -235,9 +248,11 @@ class ApiKeyDialog(QDialog):
         key_layout = QVBoxLayout(key_row)
         key_layout.setContentsMargins(0, 0, 0, 0)
         save_key = QPushButton("Save API key", key_row)
+        save_key.setProperty("kind", "primary")
         save_key.clicked.connect(self._save_other_key)
         key_layout.addWidget(save_key)
         self._other_clear_button = QPushButton("Remove stored key", key_row)
+        self._other_clear_button.setProperty("kind", "danger")
         self._other_clear_button.clicked.connect(self._clear_other_key)
         key_layout.addWidget(self._other_clear_button)
         layout.addWidget(key_row)
@@ -267,6 +282,7 @@ class ApiKeyDialog(QDialog):
         self._other_refresh_button.clicked.connect(self._refresh_other_models)
         model_layout.addWidget(self._other_refresh_button)
         save_model = QPushButton("Save model", model_row)
+        save_model.setProperty("kind", "primary")
         save_model.clicked.connect(self._save_other_model)
         model_layout.addWidget(save_model)
         self._other_test_button = QPushButton("Test Connection", model_row)
@@ -673,7 +689,7 @@ class ApiKeyDialog(QDialog):
 
         heading = QLabel(
             "<hr><b>Cost and capability</b><br>"
-            "<span style='color:#555'>Responses are cached automatically, which "
+            f"<span style='color:{_muted()}'>Responses are cached automatically, which "
             "cuts the cost of a multi-step task several-fold on its own and "
             "changes nothing about the answers. The two settings below do "
             "involve a trade-off.</span>", box)
@@ -702,7 +718,7 @@ class ApiKeyDialog(QDialog):
         column.addWidget(self.model_box)
         self._model_note = QLabel("", box)
         self._model_note.setWordWrap(True)
-        self._model_note.setStyleSheet("color:#555;")
+        self._model_note.setStyleSheet(f"color:{_muted()};")
         column.addWidget(self._model_note)
         self.model_box.currentIndexChanged.connect(self._update_model_note)
         self._update_model_note()
@@ -725,6 +741,7 @@ class ApiKeyDialog(QDialog):
         self._sync_preset_from_dropdowns()
 
         apply_button = QPushButton("Save model and effort", box)
+        apply_button.setProperty("kind", "primary")
         apply_button.clicked.connect(
             lambda: self._save_preferences(KEY_AGENT_MODEL, KEY_AGENT_EFFORT))
         column.addWidget(apply_button)
@@ -750,7 +767,7 @@ class ApiKeyDialog(QDialog):
 
         heading = QLabel(
             "<hr><b>How cautious should Py be?</b><br>"
-            "<span style='color:#555'>This decides when Py stops and asks "
+            f"<span style='color:{_muted()}'>This decides when Py stops and asks "
             "before acting - separate from the model or provider above.</span>",
             box)
         heading.setWordWrap(True)
@@ -767,12 +784,13 @@ class ApiKeyDialog(QDialog):
 
         self._autonomy_note = QLabel("", box)
         self._autonomy_note.setWordWrap(True)
-        self._autonomy_note.setStyleSheet("color:#555;")
+        self._autonomy_note.setStyleSheet(f"color:{_muted()};")
         column.addWidget(self._autonomy_note)
         self.autonomy_box.currentIndexChanged.connect(self._update_autonomy_note)
         self._update_autonomy_note()
 
         save = QPushButton("Save autonomy", box)
+        save.setProperty("kind", "primary")
         save.clicked.connect(self._save_autonomy)
         column.addWidget(save)
         return box
@@ -817,7 +835,7 @@ class ApiKeyDialog(QDialog):
 
         heading = QLabel(
             "<hr><b>Anthropic Workspace ID</b><br>"
-            "<span style='color:#555'>Only needed if this key is an "
+            f"<span style='color:{_muted()}'>Only needed if this key is an "
             "“identity-linked” API key - Claude will say so with a "
             "400 error naming <code>anthropic-workspace-id</code> if it "
             "applies to you. Not a secret; find it in the Anthropic Console "
@@ -833,6 +851,7 @@ class ApiKeyDialog(QDialog):
         column.addWidget(self.workspace_field)
 
         save = QPushButton("Save workspace ID", box)
+        save.setProperty("kind", "primary")
         save.clicked.connect(self._save_workspace_id)
         column.addWidget(save)
         return box

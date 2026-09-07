@@ -27,9 +27,12 @@ class FindBar(QFrame):
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        from app.ui.theme import METRICS
+        from PySide6.QtWidgets import QApplication
+
+        from app.ui.theme import METRICS, palette_for
 
         m = METRICS
+        c = palette_for(QApplication.instance())
         self.setFrameShape(QFrame.Shape.StyledPanel)
         layout = QHBoxLayout(self)
         layout.setContentsMargins(m.space_2, m.space_1, m.space_2, m.space_1)
@@ -45,7 +48,7 @@ class FindBar(QFrame):
 
         self.status = QLabel("", self)
         self.status.setMinimumWidth(90)
-        self.status.setStyleSheet("color:#666;")
+        self.status.setStyleSheet(f"color:{c.muted};")
         layout.addWidget(self.status)
 
         # Drawn icons, not text glyphs: "▲▼✕" render as blank boxes on any

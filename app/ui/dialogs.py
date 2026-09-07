@@ -58,10 +58,13 @@ class _ListDialog(QDialog):
         self._empty_label.hide()
 
         self.open_button = QPushButton("Open", self)
+        self.open_button.setProperty("kind", "primary")
         self.open_button.clicked.connect(self._open_selected)
         self.delete_button = QPushButton("Delete", self)
+        self.delete_button.setProperty("kind", "danger")
         self.delete_button.clicked.connect(self._delete_selected)
         self.close_button = QPushButton("Close", self)
+        self.close_button.setProperty("kind", "quiet")
         self.close_button.clicked.connect(self.accept)
 
         self.button_row = buttons = QHBoxLayout()
@@ -118,6 +121,7 @@ class HistoryDialog(_ListDialog):
         self._history = history
         super().__init__("History", ["Title", "URL", "Visited"], parent)
         clear_all = QPushButton("Clear all history", self)
+        clear_all.setProperty("kind", "danger")
         clear_all.clicked.connect(self._clear_all)
         self.button_row.insertWidget(2, clear_all)
 

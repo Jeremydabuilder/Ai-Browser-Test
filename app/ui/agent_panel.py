@@ -738,8 +738,14 @@ class AgentPanel(QWidget):
             body = "color:%s;" % c.disabled if step.state == StepState.SKIPPED else ""
             detail = (f' <span style="color:{c.muted}">&mdash; '
                       f"{self._escape(step.detail)}</span>" if step.detail else "")
+            # The one thing actually happening right now gets a soft highlight
+            # of its own, so the eye lands on it immediately rather than
+            # having to read down a list of identical-looking lines to find
+            # which step is live.
+            live = (f"background:{c.accent_soft}; border-radius:4px;"
+                   if step.state in (StepState.RUNNING, StepState.WAITING) else "")
             rows.append(
-                f'<div style="margin:3px 0;{body}">'
+                f'<div style="margin:3px 0;padding:2px 4px;{body}{live}">'
                 f'<span style="color:{colour}">{mark}</span>&nbsp;&nbsp;'
                 f"{self._escape(step.description)}{detail}</div>")
         self.steps.setHtml(

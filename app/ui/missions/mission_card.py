@@ -359,6 +359,10 @@ class MissionCard(QFrame):
         self.findings_label.setStyleSheet(
             f"color:{c.disabled}; font-size:{m.text_xs}px; font-weight:600;"
             " letter-spacing:0.06em;")
+        # A touch of extra air above each section header - not above its own
+        # content below it, which should read as one group - so the card
+        # keeps a clear rhythm as more sections stack up.
+        self.findings_label.setContentsMargins(0, m.space_1, 0, 0)
         outer.addWidget(self.findings_label)
 
         self._findings_box = QVBoxLayout()
@@ -378,6 +382,7 @@ class MissionCard(QFrame):
             f"color:{c.disabled}; font-size:{m.text_xs}px; font-weight:600;"
             " letter-spacing:0.06em;")
         self.questions_label.hide()
+        self.questions_label.setContentsMargins(0, m.space_1, 0, 0)
         outer.addWidget(self.questions_label)
 
         self._questions_box = QVBoxLayout()
@@ -388,6 +393,7 @@ class MissionCard(QFrame):
         self.pages_label.setStyleSheet(
             f"color:{c.disabled}; font-size:{m.text_xs}px; font-weight:600;"
             " letter-spacing:0.06em;")
+        self.pages_label.setContentsMargins(0, m.space_1, 0, 0)
         outer.addWidget(self.pages_label)
 
         self._pages_box = QVBoxLayout()

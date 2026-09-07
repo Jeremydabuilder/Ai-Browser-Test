@@ -16,6 +16,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtCore import QUrl
 from PySide6.QtWidgets import (
+    QApplication,
     QDialog,
     QDialogButtonBox,
     QHBoxLayout,
@@ -28,6 +29,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.browser.downloads import DownloadItem, DownloadManager
+from app.ui import theme
 from app.ui.theme import METRICS
 
 
@@ -41,6 +43,7 @@ class _Row(QWidget):
         self._manager = manager
 
         m = METRICS
+        c = theme.palette_for(QApplication.instance())
         layout = QHBoxLayout(self)
         layout.setContentsMargins(m.space_3, m.space_2, m.space_3, m.space_2)
         layout.setSpacing(m.space_2)
@@ -48,12 +51,12 @@ class _Row(QWidget):
         text = QVBoxLayout()
         text.setSpacing(2)
         self.name = QLabel(item.file_name, self)
-        self.name.setStyleSheet("font-weight:600;")
+        self.name.setStyleSheet(f"color:{c.text}; font-weight:600; font-size:{m.text}px;")
         self.name.setToolTip(item.url)
         text.addWidget(self.name)
 
         self.status = QLabel("", self)
-        self.status.setStyleSheet("color:#666; font-size:11px;")
+        self.status.setStyleSheet(f"color:{c.muted}; font-size:{m.text_xs}px;")
         text.addWidget(self.status)
 
         self.bar = QProgressBar(self)
@@ -139,14 +142,17 @@ class DownloadsDialog(QDialog):
         scroll.setWidget(self._body)
         layout.addWidget(scroll, 1)
 
+        c = theme.palette_for(QApplication.instance())
         self._empty = QLabel(
             "Nothing downloaded yet.\nFiles you download will appear here.", self)
         self._empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._empty.setStyleSheet("color:#888; padding:32px;")
+        self._empty.setStyleSheet(
+            f"color:{c.disabled}; font-size:{METRICS.text_sm}px; padding:{METRICS.space_6}px;")
         layout.addWidget(self._empty)
 
         buttons = QDialogButtonBox(self)
         clear = buttons.addButton("Clear finished", QDialogButtonBox.ButtonRole.ActionRole)
+        clear.setProperty("kind", "quiet")
         clear.clicked.connect(self._clear)
         buttons.addButton(QDialogButtonBox.StandardButton.Close)
         buttons.rejected.connect(self.reject)
