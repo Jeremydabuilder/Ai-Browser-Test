@@ -92,6 +92,7 @@ def summarise(mission, *, with_detail: bool = False,
     if with_detail:
         row["result"] = mission.result
         row["followUps"] = list(mission.follow_ups)
+        row["constraints"] = list(mission.constraints)
         pages_by_id = {p.id: p for p in mission.pages}
         row["actionList"] = [_action(a, pages_by_id) for a in mission.actions]
         row["decision"] = _decision(mission.decision)
@@ -418,6 +419,10 @@ _TEMPLATE = """<!doctype html>
   .back:last-of-type { margin-bottom: 18px; }
   .back:hover { color: var(--accent); }
   .detail-goal { color: var(--muted); margin: 4px 0 22px; font-size: 15px; }
+  .constraints { list-style: none; margin: -14px 0 22px; padding: 0;
+                 display: flex; flex-direction: column; gap: 4px; }
+  .constraints li { color: var(--text); font-size: 13px; }
+  .constraints li::before { content: "\2022 "; color: var(--muted); }
   /* A stage label, not a progress bar - see Mission.progress. Quiet, and
      never claims a precision an open-ended web task does not have. */
   .progress-pill {
@@ -889,6 +894,13 @@ _TEMPLATE = """<!doctype html>
     if (mission.branchName) { head.appendChild(el("span", "tag", mission.branchName)); }
     body.appendChild(head);
     body.appendChild(el("div", "detail-goal", mission.goal));
+    if (mission.constraints && mission.constraints.length) {
+      var constraints = el("ul", "constraints");
+      mission.constraints.forEach(function (item) {
+        constraints.appendChild(el("li", null, item));
+      });
+      body.appendChild(constraints);
+    }
     if (mission.progress) {
       body.appendChild(el("div", "progress-pill" + (mission.blocked ? " blocked" : ""),
                          mission.progress));

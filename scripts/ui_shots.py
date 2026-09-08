@@ -243,6 +243,7 @@ def main() -> int:
         id=1, title="Best noise-cancelling headphones",
         goal="Find the best noise-cancelling headphones under $350 for long flights.",
         status=MissionStatus.ACTIVE,
+        constraints=("under $350", "strong active noise cancelling", "long battery life"),
         progress="Comparing battery life across the final three options",
         findings=(
             MissionFinding(id=1, mission_id=1, ref=1, page_id=2,

@@ -26,6 +26,8 @@ from app.missions.model import (
     MAX_ASSUMPTION_CHARS,
     MAX_ASSUMPTIONS,
     MAX_FINDINGS_PER_MISSION,
+    MAX_CONSTRAINT_CHARS,
+    MAX_CONSTRAINTS,
     MAX_FOLLOW_UP_CHARS,
     MAX_FOLLOW_UPS,
     MAX_POINT_CHARS,
@@ -179,27 +181,39 @@ class MissionStore:
     #: ones. Written once so a new query cannot forget the filter - which is
     #: the failure mode of soft delete everywhere it has ever been done badly.
     _MISSION_COLUMNS = ("SELECT id, title, goal, status, created_at, updated_at, "
-                        "parent_id, branch_name, progress, result, follow_ups "
+                        "parent_id, branch_name, progress, result, follow_ups, "
+                        "constraints "
                         "FROM missions ")
     _ALIVE = "deleted_at = ''"
 
     @staticmethod
-    def _mission_kwargs(row) -> dict:
-        """A Mission row's columns, with follow_ups decoded to a tuple.
+    def _decode_list(data: dict, key: str) -> None:
+        """Decode one JSON-array-of-strings column in place, defensively.
+
+        Shared by follow_ups and constraints - both are a short list of
+        strings stored the same way, and both must never reach the Mission
+        dataclass as a raw string where it declares a tuple.
+        """
+        raw = data.pop(key, "[]")
+        try:
+            items = json.loads(raw or "[]")
+        except (TypeError, ValueError):
+            items = []
+        if not isinstance(items, list):
+            items = []
+        data[key] = tuple(str(item) for item in items)
+
+    @classmethod
+    def _mission_kwargs(cls, row) -> dict:
+        """A Mission row's columns, with follow_ups/constraints decoded to tuples.
 
         Every read of a mission row goes through this rather than a bare
-        ``dict(row)``, so a stored follow_ups string can never reach the
-        Mission dataclass as a string where it declares a tuple.
+        ``dict(row)``, so a stored list can never reach the Mission dataclass
+        as a string where it declares a tuple.
         """
         data = dict(row)
-        raw = data.pop("follow_ups", "[]")
-        try:
-            follow_ups = json.loads(raw or "[]")
-        except (TypeError, ValueError):
-            follow_ups = []
-        if not isinstance(follow_ups, list):
-            follow_ups = []
-        data["follow_ups"] = tuple(str(item) for item in follow_ups)
+        cls._decode_list(data, "follow_ups")
+        cls._decode_list(data, "constraints")
         return data
 
     def get(self, mission_id: int, *, with_pages: bool = True) -> Mission | None:
@@ -289,6 +303,23 @@ class MissionStore:
             assignment += ", follow_ups = ?"
             params.append(json.dumps(cleaned, ensure_ascii=False))
         return self._touch(mission_id, assignment, tuple(params))
+
+    def set_constraints(self, mission_id: int, constraints: list[str]) -> bool:
+        """Replace the mission's constraints wholesale - see Mission.constraints.
+
+        Whole-list replacement, not append: constraints are usually all
+        stated together, early, from what the goal itself named, and a
+        model correcting or dropping one should not need a separate
+        "remove" operation to do it. An over-length list or item is
+        REFUSED, the same as a finding.
+        """
+        cleaned = [collapse(item) for item in constraints if collapse(item)]
+        if len(cleaned) > MAX_CONSTRAINTS:
+            return False
+        if any(len(item) > MAX_CONSTRAINT_CHARS for item in cleaned):
+            return False
+        return self._touch(mission_id, "constraints = ?",
+                           (json.dumps(cleaned, ensure_ascii=False),))
 
     def delete(self, mission_id: int) -> None:
         """Destroy a Mission and everything under it. Irreversible.

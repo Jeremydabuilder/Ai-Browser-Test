@@ -334,6 +334,17 @@ class MissionCard(QFrame):
         self.goal.setStyleSheet(f"color:{c.muted}; font-size:{m.text_sm}px;")
         outer.addWidget(self.goal)
 
+        # Hard requirements the goal itself named - kept apart from the goal
+        # sentence so "under $120" and "hard-court durability" read as
+        # scannable facts to check against, not buried in prose. Hidden
+        # entirely when there are none, which is the common case for a goal
+        # with nothing specific to bind Py to.
+        self.constraints_label = QLabel("", self)
+        self.constraints_label.setWordWrap(True)
+        self.constraints_label.setStyleSheet(f"color:{c.text}; font-size:{m.text_sm}px;")
+        self.constraints_label.hide()
+        outer.addWidget(self.constraints_label)
+
         # What Py is doing *right now* - "Reviewing 8 sources", "Comparing
         # the strongest options" - as opposed to the goal above it (what the
         # mission is for) or the findings below it (what it has learned so
@@ -460,6 +471,13 @@ class MissionCard(QFrame):
         self.title.setText(_elide(mission.title, 28))
         self.title.setToolTip(f"{mission.title}\nClick to rename this mission")
         self.goal.setText(mission.goal)
+        if mission.constraints:
+            bullets = "<br>".join(f"• {_html_escape(item)}" for item in mission.constraints)
+            self.constraints_label.setText(bullets)
+            self.constraints_label.setTextFormat(Qt.TextFormat.RichText)
+            self.constraints_label.show()
+        else:
+            self.constraints_label.hide()
 
         tone = {MissionStatus.ACTIVE: c.accent,
                 MissionStatus.PAUSED: c.muted,
@@ -734,6 +752,12 @@ class _FindingDialog(QDialog):
 
     def text(self) -> str:
         return self._edit.toPlainText()
+
+
+def _html_escape(text: str) -> str:
+    """Model-written text going into a RichText label - never trust it not
+    to contain something that looks like markup."""
+    return (text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;"))
 
 
 def _elide(text: str, limit: int) -> str:

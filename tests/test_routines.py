@@ -176,6 +176,7 @@ class PersistenceTests(unittest.TestCase):
         for table in ("routine_steps", "routines"):
             conn.execute(f"DROP TABLE IF EXISTS {table}")
         conn.execute("ALTER TABLE mission_pages DROP COLUMN outcome")
+        conn.execute("ALTER TABLE missions DROP COLUMN constraints")
         conn.execute("PRAGMA user_version=7")
         conn.commit()
         conn.close()

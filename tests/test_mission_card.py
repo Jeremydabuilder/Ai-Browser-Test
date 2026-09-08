@@ -40,6 +40,44 @@ class _FakeService:
         return set()
 
 
+class ConstraintsSectionTests(unittest.TestCase):
+    """Hard requirements the goal itself named - see Mission.constraints."""
+
+    def setUp(self) -> None:
+        self.card = MissionCard(_FakeService())
+
+    def tearDown(self) -> None:
+        self.card.deleteLater()
+        _app.processEvents()
+
+    def _mission(self, **overrides) -> Mission:
+        base = dict(id=1, title="Find shoes", goal="find running shoes",
+                   status=MissionStatus.ACTIVE)
+        base.update(overrides)
+        return Mission(**base)
+
+    def test_no_constraints_hides_the_section(self) -> None:
+        self.card.show_mission(self._mission())
+        self.assertTrue(self.card.constraints_label.isHidden())
+
+    def test_constraints_show_as_bullets(self) -> None:
+        self.card.show_mission(self._mission(constraints=("under $120", "hard-court")))
+        self.assertFalse(self.card.constraints_label.isHidden())
+        text = self.card.constraints_label.text()
+        self.assertIn("under $120", text)
+        self.assertIn("hard-court", text)
+
+    def test_constraint_text_is_escaped(self) -> None:
+        self.card.show_mission(self._mission(constraints=("<b>under $120</b>",)))
+        self.assertNotIn("<b>", self.card.constraints_label.text())
+        self.assertIn("&lt;b&gt;", self.card.constraints_label.text())
+
+    def test_switching_to_a_mission_with_no_constraints_hides_it_again(self) -> None:
+        self.card.show_mission(self._mission(constraints=("under $120",)))
+        self.card.show_mission(self._mission(id=2, constraints=()))
+        self.assertTrue(self.card.constraints_label.isHidden())
+
+
 class ProgressLineTests(unittest.TestCase):
     """'Currently doing' is distinct from the goal (why) and status (what
     stage) - see the comment on Mission.progress in app/missions/model.py."""

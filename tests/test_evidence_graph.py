@@ -710,6 +710,7 @@ class MigrationTests(unittest.TestCase):
         conn.execute("ALTER TABLE missions DROP COLUMN result")
         conn.execute("ALTER TABLE missions DROP COLUMN follow_ups")
         conn.execute("ALTER TABLE mission_pages DROP COLUMN outcome")
+        conn.execute("ALTER TABLE missions DROP COLUMN constraints")
         for table in ("decision_assumptions", "routine_steps", "routines", "mission_actions"):
             conn.execute(f"DROP TABLE IF EXISTS {table}")
         conn.execute("PRAGMA user_version=6")

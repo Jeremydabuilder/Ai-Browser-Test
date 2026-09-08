@@ -31,6 +31,8 @@ from app.missions.model import (
     MAX_FINDING_CHARS,
     MAX_CHALLENGE_SUMMARY,
     MAX_FINDINGS_PER_MISSION,
+    MAX_CONSTRAINT_CHARS,
+    MAX_CONSTRAINTS,
     MAX_FOLLOW_UP_CHARS,
     MAX_FOLLOW_UPS,
     MAX_OPEN_QUESTIONS_PER_MISSION,
@@ -859,6 +861,25 @@ class MissionService(QObject):
         ok = self._store.set_result(mission.id, text, follow_ups)
         if not ok:
             return {"status": "too_long", "field": "text", "limit": MAX_RESULT_CHARS}
+        self._refresh()
+        self._announce(mission.id)
+        return {"status": "saved"}
+
+    def save_constraints(self, constraints: list[str]) -> dict:
+        """Replace the active Mission's constraints wholesale - see
+        MissionStore.set_constraints and Mission.constraints."""
+        mission = self._active
+        if mission is None:
+            return {"status": "no_mission"}
+        cleaned = [collapse(item) for item in constraints if collapse(item)]
+        if len(cleaned) > MAX_CONSTRAINTS:
+            return {"status": "too_long", "field": "constraints", "limit": MAX_CONSTRAINTS}
+        if any(len(item) > MAX_CONSTRAINT_CHARS for item in cleaned):
+            return {"status": "too_long", "field": "constraints",
+                   "limit": MAX_CONSTRAINT_CHARS}
+        ok = self._store.set_constraints(mission.id, constraints)
+        if not ok:
+            return {"status": "too_long", "field": "constraints", "limit": MAX_CONSTRAINTS}
         self._refresh()
         self._announce(mission.id)
         return {"status": "saved"}

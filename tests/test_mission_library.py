@@ -330,6 +330,7 @@ class MigrationTests(unittest.TestCase):
         conn.execute("ALTER TABLE missions DROP COLUMN result")
         conn.execute("ALTER TABLE missions DROP COLUMN follow_ups")
         conn.execute("ALTER TABLE mission_pages DROP COLUMN outcome")
+        conn.execute("ALTER TABLE missions DROP COLUMN constraints")
         conn.execute("DROP TABLE IF EXISTS mission_actions")
         conn.execute("PRAGMA user_version=3")
         conn.commit()
@@ -639,6 +640,21 @@ class WorkspaceLayoutTests(unittest.TestCase):
             tab, "!!document.querySelector(\".side a[href*='tennis-warehouse']\")"))
         self.assertFalse(self.harness.js(
             tab, "!!document.querySelector(\".main-col a[href*='tennis-warehouse']\")"))
+
+    def test_constraints_render_as_a_bullet_list(self) -> None:
+        self.harness.service.store.set_constraints(
+            self.shoes.id, ["under $140", "hard-court durability"])
+        tab = self._open_detail(self.shoes.id)
+        # A joined string, not a raw JS array: runJavaScript's callback does
+        # not reliably round-trip a JS array of strings back to Python here.
+        joined = self.harness.js(
+            tab, "Array.from(document.querySelectorAll('.constraints li'))"
+                 ".map(function(li){return li.textContent;}).join('|')")
+        self.assertEqual(joined, "under $140|hard-court durability")
+
+    def test_no_constraints_means_no_constraints_list(self) -> None:
+        tab = self._open_detail(self.shoes.id)
+        self.assertFalse(self.harness.js(tab, "!!document.querySelector('.constraints')"))
 
     def test_a_useful_source_shows_the_useful_marker(self) -> None:
         tab = self._open_detail(self.shoes.id)

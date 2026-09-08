@@ -147,6 +147,51 @@ class ResultStoreTests(unittest.TestCase):
         self.assertEqual(self.store.get(self.mission.id).follow_ups, ("real one",))
 
 
+class ConstraintsStoreTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.db, _ = _database()
+        self.store = MissionStore(self.db)
+        self.mission = self.store.create("Find tennis shoes", "size 8, under $120")
+
+    def tearDown(self) -> None:
+        self.db.close()
+
+    def test_constraints_default_to_empty(self) -> None:
+        self.assertEqual(self.store.get(self.mission.id).constraints, ())
+
+    def test_constraints_round_trip(self) -> None:
+        self.store.set_constraints(self.mission.id, ["under $120", "hard-court"])
+        self.assertEqual(self.store.get(self.mission.id).constraints,
+                         ("under $120", "hard-court"))
+
+    def test_saving_again_replaces_the_whole_list(self) -> None:
+        self.store.set_constraints(self.mission.id, ["a", "b"])
+        self.store.set_constraints(self.mission.id, ["c"])
+        self.assertEqual(self.store.get(self.mission.id).constraints, ("c",))
+
+    def test_an_empty_list_clears_them(self) -> None:
+        self.store.set_constraints(self.mission.id, ["a"])
+        self.store.set_constraints(self.mission.id, [])
+        self.assertEqual(self.store.get(self.mission.id).constraints, ())
+
+    def test_too_many_constraints_is_refused(self) -> None:
+        from app.missions.model import MAX_CONSTRAINTS
+
+        many = [f"item {n}" for n in range(MAX_CONSTRAINTS + 1)]
+        self.assertFalse(self.store.set_constraints(self.mission.id, many))
+        self.assertEqual(self.store.get(self.mission.id).constraints, ())
+
+    def test_an_over_length_constraint_is_refused(self) -> None:
+        from app.missions.model import MAX_CONSTRAINT_CHARS
+
+        self.assertFalse(self.store.set_constraints(
+            self.mission.id, ["x" * (MAX_CONSTRAINT_CHARS + 1)]))
+
+    def test_blank_constraints_are_dropped_silently(self) -> None:
+        self.store.set_constraints(self.mission.id, ["", "   ", "real one"])
+        self.assertEqual(self.store.get(self.mission.id).constraints, ("real one",))
+
+
 class ActionLogStoreTests(unittest.TestCase):
     def setUp(self) -> None:
         self.db, _ = _database()
@@ -234,6 +279,7 @@ class PersistenceTests(unittest.TestCase):
         conn.execute("ALTER TABLE missions DROP COLUMN result")
         conn.execute("ALTER TABLE missions DROP COLUMN follow_ups")
         conn.execute("ALTER TABLE mission_pages DROP COLUMN outcome")
+        conn.execute("ALTER TABLE missions DROP COLUMN constraints")
         conn.execute("DROP TABLE IF EXISTS mission_actions")
         conn.execute("PRAGMA user_version=10")
         conn.commit()
@@ -296,6 +342,23 @@ class ServiceTests(unittest.TestCase):
     def test_set_result_saves_and_refreshes_the_active_mission(self) -> None:
         self.assertEqual(self.service.set_result("Nike wins")["status"], "saved")
         self.assertEqual(self.service.active.result, "Nike wins")
+
+    def test_save_constraints_with_no_active_mission(self) -> None:
+        self.service.leave()
+        self.assertEqual(self.service.save_constraints(["x"])["status"], "no_mission")
+
+    def test_save_constraints_saves_and_refreshes_the_active_mission(self) -> None:
+        result = self.service.save_constraints(["under $120", "hard-court"])
+        self.assertEqual(result["status"], "saved")
+        self.assertEqual(self.service.active.constraints, ("under $120", "hard-court"))
+
+    def test_save_constraints_reports_too_many_distinctly(self) -> None:
+        from app.missions.model import MAX_CONSTRAINTS
+
+        many = [f"item {n}" for n in range(MAX_CONSTRAINTS + 1)]
+        result = self.service.save_constraints(many)
+        self.assertEqual(result["status"], "too_long")
+        self.assertEqual(result["field"], "constraints")
 
     def test_record_agent_step_ignores_running_state(self) -> None:
         class FakeStep:
@@ -465,6 +528,39 @@ class ToolTests(unittest.TestCase):
             decision = self.tools.assess(name, args)
             self.assertFalse(decision["requires_confirmation"])
             self.assertEqual(decision["level"], "normal")
+
+    def test_save_constraints_tool_updates_the_mission(self) -> None:
+        result = self.tools.run(
+            "mission_save_constraints", {"constraints": ["under $120", "hard-court"]}).immediate
+        self.assertTrue(result["ok"])
+        self.assertEqual(self.service.store.get(self.mission.id).constraints,
+                         ("under $120", "hard-court"))
+
+    def test_save_constraints_replaces_the_previous_list(self) -> None:
+        self.tools.run("mission_save_constraints", {"constraints": ["a", "b"]})
+        self.tools.run("mission_save_constraints", {"constraints": ["c"]})
+        self.assertEqual(self.service.store.get(self.mission.id).constraints, ("c",))
+
+    def test_save_constraints_reports_too_long(self) -> None:
+        from app.missions.model import MAX_CONSTRAINTS
+
+        many = [f"item {n}" for n in range(MAX_CONSTRAINTS + 1)]
+        result = self.tools.run("mission_save_constraints", {"constraints": many}).immediate
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error"]["code"], "TOO_LONG")
+
+    def test_constraints_must_be_a_list_of_strings(self) -> None:
+        from app.agent.tools import ToolError
+
+        with self.assertRaises(ToolError):
+            self.tools.run("mission_save_constraints", {"constraints": "not a list"})
+        with self.assertRaises(ToolError):
+            self.tools.run("mission_save_constraints", {"constraints": [1, 2]})
+
+    def test_save_constraints_is_a_local_write_needing_no_confirmation(self) -> None:
+        decision = self.tools.assess("mission_save_constraints", {"constraints": ["x"]})
+        self.assertFalse(decision["requires_confirmation"])
+        self.assertEqual(decision["level"], "normal")
 
     def test_neither_tool_reaches_the_browser_controller(self) -> None:
         # Structural proof, not a promise: this registry was built with no

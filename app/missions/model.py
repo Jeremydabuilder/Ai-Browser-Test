@@ -296,6 +296,14 @@ MAX_RESULT_CHARS = 4000
 MAX_FOLLOW_UPS = 5
 MAX_FOLLOW_UP_CHARS = 200
 
+#: A hard requirement the goal itself named - "under $120", "must ship to
+#: Canada" - stated once, early, so the user can see at a glance what Py is
+#: actually bound by. Short by design: a constraint is a line, not a
+#: paragraph, and a mission with more than a handful is not being scoped
+#: tightly enough for this to stay a glance.
+MAX_CONSTRAINTS = 6
+MAX_CONSTRAINT_CHARS = 120
+
 
 @dataclass(frozen=True)
 class MissionAction:
@@ -787,6 +795,11 @@ class Mission:
     status: str = MissionStatus.ACTIVE
     created_at: str = ""
     updated_at: str = ""
+    #: Hard requirements the goal itself named - "under $120", "must ship to
+    #: Canada" - stated once, early, distinct from progress or findings.
+    #: See MAX_CONSTRAINTS. Set with mission_save_constraints; empty is the
+    #: normal case for a goal with nothing specific to bind Py to.
+    constraints: tuple[str, ...] = field(default_factory=tuple)
     #: Filled by the store when the caller asked for them; empty otherwise.
     pages: tuple[MissionPage, ...] = field(default_factory=tuple)
     findings: tuple[MissionFinding, ...] = field(default_factory=tuple)

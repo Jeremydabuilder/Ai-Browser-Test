@@ -39,6 +39,8 @@ from app.missions.model import (
     MAX_DECISION_CHARS,
     MAX_EVIDENCE,
     MAX_FINDING_CHARS,
+    MAX_CONSTRAINT_CHARS,
+    MAX_CONSTRAINTS,
     MAX_FOLLOW_UP_CHARS,
     MAX_FOLLOW_UPS,
     MAX_GHOST_RUN_EFFECT_CHARS,
@@ -437,6 +439,22 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                                          f"{MAX_FOLLOW_UPS}, {MAX_FOLLOW_UP_CHARS} "
                                          "characters each."}},
           ["text"]),
+
+    _tool("mission_save_constraints",
+          "Record the hard requirements the user's goal itself named - a price "
+          "limit, a location, a must-have feature - so they stay visible "
+          "alongside the goal instead of buried in it. Call this once, early, "
+          "only when the goal actually names specific requirements - do not "
+          "invent constraints it did not state. Replaces the previous list "
+          "wholesale; call again with the full corrected list to change one. "
+          f"At most {MAX_CONSTRAINTS}, {MAX_CONSTRAINT_CHARS} characters each.",
+          {"constraints": {"type": "array",
+                           "items": {"type": "string"},
+                           "description": "Each requirement as a short, self-"
+                                          "contained phrase - \"under $120\", "
+                                          "\"hard-court durability\" - not a "
+                                          "sentence explaining it."}},
+          ["constraints"]),
 ]
 
 TOOL_NAMES = {schema["name"] for schema in TOOL_SCHEMAS}
@@ -493,7 +511,7 @@ LOCAL_WRITE_TOOLS = {"mission_save_finding", "mission_save_decision",
                      "mission_save_challenge", "mission_save_ghost_run",
                      "mission_set_progress", "mission_save_result",
                      "mission_save_question", "mission_resolve_question",
-                     "mission_note_source"}
+                     "mission_note_source", "mission_save_constraints"}
 
 #: Tools that only read. Used to skip confirmation checks entirely.
 READ_ONLY_TOOLS = {
@@ -982,6 +1000,8 @@ class ToolRegistry:
                 return self._string(args, "label") or "Updating progress"
             if name == "mission_save_result":
                 return "Recording the result"
+            if name == "mission_save_constraints":
+                return "Recording the mission's constraints"
             if name == "mission_note_source":
                 return ("Noting a useful source" if args.get("useful")
                        else "Ruling out a source")
@@ -1327,6 +1347,33 @@ class ToolRegistry:
         return ToolOutcome(immediate=_error(
             "NO_MISSION", "There is no active mission to record a result for."),
             activity="Recording the result")
+
+    def _run_save_constraints(self, args: dict) -> ToolOutcome:
+        """Replace the mission's constraints wholesale - see
+        MissionService.save_constraints."""
+        raw = args.get("constraints")
+        if not isinstance(raw, list) or not all(isinstance(item, str) for item in raw):
+            raise ToolError("'constraints' must be a list of strings.")
+        if self._missions is None:
+            return ToolOutcome(immediate=_error(
+                "NO_MISSION", "Missions are not available in this window.",
+                hint="Carry on with the task; nothing needs recording."),
+                activity="Recording the mission's constraints")
+
+        result = self._missions.save_constraints(raw)
+        status = result.get("status")
+        if status == "saved":
+            return ToolOutcome(immediate={"ok": True},
+                              activity="Recording the mission's constraints")
+        if status == "too_long":
+            message = (f"A constraint is too long, or there are too many "
+                      f"(max {result.get('limit')}).")
+            return ToolOutcome(immediate=_error(
+                "TOO_LONG", message, hint="Shorten or trim the list and save again."),
+                activity="Recording the mission's constraints")
+        return ToolOutcome(immediate=_error(
+            "NO_MISSION", "There is no active mission to record constraints for."),
+            activity="Recording the mission's constraints")
 
     def _run_get_page(self, args: dict) -> ToolOutcome:
         return ToolOutcome(future=self._browser.get_page_structure(
