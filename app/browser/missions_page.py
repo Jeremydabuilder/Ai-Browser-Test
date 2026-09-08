@@ -369,7 +369,21 @@ _TEMPLATE = """<!doctype html>
     font: 14px/1.55 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
     -webkit-font-smoothing: antialiased;
   }
-  main { max-width: 760px; margin: 0 auto; padding: 40px 24px 80px; }
+  main {
+    max-width: 760px; margin: 0 auto; padding: 40px 24px 80px;
+    /* The same quiet arrival the new-tab page uses, so a Mission opening in
+       its own tab reads as the same product rather than a plainer page
+       living behind it. */
+    animation: rise .28s cubic-bezier(.22, .8, .3, 1) both;
+  }
+  @keyframes rise {
+    from { opacity: 0; transform: translateY(6px); }
+    to   { opacity: 1; transform: none; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    main { animation: none; }
+    * { transition: none !important; }
+  }
   /* One Mission's detail view is a workspace, not a document: its own
      findings and decision on the left, everything about how it got there
      on the right - so it earns the extra width a single reading column
@@ -402,9 +416,15 @@ _TEMPLATE = """<!doctype html>
     display: block; width: 100%; text-align: left; cursor: pointer;
     background: var(--surface); border: 1px solid var(--line);
     border-radius: 10px; padding: 14px 16px; margin-bottom: 8px; color: inherit;
-    font: inherit; transition: border-color .12s, box-shadow .12s;
+    font: inherit;
+    transition: border-color .12s ease, box-shadow .12s ease,
+                transform .12s cubic-bezier(.2, .8, .2, 1);
   }
-  .mission:hover { border-color: var(--accent); box-shadow: var(--shadow); }
+  .mission:hover {
+    border-color: var(--accent); box-shadow: var(--shadow);
+    transform: translateY(-1px);
+  }
+  .mission:active { transform: translateY(0) scale(.995); transition-duration: .08s; }
   .mission .row { display: flex; align-items: baseline; gap: 12px; }
   .mission .name { font-weight: 600; font-size: 15px; }
   .mission .meta { margin-left: auto; color: var(--muted); font-size: 12px;
@@ -480,9 +500,11 @@ _TEMPLATE = """<!doctype html>
     height: 32px; padding: 0 14px; border-radius: 8px; cursor: pointer;
     font: inherit; background: var(--surface); color: var(--text);
     border: 1px solid var(--line);
-    transition: border-color .12s ease, color .12s ease, background .12s ease;
+    transition: border-color .12s ease, color .12s ease, background .12s ease,
+                transform .1s ease;
   }
   button.act:hover { border-color: var(--accent); color: var(--accent); }
+  button.act:active { transform: scale(.96); transition-duration: .06s; }
   button.act.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
   button.act.primary:hover { color: #fff; opacity: .9; }
   /* Delete is not "another button in the row": it reads as the one
