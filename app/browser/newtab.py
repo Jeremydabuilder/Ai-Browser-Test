@@ -389,7 +389,13 @@ _TEMPLATE = """<!doctype html>
        brush the edge - has to come from here rather than from the image. */
     padding: 28px 48px 20px;
     cursor: pointer;
-    background: radial-gradient(closest-side, var(--glow), transparent 70%);
+    /* The same two-tone wash the page background uses behind him too, so
+       Py's own stage reads as the same brand rather than a plainer glow -
+       violet offset slightly from blue, the way the AI gradient elsewhere
+       is never just one flat colour. */
+    background:
+      radial-gradient(closest-side at 42% 45%, var(--glow), transparent 70%),
+      radial-gradient(closest-side at 60% 55%, var(--glow2-strong), transparent 65%);
   }
   .mark {
     /* Full-body Py, so the box is taller than it is wide and the width
@@ -443,7 +449,8 @@ _TEMPLATE = """<!doctype html>
   .mark:hover {
     transform: scale(1.045);
     animation-play-state: paused;
-    filter: drop-shadow(0 16px 26px var(--glow)) drop-shadow(0 0 24px var(--glow));
+    filter: drop-shadow(0 16px 26px var(--glow))
+            drop-shadow(0 0 22px var(--glow2-strong));
   }
   .mark:focus-visible { outline: 2px solid var(--accent); outline-offset: 6px; border-radius: 12px; }
   .wordmark {

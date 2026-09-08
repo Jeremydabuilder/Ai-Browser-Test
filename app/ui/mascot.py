@@ -42,8 +42,8 @@ import random
 from dataclasses import dataclass
 
 from PySide6.QtCore import QByteArray, QRectF, QSize, Qt, QTimer, Signal
-from PySide6.QtGui import QMovie, QPainter, QPixmap, QTransform
-from PySide6.QtWidgets import QLabel, QWidget
+from PySide6.QtGui import QColor, QMovie, QPainter, QPixmap, QTransform
+from PySide6.QtWidgets import QGraphicsDropShadowEffect, QLabel, QWidget
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 ASSET_DIR = os.path.join(_HERE, "assets", "mascot")
@@ -299,6 +299,22 @@ _ART_FILL = 0.88
 #: animation. Four frames.
 _FADE_MS = 200
 
+#: A soft colour behind Py, tied to what he is actually doing - (palette
+#: role, alpha). Not decoration: it is the same information the motion and
+#: the companion text already carry, said a third way, so the difference
+#: between "reading" and "the thing that needs an answer" is felt before it
+#: is read. IDLE and STUCK are deliberately left out - a resting character
+#: and a becalmed one should not glow, or "stuck" starts looking exciting.
+_GLOW: dict[str, tuple[str, int]] = {
+    MascotState.SEARCHING: ("accent", 95),
+    MascotState.READING: ("accent", 70),
+    MascotState.THINKING: ("accent2", 110),
+    MascotState.WORKING: ("accent", 140),
+    MascotState.APPROVAL: ("warning", 170),
+    MascotState.COMPLETE: ("success", 190),
+}
+_GLOW_BLUR = 30
+
 
 class Mascot(QLabel):
     """Py, at one size, in one state.
@@ -315,9 +331,14 @@ class Mascot(QLabel):
     def __init__(self, size: int = 40, parent: QWidget | None = None,
                  *, variant: str = Variant.PANEL, height: int | None = None) -> None:
         super().__init__(parent)
+        from PySide6.QtWidgets import QApplication
+
         from app.ui import theme
 
-        self._colours = theme.palette_for(None)
+        # palette_for(None) silently falls back to the light palette, which
+        # is wrong for every user on a dark desktop - the placeholder glyph
+        # and the new state glow below both need the theme actually in use.
+        self._colours = theme.palette_for(QApplication.instance())
         self._size = size
         self._height = height or size
         self._variant = variant if variant in VARIANTS else Variant.PANEL
@@ -349,6 +370,7 @@ class Mascot(QLabel):
         self._load()
         self._render()
         self._sync_motion()
+        self._sync_glow()
 
     # -- state -------------------------------------------------------------
     def state(self) -> str:
@@ -386,6 +408,7 @@ class Mascot(QLabel):
         self._load()
         self._render()
         self._sync_motion()
+        self._sync_glow()
         self.state_changed.emit(state)
 
     def variant(self) -> str:
@@ -499,6 +522,29 @@ class Mascot(QLabel):
         painter.end()
         pixmap.setDevicePixelRatio(scale)
         return pixmap
+
+    # -- glow --------------------------------------------------------------
+    def _sync_glow(self) -> None:
+        """A soft halo behind Py, coloured by what _GLOW says this state is.
+
+        A QGraphicsDropShadowEffect rather than anything drawn into the
+        pixmap itself: it composites behind whatever _render() produces -
+        still frame, dissolve or QMovie alike - so it never has to know
+        about any of that. Static, not animated: the point is a colour you
+        register at a glance, not one more thing moving.
+        """
+        spec = _GLOW.get(self._state)
+        if spec is None:
+            self.setGraphicsEffect(None)
+            return
+        role, alpha = spec
+        colour = QColor(getattr(self._colours, role, self._colours.accent))
+        colour.setAlpha(alpha)
+        effect = QGraphicsDropShadowEffect(self)
+        effect.setColor(colour)
+        effect.setBlurRadius(_GLOW_BLUR)
+        effect.setOffset(0, 0)
+        self.setGraphicsEffect(effect)
 
     # -- motion ------------------------------------------------------------
     def _sync_motion(self) -> None:
