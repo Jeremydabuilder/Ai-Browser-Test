@@ -11,13 +11,14 @@ away and rebuilt without a Mission noticing.
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QEasingCurve, QPropertyAnimation, Qt, Signal
 from PySide6.QtGui import QFontMetrics
 from PySide6.QtWidgets import (
     QApplication,
     QDialog,
     QDialogButtonBox,
     QFrame,
+    QGraphicsOpacityEffect,
     QHBoxLayout,
     QInputDialog,
     QLabel,
@@ -39,6 +40,53 @@ from app.missions.model import (
     QuestionStatus,
 )
 from app.ui import theme
+from app.ui.mascot import reduced_motion
+
+#: How long a new row takes to settle in. Long enough to read as arriving,
+#: short enough that a burst of findings does not queue up a light show.
+_ENTRANCE_MS = 220
+
+#: A brief acknowledgement that something already on screen just changed -
+#: not an entrance, a pulse: felt once, then gone.
+_FLASH_MS = 260
+
+
+def _fade_in(widget: QWidget, ms: int = _ENTRANCE_MS) -> None:
+    """A gentle entrance for something genuinely new.
+
+    Held on the widget itself (not just a local variable) so the animation
+    is not garbage-collected mid-flight - a real risk here since nothing
+    else keeps a reference to it. Skipped entirely under reduced motion,
+    same rule the mascot uses, so this still respects a stated preference
+    with the still frame shown immediately.
+    """
+    if reduced_motion():
+        return
+    effect = QGraphicsOpacityEffect(widget)
+    widget.setGraphicsEffect(effect)
+    anim = QPropertyAnimation(effect, b"opacity", widget)
+    anim.setDuration(ms)
+    anim.setStartValue(0.0)
+    anim.setEndValue(1.0)
+    anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+    widget._entrance_anim = anim  # noqa: SLF001 - keeping it alive, not private access
+    anim.start()
+
+
+def _flash(widget: QWidget, ms: int = _FLASH_MS) -> None:
+    """Dip and recover once - the visual equivalent of "noted"."""
+    if reduced_motion():
+        return
+    effect = QGraphicsOpacityEffect(widget)
+    widget.setGraphicsEffect(effect)
+    anim = QPropertyAnimation(effect, b"opacity", widget)
+    anim.setDuration(ms)
+    anim.setKeyValueAt(0.0, 1.0)
+    anim.setKeyValueAt(0.45, 0.3)
+    anim.setKeyValueAt(1.0, 1.0)
+    anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+    widget._flash_anim = anim  # noqa: SLF001
+    anim.start()
 
 #: Findings listed before the rest are summarised. Findings lead the card:
 #: they are what the Mission is actually for.
@@ -296,6 +344,17 @@ class MissionCard(QFrame):
         # panel for every user on a dark desktop.
         self._colours = theme.palette_for(QApplication.instance())
         self._mission: Mission | None = None
+        # What was on screen last render, so a re-render can tell a genuinely
+        # new finding/question/source from one already shown, and animate
+        # only the former. Reset whenever the mission itself changes, so
+        # opening a mission with ten existing findings does not play ten
+        # entrances at once.
+        self._shown_mission_id: int | None = None
+        self._known_finding_ids: set[int] = set()
+        self._known_question_ids: set[int] = set()
+        self._known_page_ids: set[int] = set()
+        self._last_progress_text = ""
+        self._last_constraints_key = ""
         c = self._colours
         m = theme.METRICS
 
@@ -464,20 +523,34 @@ class MissionCard(QFrame):
     def show_mission(self, mission: Mission | None) -> None:
         self._mission = mission
         if mission is None:
+            self._shown_mission_id = None
+            self._known_finding_ids = set()
+            self._known_question_ids = set()
+            self._known_page_ids = set()
+            self._last_progress_text = ""
+            self._last_constraints_key = ""
             self.hide()
             return
         c = self._colours
         m = theme.METRICS
+        # A different mission (or the first one shown) is a fresh baseline:
+        # nothing in it should read as "new since last time you looked",
+        # only content that arrives while THIS mission stays on screen.
+        is_new_mission = mission.id != self._shown_mission_id
         self.title.setText(_elide(mission.title, 28))
         self.title.setToolTip(f"{mission.title}\nClick to rename this mission")
         self.goal.setText(mission.goal)
+        constraints_key = "\x1f".join(mission.constraints)
         if mission.constraints:
             bullets = "<br>".join(f"• {_html_escape(item)}" for item in mission.constraints)
             self.constraints_label.setText(bullets)
             self.constraints_label.setTextFormat(Qt.TextFormat.RichText)
             self.constraints_label.show()
+            if not is_new_mission and constraints_key != self._last_constraints_key:
+                _flash(self.constraints_label)
         else:
             self.constraints_label.hide()
+        self._last_constraints_key = constraints_key
 
         tone = {MissionStatus.ACTIVE: c.accent,
                 MissionStatus.PAUSED: c.muted,
@@ -488,16 +561,20 @@ class MissionCard(QFrame):
             " letter-spacing:0.08em;")
 
         if mission.status == MissionStatus.ACTIVE and mission.progress:
+            if not is_new_mission and mission.progress != self._last_progress_text:
+                _flash(self.progress_line)
             self.progress_line.setText(f"● {mission.progress}")
             self.progress_line.show()
         else:
             self.progress_line.hide()
+        self._last_progress_text = mission.progress or ""
 
         self._render_decision(mission)
         self._render_result(mission)
-        self._render_findings(mission)
-        self._render_questions(mission)
-        self._render_pages(mission)
+        self._render_findings(mission, is_new_mission)
+        self._render_questions(mission, is_new_mission)
+        self._render_pages(mission, is_new_mission)
+        self._shown_mission_id = mission.id
         self.show()
 
     @staticmethod
@@ -514,10 +591,15 @@ class MissionCard(QFrame):
         if decision is None:
             self.decision.hide()
             return
+        # The structured result animates in once, the moment it appears -
+        # not on every re-render while it stays this mission's decision.
+        arriving = self.decision.isHidden()
         self.decision.setText(f"\u2713  {decision.decision}")
         self.decision.setToolTip(f"{decision.decision}\n{decision.rationale}\n\n"
                                  "Open this mission to see why")
         self.decision.show()
+        if arriving:
+            _fade_in(self.decision)
 
     def _render_result(self, mission: Mission) -> None:
         # Only when there is no decision: a mission with both shows the
@@ -526,10 +608,13 @@ class MissionCard(QFrame):
         if mission.decision is not None or not mission.result:
             self.result_line.hide()
             return
+        arriving = self.result_line.isHidden()
         snippet = " ".join(mission.result.split())
         self.result_line.setText(f"✓  {_elide(snippet, 90)}")
         self.result_line.setToolTip(f"{snippet}\n\nOpen this mission to see the full result")
         self.result_line.show()
+        if arriving:
+            _fade_in(self.result_line)
 
     def _open_decision(self) -> None:
         window = self.window()
@@ -537,9 +622,15 @@ class MissionCard(QFrame):
         if callable(opener) and self._mission is not None:
             opener(self._mission.id)
 
-    def _render_findings(self, mission: Mission) -> None:
+    def _render_findings(self, mission: Mission, is_new_mission: bool = False) -> None:
         self._clear(self._findings_box)
         findings = list(mission.findings)
+        current_ids = {f.id for f in findings}
+        # Only a finding that arrived while THIS mission was already showing
+        # counts as "new" for the animation - opening a mission with ten
+        # findings already in it should not play ten entrances at once.
+        new_ids = set() if is_new_mission else current_ids - self._known_finding_ids
+        self._known_finding_ids = current_ids
         if not findings:
             self.findings_label.setText("FINDINGS")
             empty = QLabel("What Py works out for this mission will be "
@@ -559,6 +650,8 @@ class MissionCard(QFrame):
             row.edit_requested.connect(self._edit_finding)
             row.source_requested.connect(self._open_source)
             self._findings_box.addWidget(row)
+            if finding.id in new_ids:
+                _fade_in(row)
 
         hidden = len(findings) - VISIBLE_FINDINGS
         if hidden > 0:
@@ -567,13 +660,19 @@ class MissionCard(QFrame):
         else:
             self.more_findings.hide()
 
-    def _render_questions(self, mission: Mission) -> None:
+    def _render_questions(self, mission: Mission, is_new_mission: bool = False) -> None:
         """Only OPEN questions, and only the section at all when there is at
         least one - unlike findings, "no open questions" is the common case
         for a simple mission and saying so every time would be noise, not
         information."""
         self._clear(self._questions_box)
         open_questions = [q for q in mission.questions if q.status == QuestionStatus.OPEN]
+        current_ids = {q.id for q in open_questions}
+        # A question that was open and is not any more (answered/resolved)
+        # simply stops appearing here - the interesting transition to show
+        # is a new one arriving, not the old one's disappearance.
+        new_ids = set() if is_new_mission else current_ids - self._known_question_ids
+        self._known_question_ids = current_ids
         if not open_questions:
             self.questions_label.hide()
             return
@@ -587,6 +686,8 @@ class MissionCard(QFrame):
             row.setStyleSheet(f"color:{c.text}; font-size:{m.text_sm}px;")
             row.setToolTip("Not yet resolved")
             self._questions_box.addWidget(row)
+            if question.id in new_ids:
+                _fade_in(row)
 
         hidden = len(open_questions) - VISIBLE_QUESTIONS
         if hidden > 0:
@@ -594,9 +695,12 @@ class MissionCard(QFrame):
             more.setStyleSheet(f"color:{c.disabled}; font-size:{m.text_xs}px;")
             self._questions_box.addWidget(more)
 
-    def _render_pages(self, mission: Mission) -> None:
+    def _render_pages(self, mission: Mission, is_new_mission: bool = False) -> None:
         self._clear(self._pages_box)
         pages = list(mission.pages)
+        current_ids = {p.id for p in pages}
+        new_ids = set() if is_new_mission else current_ids - self._known_page_ids
+        self._known_page_ids = current_ids
         if not pages:
             self.pages_label.setText("SOURCES")
             empty = QLabel("Sources Py opens or reads for this mission "
@@ -639,6 +743,8 @@ class MissionCard(QFrame):
             row = _PageRow(page, page.key in live, self, useful=page_useful)
             row.clicked.connect(lambda _checked=False, p=page: self._service.show(p))
             self._pages_box.addWidget(row)
+            if page.id in new_ids:
+                _fade_in(row)
 
         hidden = len(pages) - VISIBLE_PAGES
         if hidden > 0:

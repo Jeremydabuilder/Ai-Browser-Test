@@ -81,13 +81,25 @@ class ShippedArtworkTests(unittest.TestCase):
         # promises any of gif/webp/apng/png/svg will do, and the artwork went
         # from SVG to PNG without a line of code changing. What must hold is
         # that each state and crop has its OWN file rather than a fallback.
+        #
+        # `searching` is the exception: it is a real, newly added state with
+        # no commissioned artwork yet, so it exercises exactly the documented
+        # fallback path (ART-DIRECTION.md §6) rather than shipping a fake or
+        # mismatched drawing to satisfy this test.
         for state in ALL_STATES:
+            if state == MascotState.SEARCHING:
+                continue
             for variant in VARIANTS:
                 path = asset_for(state, variant)
                 self.assertIsNotNone(path, f"nothing to draw for {state}/{variant}")
                 stem = os.path.splitext(os.path.basename(path))[0]
                 self.assertEqual(stem, f"{state}-{variant}",
                                  f"{state}/{variant} fell back unexpectedly")
+
+    def test_searching_falls_back_to_idle_until_it_has_its_own_art(self) -> None:
+        for variant in VARIANTS:
+            self.assertEqual(asset_for(MascotState.SEARCHING, variant),
+                             asset_for(MascotState.IDLE, variant))
 
     def test_the_two_crops_are_different_drawings(self) -> None:
         # A bust is not a full body scaled down - cramming the whole figure

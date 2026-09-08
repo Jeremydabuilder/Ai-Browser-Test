@@ -302,6 +302,16 @@ class PyCompanionTests(PanelTests):
         self.assertIn(MascotState.READING, seen, "reading a page should look like reading")
         self.assertEqual(seen[-1], MascotState.COMPLETE)
 
+    def test_py_searches_when_navigating(self) -> None:
+        """Going to find a page is its own look, distinct from reading one."""
+        from tests.fake_claude import calls
+
+        from app.ui.mascot import MascotState
+
+        seen = self.states_during(
+            [calls("browser_navigate", {"url": "https://example.com/"}), says("There.")])
+        self.assertIn(MascotState.SEARCHING, seen)
+
     def test_py_reads_and_works_differently(self) -> None:
         """Scrolling counts as reading, which is right - it changes nothing.
 

@@ -5,7 +5,9 @@ Written from the integration side, so the technical constraints here are
 measured rather than guessed: they are what the browser actually does with
 these files.
 
-Fourteen images: seven states × two crops.
+Sixteen images: eight states × two crops. `searching` is the newest state and
+has no commissioned artwork yet - it currently wears the `idle` face via the
+fallback in §6.
 
 ---
 
@@ -76,12 +78,13 @@ for the expression, not text to draw into the image.
 | # | State | Pose and expression | Prop | Companion line |
 |---|---|---|---|---|
 | 1 | `idle` | Relaxed standing, weight on one leg, a small friendly smile, ears up and neutral, tail resting naturally behind him | none | "Ready when you are." |
-| 2 | `reading` | Holding an open book in both paws, head tilted down toward it, eyes lowered and focused, **ears tipped slightly forward** — the giveaway that he is paying attention | open hardback book | "I'm looking through the page…" |
-| 3 | `thinking` | Looking up and to one side, one paw near his chin, brow slightly furrowed, one ear cocked | small soft-glowing thought motes drifting up | "Let me figure this out…" |
-| 4 | `working` | Seated or leaning over a small open laptop, both paws on it, concentrated but confident, screen light warming his face from below | laptop with the "P." mark glowing on the lid | "On it." |
-| 5 | `approval` | Alert and a little surprised, **not frightened** — eyes wide, ears up and forward, one paw raised holding up a marker | a warm-orange (#FFB347) rounded exclamation badge | "I need your okay for this." |
-| 6 | `complete` | Genuinely delighted, eyes squeezed shut in a real smile, one paw punched up, tail swept high and mid-motion | a light scatter of confetti | "Done!" |
-| 7 | `stuck` | Head tilted, one paw scratching the back of his head, ears slightly back and asymmetric, mouth a small uncertain line — confused but still endearing | a small "?" or a scribble mote above his head | "Looks like I got stuck." |
+| 2 | `searching` | Mid-stride or leaning forward, head turned slightly as if scanning past the frame, ears swivelled toward motion, eyes wide and alert - looking *for* something, not yet *at* it | none | "Looking for the right page…" |
+| 3 | `reading` | Holding an open book in both paws, head tilted down toward it, eyes lowered and focused, **ears tipped slightly forward** — the giveaway that he is paying attention | open hardback book | "I'm looking through the page…" |
+| 4 | `thinking` | Looking up and to one side, one paw near his chin, brow slightly furrowed, one ear cocked | small soft-glowing thought motes drifting up | "Let me figure this out…" |
+| 5 | `working` | Seated or leaning over a small open laptop, both paws on it, concentrated but confident, screen light warming his face from below | laptop with the "P." mark glowing on the lid | "On it." |
+| 6 | `approval` | Alert and a little surprised, **not frightened** — eyes wide, ears up and forward, one paw raised holding up a marker | a warm-orange (#FFB347) rounded exclamation badge | "I need your okay for this." |
+| 7 | `complete` | Genuinely delighted, eyes squeezed shut in a real smile, one paw punched up, tail swept high and mid-motion | a light scatter of confetti | "Done!" |
+| 8 | `stuck` | Head tilted, one paw scratching the back of his head, ears slightly back and asymmetric, mouth a small uncertain line — confused but still endearing | a small "?" or a scribble mote above his head | "Looks like I got stuck." |
 
 Two hard rules the UI depends on:
 
@@ -110,11 +113,11 @@ Two hard rules the UI depends on:
 * **No pure black outlines or black rim light** — they vanish against the dark
   theme. Separate him from the background with a *cool* rim light instead.
 * **No drop shadow onto a ground plane.** There is no ground; he sits on a page.
-* Filenames, exactly: `idle-full.png`, `idle-panel.png`, `reading-full.png`,
-  `reading-panel.png`, `thinking-full.png`, `thinking-panel.png`,
-  `working-full.png`, `working-panel.png`, `approval-full.png`,
-  `approval-panel.png`, `complete-full.png`, `complete-panel.png`,
-  `stuck-full.png`, `stuck-panel.png`.
+* Filenames, exactly: `idle-full.png`, `idle-panel.png`, `searching-full.png`,
+  `searching-panel.png`, `reading-full.png`, `reading-panel.png`,
+  `thinking-full.png`, `thinking-panel.png`, `working-full.png`,
+  `working-panel.png`, `approval-full.png`, `approval-panel.png`,
+  `complete-full.png`, `complete-panel.png`, `stuck-full.png`, `stuck-panel.png`.
 
 ### Negative prompt
 

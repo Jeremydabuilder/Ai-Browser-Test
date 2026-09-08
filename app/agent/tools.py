@@ -520,6 +520,12 @@ READ_ONLY_TOOLS = {
     "browser_wait_for_element", "browser_scroll", "browser_scroll_to_element",
 }
 
+#: Tools that go looking for a page rather than read one already open - used
+#: only to pick Py's mascot state (searching vs. reading), not for safety.
+#: Deliberately just navigation: opening a tab is closer to "starting
+#: something" than "looking for it", so it stays classed as working.
+SEARCH_TOOLS = {"browser_navigate"}
+
 
 def _error(code: str, message: str, *, hint: str = "") -> dict[str, Any]:
     """A refused tool call, in the same shape as every other tool error.

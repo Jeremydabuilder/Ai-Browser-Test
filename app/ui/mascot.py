@@ -82,6 +82,9 @@ class MascotState:
     """
 
     IDLE = "idle"
+    #: Going looking for something - navigating, opening a tab - as distinct
+    #: from READING, which is already there and looking at what it found.
+    SEARCHING = "searching"
     READING = "reading"
     THINKING = "thinking"
     WORKING = "working"
@@ -92,9 +95,9 @@ class MascotState:
     STUCK = "stuck"
 
 
-ALL_STATES = (MascotState.IDLE, MascotState.READING, MascotState.THINKING,
-              MascotState.WORKING, MascotState.APPROVAL, MascotState.COMPLETE,
-              MascotState.STUCK)
+ALL_STATES = (MascotState.IDLE, MascotState.SEARCHING, MascotState.READING,
+              MascotState.THINKING, MascotState.WORKING, MascotState.APPROVAL,
+              MascotState.COMPLETE, MascotState.STUCK)
 
 #: How long a reaction shows before Py settles back to idle. Long enough to
 #: notice, short enough that it never looks stuck on.
@@ -104,6 +107,7 @@ REACTION_MS = 2600
 #: model's words, never anything derived from a page, and never reasoning.
 COMPANION_TEXT: dict[str, str] = {
     MascotState.IDLE: "Ready when you are.",
+    MascotState.SEARCHING: "Looking for the right page\u2026",
     MascotState.READING: "I'm looking through the page\u2026",
     MascotState.THINKING: "Let me figure this out\u2026",
     MascotState.WORKING: "On it.",
@@ -115,6 +119,7 @@ COMPANION_TEXT: dict[str, str] = {
 #: The same thing, for a screen reader and a tooltip.
 TOOLTIPS: dict[str, str] = {
     MascotState.IDLE: "Py is ready",
+    MascotState.SEARCHING: "Py is searching",
     MascotState.READING: "Py is reading the page",
     MascotState.THINKING: "Py is thinking",
     MascotState.WORKING: "Py is working in the browser",
@@ -250,6 +255,9 @@ _MOTION: dict[str, _Motion] = {
     # makes it continuous. Measured, not assumed - 3 distinct frames out of 70
     # before, 60-odd after.
     MascotState.IDLE: _Motion(bob=0.9, period_ms=4200, blinks=True, pulse=0.005),
+    # Quicker and a touch wider than reading's sway - scanning around rather
+    # than settled on one thing yet.
+    MascotState.SEARCHING: _Motion(bob=0.7, period_ms=1800, lean=1.1, blinks=True),
     # Slower and shallower, with the faintest sway - absorbed in the page.
     MascotState.READING: _Motion(bob=0.55, period_ms=3600, lean=0.35, blinks=True),
     # A held pose. The lean is the thought.

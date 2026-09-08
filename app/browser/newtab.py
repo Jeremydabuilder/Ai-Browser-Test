@@ -426,6 +426,15 @@ _TEMPLATE = """<!doctype html>
     0%, 100% { transform: translateY(0) }
     50%      { transform: translateY(-3px) }
   }
+  /* Py, listening: a touch livelier than the idle breath, for as long as the
+     search box actually has focus - see the "listening" class toggled below.
+     Still a rigid transform on the same still frame, same as the idle
+     breath; it never claims to be a different pose. */
+  @keyframes listen {
+    0%, 100% { transform: translateY(0) scale(1); }
+    50%      { transform: translateY(-4px) scale(1.012); }
+  }
+  .mark.listening { animation: listen 2.1s ease-in-out infinite; }
   .mark:hover {
     transform: scale(1.045);
     animation-play-state: paused;
@@ -535,12 +544,18 @@ _TEMPLATE = """<!doctype html>
     display: flex; flex-direction: column; justify-content: flex-start;
     cursor: pointer;
     color: var(--text);
-    transition: border-color .14s ease, box-shadow .14s ease, transform .08s ease;
+    transition: border-color .14s ease, box-shadow .14s ease,
+                transform .14s cubic-bezier(.2, .8, .2, 1);
   }
   .action:hover {
-    border-color: var(--accent); box-shadow: var(--shadow);
+    border-color: var(--accent); box-shadow: var(--shadow-lift);
+    transform: translateY(-2px);
   }
-  .action:active { transform: translateY(1px); }
+  .action:active {
+    transform: translateY(0) scale(.98);
+    box-shadow: var(--shadow);
+    transition-duration: .1s;
+  }
   .action:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
   .action b {
     display: block; font-size: 13px; font-weight: 600; margin-bottom: 2px;
@@ -586,6 +601,21 @@ _TEMPLATE = """<!doctype html>
     box-shadow: var(--shadow);
     padding: 16px 40px 16px 18px;
     margin-bottom: 20px;
+    opacity: 1;
+    transform: none;
+    transition: opacity .18s ease, transform .18s ease;
+  }
+  /* The state right before the card is actually hidden - see dismiss() in
+     the script below. A class rather than the `hidden` attribute itself,
+     because `display:none` cannot be transitioned: this fades and lifts
+     first, then `hidden` lands once it is already invisible. */
+  .onboarding.leaving {
+    opacity: 0; transform: translateY(-6px); pointer-events: none;
+  }
+  /* The moment the card is first allowed to render, before its own entrance
+     transition has had a frame to start from - see show() below. */
+  .onboarding.entering {
+    opacity: 0; transform: translateY(-6px);
   }
   .onboarding h2 {
     margin: 0 0 6px; font-size: 15px; font-weight: 700; letter-spacing: normal;
@@ -788,22 +818,44 @@ _TEMPLATE = """<!doctype html>
 
   if (data.showOnboarding) {
     var onboarding = document.getElementById("onboarding");
+    var reduceMotion = window.matchMedia
+      && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    // `hidden` flips straight to display:none, which cannot be transitioned,
+    // so the card is shown a frame early in its own zero-opacity "entering"
+    // state and only then let to transition to normal - two rAFs because one
+    // is not reliably enough for the browser to have painted the first
+    // frame before the class driving the transition is removed.
+    onboarding.classList.add("entering");
     onboarding.hidden = false;
+    requestAnimationFrame(function () {
+      requestAnimationFrame(function () { onboarding.classList.remove("entering"); });
+    });
+
+    // The mirror of the above: fade out first, and only actually hide once
+    // that is done, so dismissing never just snaps away. The underlying
+    // action still fires immediately either way - dismissing is not made to
+    // wait on its own animation.
+    function dismiss(action) {
+      act(action, {});
+      if (reduceMotion) { onboarding.hidden = true; return; }
+      onboarding.classList.add("leaving");
+      setTimeout(function () {
+        onboarding.hidden = true;
+        onboarding.classList.remove("leaving");
+      }, 180);
+    }
     // act() navigates to a pybrowser:// URL that the browser intercepts and
     // refuses to render, so the page itself never changes on its own - the
     // card has to be hidden here, not left to a navigation that never
     // actually happens.
     document.getElementById("onboarding-close").addEventListener("click", function () {
-      onboarding.hidden = true;
-      act("dismiss-onboarding", {});
+      dismiss("dismiss-onboarding");
     });
     document.getElementById("onboarding-later").addEventListener("click", function () {
-      onboarding.hidden = true;
-      act("dismiss-onboarding", {});
+      dismiss("dismiss-onboarding");
     });
     document.getElementById("onboarding-demo").addEventListener("click", function () {
-      onboarding.hidden = true;
-      act("demo-mission", {});
+      dismiss("demo-mission");
     });
   }
 
@@ -851,6 +903,10 @@ _TEMPLATE = """<!doctype html>
         act("ai", { q: box.value.trim() });
       }
     });
+    // Py notices when you start typing to him - a real reaction to a real
+    // event (the search box has focus), not motion for its own sake.
+    box.addEventListener("focus", function () { mark.classList.add("listening"); });
+    box.addEventListener("blur", function () { mark.classList.remove("listening"); });
   }
 
   // Quick actions open the AI panel with the request already written, so the

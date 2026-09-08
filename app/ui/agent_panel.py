@@ -7,11 +7,12 @@ logic - every decision belongs to AgentSession, which this panel only watches.
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QEasingCurve, QPropertyAnimation, Qt, Signal
 from PySide6.QtGui import QKeyEvent, QTextCursor
 from PySide6.QtWidgets import (
     QApplication,
     QFrame,
+    QGraphicsOpacityEffect,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -25,10 +26,10 @@ from PySide6.QtWidgets import (
 
 from app.ui import icons, theme
 from app.ui.flow_layout import FlowLayout
-from app.ui.mascot import Mascot, MascotState, state_for_agent
+from app.ui.mascot import Mascot, MascotState, reduced_motion, state_for_agent
 from app.ui.missions import MissionCard, MissionPicker
 
-from app.agent.tools import READ_ONLY_TOOLS
+from app.agent.tools import READ_ONLY_TOOLS, SEARCH_TOOLS
 from app.agent.session import (
     AgentSession,
     AgentState,
@@ -50,6 +51,28 @@ _STEP_MARKS = {
     StepState.WAITING: ("&#9679;", "warning"),
     StepState.SKIPPED: ("&#9675;", "disabled"),  # hollow dot: never happened
 }
+
+
+def _enter(widget: QWidget) -> None:
+    """A clear but unhurried arrival for a bar that just appeared.
+
+    Never a flash, never a delay before the content is legible: it starts
+    already three-quarters visible, so someone reading fast loses nothing by
+    not waiting for it. Used for anything that pops into the panel to ask
+    for or report something - the approval card, the retry bar - so they all
+    speak the same small amount of motion.
+    """
+    if reduced_motion():
+        return
+    effect = QGraphicsOpacityEffect(widget)
+    widget.setGraphicsEffect(effect)
+    anim = QPropertyAnimation(effect, b"opacity", widget)
+    anim.setDuration(200)
+    anim.setStartValue(0.7)
+    anim.setEndValue(1.0)
+    anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+    widget._enter_anim = anim  # noqa: SLF001 - keeping it alive, not private access
+    anim.start()
 
 #: The prompts behind the quick-action buttons. Written as things a person
 #: would actually say, because they go through the same path as anything the
@@ -220,6 +243,7 @@ class ConfirmationBar(QFrame):
 
         self.show()
         self.deny_button.setFocus()
+        _enter(self)
 
 
 class RetryBar(QFrame):
@@ -267,7 +291,10 @@ class RetryBar(QFrame):
         plural = "s" if seconds != 1 else ""
         self._label.setText(f"{message} Retrying in {seconds} second{plural}… "
                             f"(attempt {attempt} of {limit})")
+        was_hidden = self.isHidden()
         self.show()
+        if was_hidden:
+            _enter(self)
 
 
 class AgentPanel(QWidget):
@@ -800,11 +827,16 @@ class AgentPanel(QWidget):
             # approval face with "On it." - Py claiming to be working while
             # actually asking permission.
             if self.mascot.state() != MascotState.APPROVAL:
-                # Reading a page and clicking through one look different from
-                # the outside, so they look different here too.
-                self.mascot.set_state(
-                    MascotState.READING if step.tool in READ_ONLY_TOOLS
-                    else MascotState.WORKING)
+                # Reading a page, going to find one, and clicking through one
+                # all look different from the outside, so they look different
+                # here too.
+                if step.tool in READ_ONLY_TOOLS:
+                    next_state = MascotState.READING
+                elif step.tool in SEARCH_TOOLS:
+                    next_state = MascotState.SEARCHING
+                else:
+                    next_state = MascotState.WORKING
+                self.mascot.set_state(next_state)
         self._render_steps()
 
     def _render_steps(self) -> None:
