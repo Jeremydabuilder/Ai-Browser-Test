@@ -42,8 +42,8 @@ import random
 from dataclasses import dataclass
 
 from PySide6.QtCore import QByteArray, QRectF, QSize, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QMovie, QPainter, QPixmap, QTransform
-from PySide6.QtWidgets import QGraphicsDropShadowEffect, QLabel, QWidget
+from PySide6.QtGui import QMovie, QPainter, QPixmap, QTransform
+from PySide6.QtWidgets import QLabel, QWidget
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 ASSET_DIR = os.path.join(_HERE, "assets", "mascot")
@@ -257,17 +257,17 @@ _MOTION: dict[str, _Motion] = {
     MascotState.IDLE: _Motion(bob=0.9, period_ms=4200, blinks=True, pulse=0.005),
     # Quicker and a touch wider than reading's sway - scanning around rather
     # than settled on one thing yet.
-    MascotState.SEARCHING: _Motion(bob=0.7, period_ms=1800, lean=1.1, blinks=True),
+    MascotState.SEARCHING: _Motion(bob=0.85, period_ms=1650, lean=1.3, blinks=True),
     # Slower and shallower, with the faintest sway - absorbed in the page.
-    MascotState.READING: _Motion(bob=0.55, period_ms=3600, lean=0.35, blinks=True),
+    MascotState.READING: _Motion(bob=0.55, period_ms=3600, lean=0.45, blinks=True),
     # A held pose. The lean is the thought.
-    MascotState.THINKING: _Motion(bob=0.6, period_ms=2600, lean=1.4),
+    MascotState.THINKING: _Motion(bob=0.6, period_ms=2600, lean=1.7),
     # The one state that has to read as effort at a glance: a quicker cadence
     # than a resting breath, with a small shift of weight over it, so a look
     # across the room says "he is doing something" rather than "he is idle".
-    MascotState.WORKING: _Motion(bob=1.1, period_ms=1500, lean=0.55, pulse=0.008),
+    MascotState.WORKING: _Motion(bob=1.3, period_ms=1450, lean=0.65, pulse=0.012),
     # Waiting on you, and saying so without nagging.
-    MascotState.APPROVAL: _Motion(bob=0.5, period_ms=2000, pulse=0.022),
+    MascotState.APPROVAL: _Motion(bob=0.5, period_ms=2000, pulse=0.03),
     # A pop on arrival that settles within a second into an ordinary happy
     # breath. Looping a celebration forever turns delight into wallpaper.
     MascotState.COMPLETE: _Motion(bob=1.0, period_ms=2600, blinks=True, pulse=0.006,
@@ -298,22 +298,6 @@ _ART_FILL = 0.88
 #: thinking -> reading -> working never feels like it is waiting for the
 #: animation. Four frames.
 _FADE_MS = 200
-
-#: A soft colour behind Py, tied to what he is actually doing - (palette
-#: role, alpha). Not decoration: it is the same information the motion and
-#: the companion text already carry, said a third way, so the difference
-#: between "reading" and "the thing that needs an answer" is felt before it
-#: is read. IDLE and STUCK are deliberately left out - a resting character
-#: and a becalmed one should not glow, or "stuck" starts looking exciting.
-_GLOW: dict[str, tuple[str, int]] = {
-    MascotState.SEARCHING: ("accent", 95),
-    MascotState.READING: ("accent", 70),
-    MascotState.THINKING: ("accent2", 110),
-    MascotState.WORKING: ("accent", 140),
-    MascotState.APPROVAL: ("warning", 170),
-    MascotState.COMPLETE: ("success", 190),
-}
-_GLOW_BLUR = 30
 
 
 class Mascot(QLabel):
@@ -370,7 +354,6 @@ class Mascot(QLabel):
         self._load()
         self._render()
         self._sync_motion()
-        self._sync_glow()
 
     # -- state -------------------------------------------------------------
     def state(self) -> str:
@@ -408,7 +391,6 @@ class Mascot(QLabel):
         self._load()
         self._render()
         self._sync_motion()
-        self._sync_glow()
         self.state_changed.emit(state)
 
     def variant(self) -> str:
@@ -522,29 +504,6 @@ class Mascot(QLabel):
         painter.end()
         pixmap.setDevicePixelRatio(scale)
         return pixmap
-
-    # -- glow --------------------------------------------------------------
-    def _sync_glow(self) -> None:
-        """A soft halo behind Py, coloured by what _GLOW says this state is.
-
-        A QGraphicsDropShadowEffect rather than anything drawn into the
-        pixmap itself: it composites behind whatever _render() produces -
-        still frame, dissolve or QMovie alike - so it never has to know
-        about any of that. Static, not animated: the point is a colour you
-        register at a glance, not one more thing moving.
-        """
-        spec = _GLOW.get(self._state)
-        if spec is None:
-            self.setGraphicsEffect(None)
-            return
-        role, alpha = spec
-        colour = QColor(getattr(self._colours, role, self._colours.accent))
-        colour.setAlpha(alpha)
-        effect = QGraphicsDropShadowEffect(self)
-        effect.setColor(colour)
-        effect.setBlurRadius(_GLOW_BLUR)
-        effect.setOffset(0, 0)
-        self.setGraphicsEffect(effect)
 
     # -- motion ------------------------------------------------------------
     def _sync_motion(self) -> None:
