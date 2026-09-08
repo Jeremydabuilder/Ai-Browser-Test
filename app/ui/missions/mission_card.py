@@ -35,6 +35,7 @@ from app.missions.model import (
     MissionFinding,
     MissionPage,
     MissionStatus,
+    PageOutcome,
     QuestionStatus,
 )
 from app.ui import theme
@@ -219,7 +220,8 @@ class _ElidedLabel(QLabel):
 class _PageRow(QPushButton):
     """One page. Clicking it focuses the tab, or reopens the page."""
 
-    def __init__(self, page: MissionPage, live: bool, parent: QWidget | None = None) -> None:
+    def __init__(self, page: MissionPage, live: bool, parent: QWidget | None = None,
+                 *, useful: bool | None = None) -> None:
         super().__init__(parent)
         self.page = page
         c = (parent._colours if parent is not None
@@ -245,6 +247,22 @@ class _PageRow(QPushButton):
         dot.setStyleSheet(
             f"color:{c.success if live else c.disabled}; font-size:{m.text_xs}px;")
         row.addWidget(dot)
+
+        # Whether this source actually helped, at a glance - real signal
+        # (see PageOutcome), not decoration. ``useful`` is None for a page
+        # neither judged nor cited by a finding: nothing has been decided
+        # about it yet, so nothing is drawn rather than a guess.
+        outcome = QLabel(self)
+        outcome.setFixedWidth(12)
+        if useful is True:
+            outcome.setText("✓")
+            outcome.setStyleSheet(f"color:{c.success}; font-size:{m.text_xs}px;")
+            outcome.setToolTip("Useful - cited in a finding")
+        elif useful is False:
+            outcome.setText("–")
+            outcome.setStyleSheet(f"color:{c.disabled}; font-size:{m.text_xs}px;")
+            outcome.setToolTip("Reviewed - did not turn out useful")
+        row.addWidget(outcome)
 
         title = _ElidedLabel(page.display_title, self)
         title.setStyleSheet(f"color:{c.text}; font-size:{m.text_sm}px;")
@@ -562,8 +580,8 @@ class MissionCard(QFrame):
         self._clear(self._pages_box)
         pages = list(mission.pages)
         if not pages:
-            self.pages_label.setText("PAGES")
-            empty = QLabel("Pages Py opens or reads for this mission "
+            self.pages_label.setText("SOURCES")
+            empty = QLabel("Sources Py opens or reads for this mission "
                            "will collect here.", self)
             empty.setWordWrap(True)
             empty.setStyleSheet(
@@ -572,17 +590,35 @@ class MissionCard(QFrame):
             self.more.hide()
             return
 
-        # "Useful" isn't a separate rating the agent makes - it's read
-        # straight off whether a page actually produced a finding, which is
-        # data the board already has. Cheaper and more honest than adding a
-        # rating the agent would have to remember to set, and it can never
-        # drift out of step with the findings themselves.
-        useful = len({f.page_id for f in mission.findings if f.page_id is not None})
-        detail = f"{len(pages)} · {useful} useful" if useful else str(len(pages))
-        self.pages_label.setText(f"PAGES · {detail}")
+        # Useful is read two ways at once, for old and new data alike:
+        # `page.outcome` is the real signal going forward (set explicitly by
+        # mission_note_source, or by save_finding the moment a page is
+        # cited), but a page saved before that column existed has no
+        # outcome recorded even though a finding already names it - so a
+        # finding's own page_id still counts too. Skipped has no legacy
+        # source at all: it did not exist before PageOutcome, so it is
+        # exactly what has been recorded since.
+        useful_ids = {f.page_id for f in mission.findings if f.page_id is not None}
+        useful_ids |= {page.id for page in pages if page.useful}
+        skipped = sum(1 for page in pages
+                     if page.outcome == PageOutcome.SKIPPED and page.id not in useful_ids)
+        useful, total = len(useful_ids), len(pages)
+        reviewed = useful + skipped
+
+        if not reviewed:
+            detail = str(total)
+        elif reviewed == total:
+            detail = f"{total} · {useful} useful"
+        else:
+            detail = f"{total} found · {reviewed} reviewed · {useful} useful"
+        if skipped:
+            detail += f" · {skipped} skipped"
+        self.pages_label.setText(f"SOURCES · {detail}")
         live = self._service.open_keys()
         for page in pages[:VISIBLE_PAGES]:
-            row = _PageRow(page, page.key in live, self)
+            page_useful = True if page.id in useful_ids else (
+                False if page.outcome == PageOutcome.SKIPPED else None)
+            row = _PageRow(page, page.key in live, self, useful=page_useful)
             row.clicked.connect(lambda _checked=False, p=page: self._service.show(p))
             self._pages_box.addWidget(row)
 

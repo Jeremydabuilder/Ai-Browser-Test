@@ -175,6 +175,7 @@ class PersistenceTests(unittest.TestCase):
         conn = sqlite3.connect(path)
         for table in ("routine_steps", "routines"):
             conn.execute(f"DROP TABLE IF EXISTS {table}")
+        conn.execute("ALTER TABLE mission_pages DROP COLUMN outcome")
         conn.execute("PRAGMA user_version=7")
         conn.commit()
         conn.close()

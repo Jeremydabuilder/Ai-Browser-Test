@@ -224,6 +224,61 @@ def main() -> int:
     settle(app, 400)
     shot(tall, "10-py-full")
 
+    # -- A Mission in progress, with real findings, questions and sources --
+    from app.missions.model import (
+        Mission,
+        MissionFinding,
+        MissionPage,
+        MissionQuestion,
+        MissionStatus,
+        PageOutcome,
+    )
+    from app.ui.missions.mission_card import MissionCard
+
+    class _FakeMissionService:
+        def open_keys(self) -> set:
+            return set()
+
+    mission = Mission(
+        id=1, title="Best noise-cancelling headphones",
+        goal="Find the best noise-cancelling headphones under $350 for long flights.",
+        status=MissionStatus.ACTIVE,
+        progress="Comparing battery life across the final three options",
+        findings=(
+            MissionFinding(id=1, mission_id=1, ref=1, page_id=2,
+                          text="Sony WH-1000XM5 has the strongest ANC of the options "
+                               "under $350, per most reviewers."),
+            MissionFinding(id=2, mission_id=1, ref=2, page_id=3,
+                          text="Bose QC Ultra is more comfortable for long flights "
+                               "but has noticeably shorter battery life."),
+            MissionFinding(id=3, mission_id=1, ref=3, page_id=1,
+                          text="Sennheiser Momentum 4 lasts ~60 hours per charge, "
+                               "roughly double the other two."),
+        ),
+        questions=(
+            MissionQuestion(id=1, mission_id=1,
+                            text="Does the Momentum 4's ANC hold up on a loud cabin?"),
+        ),
+        pages=(
+            MissionPage(id=1, mission_id=1, url="https://www.rtings.com/headphones",
+                       title="Best Noise Cancelling Headphones - RTINGS.com",
+                       outcome=PageOutcome.USEFUL),
+            MissionPage(id=2, mission_id=1, url="https://www.soundguys.com/sony-wh-1000xm5",
+                       title="Sony WH-1000XM5 review - SoundGuys", outcome=PageOutcome.USEFUL),
+            MissionPage(id=3, mission_id=1, url="https://www.bose.com/qc-ultra",
+                       title="QuietComfort Ultra Headphones - Bose", outcome=PageOutcome.USEFUL),
+            MissionPage(id=4, mission_id=1, url="https://www.jbl.com/tour-one",
+                       title="JBL Tour One M2 - JBL", outcome=PageOutcome.SKIPPED),
+        ),
+    )
+    card = MissionCard(_FakeMissionService())
+    card.show_mission(mission)
+    card.setFixedWidth(360)
+    card.resize(360, card.sizeHint().height())
+    card.show()
+    settle(app, 300)
+    shot(card, "11-mission-card")
+
     session.shutdown()
     server.stop()
     database.close()

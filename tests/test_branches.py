@@ -254,6 +254,7 @@ class PersistenceTests(unittest.TestCase):
         conn.execute("ALTER TABLE missions DROP COLUMN progress")
         conn.execute("ALTER TABLE missions DROP COLUMN result")
         conn.execute("ALTER TABLE missions DROP COLUMN follow_ups")
+        conn.execute("ALTER TABLE mission_pages DROP COLUMN outcome")
         conn.execute("DROP TABLE IF EXISTS mission_actions")
         conn.execute("PRAGMA user_version=8")
         conn.commit()

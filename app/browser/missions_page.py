@@ -27,7 +27,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from app.browser.internal import route
-from app.missions.model import BLOCKED_LABEL
+from app.missions.model import BLOCKED_LABEL, PageOutcome
 
 HOST = "missions"
 LIBRARY_URL = "pybrowser://missions/"
@@ -104,8 +104,19 @@ def summarise(mission, *, with_detail: bool = False,
              "challenge": _challenge(mission.challenge_of("finding", f.id))}
             for f in mission.findings
         ]
+        # Useful is read two ways at once, same as the sidebar card: the
+        # PageOutcome column going forward, plus a finding's own page_id for
+        # data saved before that column existed - see MissionCard._render_pages.
+        useful_page_ids = {f.page_id for f in mission.findings if f.page_id is not None}
+        useful_page_ids |= {p.id for p in mission.pages if p.useful}
+        skipped_count = sum(1 for p in mission.pages
+                            if p.outcome == PageOutcome.SKIPPED and p.id not in useful_page_ids)
+        row["sourcesUseful"] = len(useful_page_ids)
+        row["sourcesSkipped"] = skipped_count
         row["pageList"] = [
-            {"id": p.id, "title": p.display_title, "domain": p.domain, "url": p.url}
+            {"id": p.id, "title": p.display_title, "domain": p.domain, "url": p.url,
+             "useful": p.id in useful_page_ids,
+             "skipped": p.outcome == PageOutcome.SKIPPED and p.id not in useful_page_ids}
             for p in mission.pages
         ]
         row["routineList"] = [
@@ -331,21 +342,21 @@ _TEMPLATE = """<!doctype html>
   :root {
     --bg: #f4f4f7; --surface: #ffffff; --surface-alt: #eaeaf0; --line: #e0e0e8;
     --text: #17171d; --muted: #65656f; --disabled: #a8a8b4;
-    --accent: #3d5afe; --accent-soft: #eeedfc; --danger: #b3261e;
+    --accent: #3d5afe; --accent-soft: #eeedfc; --danger: #b3261e; --good: #2e7d32;
     --shadow: 0 1px 2px rgba(20,20,40,.04), 0 10px 30px rgba(20,20,40,.06);
   }
   @media (prefers-color-scheme: dark) {
     :root:not([data-theme="light"]) {
       --bg: #141419; --surface: #1e1e25; --surface-alt: #262630; --line: #30303b;
       --text: #eeeef3; --muted: #9797a6; --disabled: #61616e;
-      --accent: #8c9cff; --accent-soft: #282740; --danger: #f2b8b5;
+      --accent: #8c9cff; --accent-soft: #282740; --danger: #f2b8b5; --good: #7bc47f;
       --shadow: 0 1px 2px rgba(0,0,0,.35), 0 10px 30px rgba(0,0,0,.35);
     }
   }
   :root[data-theme="dark"] {
     --bg: #141419; --surface: #1e1e25; --surface-alt: #262630; --line: #30303b;
     --text: #eeeef3; --muted: #9797a6; --disabled: #61616e;
-    --accent: #8c9cff; --accent-soft: #282740; --danger: #f2b8b5;
+    --accent: #8c9cff; --accent-soft: #282740; --danger: #f2b8b5; --good: #7bc47f;
     --shadow: 0 1px 2px rgba(0,0,0,.35), 0 10px 30px rgba(0,0,0,.35);
   }
   * { box-sizing: border-box; }
@@ -558,6 +569,9 @@ _TEMPLATE = """<!doctype html>
   .root-row .d { margin-left: auto; color: var(--muted); font-size: 12px; }
   li.page a:hover .t { color: var(--accent); }
   li.page .d { margin-left: auto; color: var(--muted); font-size: 12px; }
+  .outcome { font-size: 12px; flex: none; }
+  .outcome-useful { color: var(--good); }
+  .outcome-skipped { color: var(--muted); }
   .tag { font-size: 10px; font-weight: 700; letter-spacing: .08em;
          color: var(--accent); }
   ul.ghost-effects { padding-left: 12px; margin-bottom: 4px; }
@@ -975,12 +989,28 @@ _TEMPLATE = """<!doctype html>
       side.appendChild(activity);
     }
 
-    side.appendChild(el("h2", null, "PAGES \u00b7 " + mission.pageList.length));
+    var reviewed = (mission.sourcesUseful || 0) + (mission.sourcesSkipped || 0);
+    var sourcesLabel = "SOURCES \u00b7 " + mission.pageList.length;
+    if (reviewed && reviewed !== mission.pageList.length) {
+      sourcesLabel += " found \u00b7 " + reviewed + " reviewed \u00b7 "
+        + mission.sourcesUseful + " useful";
+    } else if (reviewed) {
+      sourcesLabel += " \u00b7 " + mission.sourcesUseful + " useful";
+    }
+    if (mission.sourcesSkipped) { sourcesLabel += " \u00b7 " + mission.sourcesSkipped + " skipped"; }
+    side.appendChild(el("h2", null, sourcesLabel));
     var pages = el("ul");
     mission.pageList.forEach(function (page) {
       var li = el("li", "page");
       var link = el("a");
       link.href = "pybrowser://missions/action/page?url=" + encodeURIComponent(page.url);
+      // A real signal, not decoration - see PageOutcome. Neither class is
+      // added for a page never judged useful or skipped.
+      if (page.useful) {
+        link.appendChild(el("span", "outcome outcome-useful", "\u2713"));
+      } else if (page.skipped) {
+        link.appendChild(el("span", "outcome outcome-skipped", "\u2013"));
+      }
       link.appendChild(el("span", "t", page.title));
       link.appendChild(el("span", "d", page.domain));
       link.title = page.url;

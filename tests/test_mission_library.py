@@ -329,6 +329,7 @@ class MigrationTests(unittest.TestCase):
         conn.execute("ALTER TABLE missions DROP COLUMN progress")
         conn.execute("ALTER TABLE missions DROP COLUMN result")
         conn.execute("ALTER TABLE missions DROP COLUMN follow_ups")
+        conn.execute("ALTER TABLE mission_pages DROP COLUMN outcome")
         conn.execute("DROP TABLE IF EXISTS mission_actions")
         conn.execute("PRAGMA user_version=3")
         conn.commit()
@@ -638,6 +639,25 @@ class WorkspaceLayoutTests(unittest.TestCase):
             tab, "!!document.querySelector(\".side a[href*='tennis-warehouse']\")"))
         self.assertFalse(self.harness.js(
             tab, "!!document.querySelector(\".main-col a[href*='tennis-warehouse']\")"))
+
+    def test_a_useful_source_shows_the_useful_marker(self) -> None:
+        tab = self._open_detail(self.shoes.id)
+        self.assertTrue(self.harness.js(
+            tab, "!!document.querySelector('.side a .outcome-useful')"))
+
+    def test_a_skipped_source_shows_the_skipped_marker_and_the_count(self) -> None:
+        from app.missions.model import PageOutcome
+
+        self.harness.service.store.add_page(
+            self.shoes.id, "https://www.zappos.com/tennis", "Zappos - not the right fit",
+            outcome=PageOutcome.SKIPPED)
+        tab = self._open_detail(self.shoes.id)
+        self.assertTrue(self.harness.js(
+            tab, "!!document.querySelector('.side a .outcome-skipped')"))
+        heading = self.harness.js(
+            tab, "(document.querySelector('.side h2') || {}).textContent || ''")
+        self.assertIn("SOURCES", heading)
+        self.assertIn("1 skipped", heading)
 
     def test_an_activity_row_with_a_page_is_clickable(self) -> None:
         page = self.harness.service.store.add_page(

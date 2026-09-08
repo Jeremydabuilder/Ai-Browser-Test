@@ -301,6 +301,7 @@ class PersistenceTests(unittest.TestCase):
         conn.execute("ALTER TABLE missions DROP COLUMN progress")
         conn.execute("ALTER TABLE missions DROP COLUMN result")
         conn.execute("ALTER TABLE missions DROP COLUMN follow_ups")
+        conn.execute("ALTER TABLE mission_pages DROP COLUMN outcome")
         conn.execute("DROP TABLE IF EXISTS mission_actions")
         conn.execute("PRAGMA user_version=5")
         conn.commit()
@@ -500,7 +501,8 @@ class ToolTests(unittest.TestCase):
         self.assertEqual(added, {"mission_save_finding", "mission_save_decision",
                                  "mission_save_challenge", "mission_save_ghost_run",
                                  "mission_set_progress", "mission_save_result",
-                                 "mission_save_question", "mission_resolve_question"})
+                                 "mission_save_question", "mission_resolve_question",
+                                 "mission_note_source"})
 
 
 class PermissionTests(unittest.TestCase):

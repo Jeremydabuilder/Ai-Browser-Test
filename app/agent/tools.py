@@ -238,6 +238,22 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                                      "open is an error, never a fallback."}},
           ["text"]),
 
+    _tool("mission_note_source",
+          "Record that you reviewed a source while researching, whether or not it "
+          "was useful. Call this for a page you read and decided did not help, so "
+          "the user can see it was actually checked rather than just skipped over. "
+          "A page a finding was already saved from does not need this - it is "
+          "already counted as reviewed and useful.",
+          {"useful": {"type": "boolean",
+                     "description": "False for a page that did not help - wrong "
+                                    "topic, no real information, already covered "
+                                    "by a better source."},
+           "tab_id": {"type": "integer",
+                      "description": "The tab this source is in. Omit to use the "
+                                     "tab in front. An id that is not open is an "
+                                     "error, never a fallback."}},
+          ["useful"]),
+
     _tool("mission_save_question",
           "Raise an open question against the mission - something research has "
           "surfaced that is not yet settled: sources disagree, a fact could not be "
@@ -476,7 +492,8 @@ _UNCLASSIFIED_SAFE = {"browser_select_tab", "browser_close_tab",
 LOCAL_WRITE_TOOLS = {"mission_save_finding", "mission_save_decision",
                      "mission_save_challenge", "mission_save_ghost_run",
                      "mission_set_progress", "mission_save_result",
-                     "mission_save_question", "mission_resolve_question"}
+                     "mission_save_question", "mission_resolve_question",
+                     "mission_note_source"}
 
 #: Tools that only read. Used to skip confirmation checks entirely.
 READ_ONLY_TOOLS = {
@@ -965,6 +982,9 @@ class ToolRegistry:
                 return self._string(args, "label") or "Updating progress"
             if name == "mission_save_result":
                 return "Recording the result"
+            if name == "mission_note_source":
+                return ("Noting a useful source" if args.get("useful")
+                       else "Ruling out a source")
             if name == "mission_save_question":
                 return _question_activity(self._string(args, "text"))
             if name == "mission_resolve_question":
@@ -1057,6 +1077,44 @@ class ToolRegistry:
                            **({"source": source} if source else {})},
                 activity=_finding_activity(text))
         return ToolOutcome(immediate=_finding_error(result), activity="Saving a finding")
+
+    def _run_note_source(self, args: dict) -> ToolOutcome:
+        """Record that a page was reviewed, whether or not it was useful -
+        the counterpart to _run_save_finding for a source that did not pan
+        out, so reviewed/useful/skipped counts reflect real work done."""
+        useful = self._bool(args, "useful")
+        tab_id = self._int(args, "tab_id", None)
+        if self._missions is None:
+            return ToolOutcome(immediate=_error(
+                "NO_MISSION", "Missions are not available in this window.",
+                hint="Carry on with the task; nothing needs recording."),
+                activity="Noting a source")
+
+        result = self._missions.note_source(useful, tab_id)
+        status = result.get("status")
+        activity = "Noting a useful source" if useful else "Ruling out a source"
+        if status == "ok":
+            return ToolOutcome(immediate={"ok": True, "outcome": result.get("outcome")},
+                              activity=activity)
+        if status == "unknown_tab":
+            return ToolOutcome(immediate=_error(
+                "UNKNOWN_TAB", f"Tab {tab_id} is not open.",
+                hint="Use browser_list_tabs to see what is actually open."),
+                activity=activity)
+        if status == "no_active_tab":
+            return ToolOutcome(immediate=_error(
+                "NO_ACTIVE_TAB", "There is no active tab to attribute this to.",
+                hint="Pass a tab_id, or open a page first."), activity=activity)
+        if status == "not_associable":
+            return ToolOutcome(immediate=_error(
+                "NOT_ASSOCIABLE", "This page cannot be recorded as a source.",
+                hint="Internal pages and blank tabs are not sources."), activity=activity)
+        if status == "no_mission":
+            return ToolOutcome(immediate=_error(
+                "NO_MISSION", "There is no active mission to record this against.",
+                hint="Carry on with the task; nothing needs recording."), activity=activity)
+        return ToolOutcome(immediate=_error(
+            "FAILED", "Could not record this source."), activity=activity)
 
     def _run_save_question(self, args: dict) -> ToolOutcome:
         """Raise an open question against the active Mission."""

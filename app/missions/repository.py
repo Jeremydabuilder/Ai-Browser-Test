@@ -53,6 +53,7 @@ from app.missions.model import (
     MissionPage,
     MissionQuestion,
     MissionStatus,
+    PageOutcome,
     PageSource,
     QuestionStatus,
     clean_goal,
@@ -376,30 +377,45 @@ class MissionStore:
 
     # -- pages -----------------------------------------------------------
     def add_page(self, mission_id: int, url: str, title: str = "",
-                 source: str = PageSource.AGENT) -> MissionPage | None:
+                 source: str = PageSource.AGENT,
+                 outcome: str | None = None) -> MissionPage | None:
         """Record a page against a Mission, or refresh the one already there.
 
         Identity is ``page_key(url)``, not the raw string - see model.py. The
         UNIQUE constraint is the real guard; the lookup below is what lets a
         revisit update the title instead of failing.
+
+        ``outcome`` is optional and, when given, only ever moves a page
+        towards USEFUL, never away from it: a source that a finding already
+        cited stays credited even if it is later passed to this method with
+        SKIPPED (see PageOutcome's own docstring). Omitted entirely, the
+        existing outcome (including UNSET, for a page just opened and not
+        yet judged) is left untouched.
         """
         key = page_key(url)
         if not is_associable(key):
             return None
         if source not in PageSource.ALL:
             source = PageSource.AGENT
+        if outcome is not None and outcome not in PageOutcome.ALL:
+            outcome = None
         title = clean_title(title)[:MAX_TITLE]
         stamp = now()
 
         existing = self.find_page(mission_id, key)
         if existing is not None:
+            new_outcome = existing.outcome
+            if outcome == PageOutcome.USEFUL:
+                new_outcome = PageOutcome.USEFUL
+            elif outcome == PageOutcome.SKIPPED and existing.outcome == PageOutcome.UNSET:
+                new_outcome = PageOutcome.SKIPPED
             # A page seen again is the same page. Keep first_seen, and keep the
             # earlier source: a page Py opened does not become a page Py merely
             # read because it was read afterwards.
             self._db.execute(
                 "UPDATE mission_pages SET title = CASE WHEN ? <> '' THEN ? ELSE title END, "
-                "last_seen = ? WHERE id = ?",
-                (title, title, stamp, existing.id))
+                "last_seen = ?, outcome = ? WHERE id = ?",
+                (title, title, stamp, new_outcome, existing.id))
             self._touch_mission(mission_id)
             return self.find_page(mission_id, key)
 
@@ -407,9 +423,9 @@ class MissionStore:
             return None
         cursor = self._db.execute(
             "INSERT OR IGNORE INTO mission_pages "
-            "(mission_id, url, title, source, note, first_seen, last_seen) "
-            "VALUES (?, ?, ?, ?, '', ?, ?)",
-            (mission_id, key, title, source, stamp, stamp))
+            "(mission_id, url, title, source, note, outcome, first_seen, last_seen) "
+            "VALUES (?, ?, ?, ?, '', ?, ?, ?)",
+            (mission_id, key, title, source, outcome or PageOutcome.UNSET, stamp, stamp))
         if cursor is None:
             return None
         self._touch_mission(mission_id)
@@ -443,14 +459,14 @@ class MissionStore:
 
     def pages(self, mission_id: int) -> list[MissionPage]:
         rows = self._db.query(
-            "SELECT id, mission_id, url, title, source, note, first_seen, last_seen "
+            "SELECT id, mission_id, url, title, source, note, outcome, first_seen, last_seen "
             "FROM mission_pages WHERE mission_id = ? ORDER BY first_seen, id",
             (mission_id,))
         return [MissionPage(**dict(row)) for row in rows]
 
     def find_page(self, mission_id: int, url: str) -> MissionPage | None:
         row = self._db.query_one(
-            "SELECT id, mission_id, url, title, source, note, first_seen, last_seen "
+            "SELECT id, mission_id, url, title, source, note, outcome, first_seen, last_seen "
             "FROM mission_pages WHERE mission_id = ? AND url = ?",
             (mission_id, page_key(url)))
         return MissionPage(**dict(row)) if row else None

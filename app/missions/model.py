@@ -49,6 +49,25 @@ class PageSource:
     ALL = (AGENT, READ, USER)
 
 
+class PageOutcome:
+    """Whether a reviewed source turned out to be useful.
+
+    A page can be part of a Mission's page list before either is known - the
+    moment it is opened, before it has been read at all - which is what
+    UNSET is for. It becomes USEFUL the moment a finding cites it
+    (``MissionStore.add_page`` is called from ``save_finding``), and SKIPPED
+    when the agent explicitly says a page it reviewed did not pan out
+    (``mission_note_source``). USEFUL never regresses back to SKIPPED: a
+    source that produced even one finding stays credited for it.
+    """
+
+    UNSET = ""
+    USEFUL = "useful"
+    SKIPPED = "skipped"
+
+    ALL = (UNSET, USEFUL, SKIPPED)
+
+
 #: Longest title we will store or show. Titles come from web pages, which are
 #: written by strangers; a 40kB <title> is not a display problem to solve later.
 MAX_TITLE = 200
@@ -100,8 +119,21 @@ class MissionPage:
     #: Why this page is here. Empty in V1 - the column exists so that writing
     #: "why did we open this" later is not a migration.
     note: str = ""
+    #: One of PageOutcome - whether this reviewed source turned out useful.
+    #: Unset until a finding cites it or the agent explicitly skips it, so a
+    #: research view can show real reviewed/useful/skipped counts instead of
+    #: treating every listed page as equally useful.
+    outcome: str = PageOutcome.UNSET
     first_seen: str = ""
     last_seen: str = ""
+
+    @property
+    def reviewed(self) -> bool:
+        return self.outcome != PageOutcome.UNSET
+
+    @property
+    def useful(self) -> bool:
+        return self.outcome == PageOutcome.USEFUL
 
     @property
     def key(self) -> str:

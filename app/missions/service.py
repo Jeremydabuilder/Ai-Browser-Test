@@ -52,6 +52,7 @@ from app.missions.model import (
     MissionFinding,
     MissionPage,
     MissionStatus,
+    PageOutcome,
     PageSource,
     is_associable,
     page_key,
@@ -659,7 +660,8 @@ class MissionService(QObject):
         if url and is_associable(url):
             # Finding something on a page makes it a source. Recording it here
             # keeps sources and Mission pages one concept rather than two.
-            page = self._store.add_page(mission.id, url, title, PageSource.READ)
+            page = self._store.add_page(mission.id, url, title, PageSource.READ,
+                                        outcome=PageOutcome.USEFUL)
             page_id = page.id if page is not None else None
 
         outcome, finding = self._store.add_finding(mission.id, text, page_id)
@@ -676,6 +678,43 @@ class MissionService(QObject):
         if outcome == self._store.FULL:
             result["limit"] = MAX_FINDINGS_PER_MISSION
         return result
+
+    def note_source(self, useful: bool, tab_id: int | None = None) -> dict:
+        """Record that a page was reviewed - the "skipped" half of source
+        review that `save_finding` never produces on its own.
+
+        Without this, "sources reviewed" could only ever be inferred from
+        pages that produced a finding, which quietly overstates how useful
+        browsing was: a page Py opened, read, and ruled out is real research
+        work, not an absence of it. Calling this with ``useful=True`` for a
+        page that already has a finding is a harmless no-op - it was already
+        USEFUL and stays that way (see PageOutcome).
+        """
+        mission = self._active
+        if mission is None:
+            return {"status": "no_mission"}
+
+        if tab_id is not None:
+            resolved = self._tab_entry(tab_id)
+            if resolved is None:
+                return {"status": "unknown_tab", "tab_id": tab_id}
+            url, title = resolved.get("url", ""), resolved.get("title", "")
+        else:
+            active = self._active_tab_entry()
+            if active is None:
+                return {"status": "no_active_tab"}
+            url, title = active.get("url", ""), active.get("title", "")
+
+        if not url or not is_associable(url):
+            return {"status": "not_associable"}
+
+        outcome = PageOutcome.USEFUL if useful else PageOutcome.SKIPPED
+        page = self._store.add_page(mission.id, url, title, PageSource.READ, outcome=outcome)
+        if page is None:
+            return {"status": "failed"}
+        self._refresh()
+        self._announce(mission.id)
+        return {"status": "ok", "outcome": page.outcome}
 
     def save_question(self, text: str) -> dict:
         """Raise an open question against the active Mission.

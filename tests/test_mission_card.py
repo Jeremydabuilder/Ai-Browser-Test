@@ -22,6 +22,7 @@ from app.missions.model import (  # noqa: E402
     MissionPage,
     MissionQuestion,
     MissionStatus,
+    PageOutcome,
     QuestionStatus,
 )
 from app.ui.missions.mission_card import MissionCard, VISIBLE_QUESTIONS  # noqa: E402
@@ -216,24 +217,52 @@ class PagesUsefulCountTests(unittest.TestCase):
 
     def test_no_useful_pages_shows_a_plain_count(self) -> None:
         self.card.show_mission(self._mission(pages=(self._page(1), self._page(2))))
-        self.assertEqual(self.card.pages_label.text(), "PAGES · 2")
+        self.assertEqual(self.card.pages_label.text(), "SOURCES · 2")
 
     def test_pages_with_findings_are_counted_as_useful(self) -> None:
         self.card.show_mission(self._mission(
             pages=(self._page(1), self._page(2), self._page(3)),
             findings=(self._finding(1, page_id=1),)))
-        self.assertEqual(self.card.pages_label.text(), "PAGES · 3 · 1 useful")
+        self.assertEqual(self.card.pages_label.text(),
+                         "SOURCES · 3 found · 1 reviewed · 1 useful")
 
     def test_two_findings_on_the_same_page_count_that_page_once(self) -> None:
         self.card.show_mission(self._mission(
             pages=(self._page(1),),
             findings=(self._finding(1, page_id=1), self._finding(2, page_id=1))))
-        self.assertEqual(self.card.pages_label.text(), "PAGES · 1 · 1 useful")
+        self.assertEqual(self.card.pages_label.text(), "SOURCES · 1 · 1 useful")
 
     def test_a_finding_with_no_page_does_not_count_as_a_useful_page(self) -> None:
         self.card.show_mission(self._mission(
             pages=(self._page(1),), findings=(self._finding(1, page_id=None),)))
-        self.assertEqual(self.card.pages_label.text(), "PAGES · 1")
+        self.assertEqual(self.card.pages_label.text(), "SOURCES · 1")
+
+    def test_a_page_marked_useful_via_outcome_counts_even_with_no_finding(self) -> None:
+        """The real signal going forward - mission_note_source(useful=True) -
+        rather than only ever inferring usefulness from a finding's page_id."""
+        page = MissionPage(id=1, mission_id=1, url="https://example.com/x",
+                           title="A page", outcome=PageOutcome.USEFUL)
+        self.card.show_mission(self._mission(pages=(page,)))
+        self.assertEqual(self.card.pages_label.text(), "SOURCES · 1 · 1 useful")
+
+    def test_a_skipped_page_is_counted_as_reviewed_but_not_useful(self) -> None:
+        pages = (self._page(1),
+                 MissionPage(id=2, mission_id=1, url="https://example.com/y",
+                            title="Ruled out", outcome=PageOutcome.SKIPPED))
+        self.card.show_mission(self._mission(
+            pages=pages, findings=(self._finding(1, page_id=1),)))
+        self.assertEqual(self.card.pages_label.text(),
+                         "SOURCES · 2 · 1 useful · 1 skipped")
+
+    def test_a_page_reviewed_and_skipped_never_double_counts_against_useful(self) -> None:
+        """A page that later produces a finding is useful, full stop - even
+        if it was skipped before that happened (add_page never regresses a
+        page back to SKIPPED once it is USEFUL - see PageOutcome)."""
+        page = MissionPage(id=1, mission_id=1, url="https://example.com/x",
+                           title="A page", outcome=PageOutcome.USEFUL)
+        self.card.show_mission(self._mission(
+            pages=(page,), findings=(self._finding(1, page_id=1),)))
+        self.assertEqual(self.card.pages_label.text(), "SOURCES · 1 · 1 useful")
 
 
 if __name__ == "__main__":

@@ -134,6 +134,13 @@ of commentary, and the mission has a limit.
 Recording a finding is not a substitute for answering the question you were \
 asked.
 
+When you read a page while researching and it does not produce a finding - \
+wrong topic, no real information, already covered by a better source - call \
+mission_note_source with useful=false. This is what lets the user see that a \
+source was actually checked and ruled out, rather than never having been \
+looked at. You do not need to call it for a page that did produce a finding; \
+that already counts it as reviewed and useful.
+
 Each note has a short reference of its own - F1, F2, F3 - shown beside it. \
 Cite those when you record a decision, so the user can see what it rests on. \
 A reference is only meaningful inside the mission it belongs to, and one that \

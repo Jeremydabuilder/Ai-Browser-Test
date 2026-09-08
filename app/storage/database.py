@@ -25,7 +25,7 @@ import threading
 from pathlib import Path
 from typing import Any, Iterable, Sequence
 
-SCHEMA_VERSION = 12
+SCHEMA_VERSION = 13
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS history (
@@ -97,6 +97,7 @@ CREATE TABLE IF NOT EXISTS mission_pages (
     title      TEXT NOT NULL DEFAULT '',
     source     TEXT NOT NULL DEFAULT 'agent',
     note       TEXT NOT NULL DEFAULT '',
+    outcome    TEXT NOT NULL DEFAULT '',
     first_seen TEXT NOT NULL,
     last_seen  TEXT NOT NULL,
     UNIQUE(mission_id, url)
@@ -598,6 +599,9 @@ CREATE TABLE IF NOT EXISTS decision_alternatives (
     );
     CREATE INDEX IF NOT EXISTS idx_mission_questions_mission
         ON mission_questions(mission_id, created_at);
+    """,
+    12: """
+    ALTER TABLE mission_pages ADD COLUMN outcome TEXT NOT NULL DEFAULT '';
     """,
 }
 
