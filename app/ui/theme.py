@@ -84,8 +84,8 @@ class Metrics:
     # Py. This is the browser's identity, not an icon - big enough to read
     # an expression at a glance, sized like the character it is rather than
     # like a favicon.
-    mascot_panel: int = 76
-    mascot_panel_small: int = 56   # when the panel is narrow
+    mascot_panel: int = 84
+    mascot_panel_small: int = 62   # when the panel is narrow
     mascot_newtab: int = 56
 
 
