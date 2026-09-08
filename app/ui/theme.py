@@ -280,6 +280,11 @@ def stylesheet(palette: Palette, m: Metrics = METRICS) -> str:
         color: {p.text};
         border-color: {p.line};
         border-top: 2px solid {p.accent};
+        /* No seam where the tab meets the page: the content pane below is
+           this same surface colour, so the active tab should read as
+           rising directly out of it, not sitting on top of a dividing
+           line. */
+        border-bottom-color: transparent;
         padding-top: 0;
         font-weight: 600;
     }}
@@ -373,10 +378,11 @@ def stylesheet(palette: Palette, m: Metrics = METRICS) -> str:
     QStatusBar::item {{ border: none; }}
     QMenuBar {{ background: {p.bg}; padding: 2px {m.space_2}px; }}
     QMenuBar::item {{
-        padding: {m.space_1}px {m.space_2}px; border-radius: {m.radius_sm}px;
+        padding: {m.space_2}px {m.space_3}px; border-radius: {m.radius_sm}px;
         background: transparent;
     }}
-    QMenuBar::item:selected {{ background: {p.surface_alt}; }}
+    QMenuBar::item:selected {{ background: {p.surface_alt}; color: {p.text}; }}
+    QMenuBar::item:disabled {{ color: {p.disabled}; }}
     QMenu {{
         background: {p.surface};
         border: 1px solid {p.line};
@@ -386,8 +392,10 @@ def stylesheet(palette: Palette, m: Metrics = METRICS) -> str:
     QMenu::item {{
         padding: {m.space_2}px {m.space_5}px {m.space_2}px {m.space_3}px;
         border-radius: {m.radius_sm}px;
+        min-height: {m.space_4}px;
     }}
     QMenu::item:selected {{ background: {p.accent_soft}; color: {p.text}; }}
+    QMenu::item:disabled {{ color: {p.disabled}; }}
     QMenu::separator {{ height: 1px; background: {p.line}; margin: {m.space_1}px {m.space_2}px; }}
 
     QProgressBar {{
