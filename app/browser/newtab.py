@@ -276,6 +276,11 @@ _TEMPLATE = """<!doctype html>
     --accent-soft: #eeedfc;
     --gradient: linear-gradient(135deg, var(--accent), var(--accent2));
     --glow: rgba(75, 70, 212, .07);
+    /* A second, more saturated wash for the page background and the stage
+       behind Py - `--glow` stays as it was for the small, close-up uses
+       (button hover, focus rings) that were tuned for that intensity. */
+    --glow-strong: rgba(75, 70, 212, .16);
+    --glow2-strong: rgba(123, 63, 242, .12);
     --shadow: 0 1px 2px rgba(20, 20, 40, .04), 0 10px 30px rgba(20, 20, 40, .06);
     --shadow-lift: 0 2px 6px rgba(20, 20, 40, .07), 0 16px 40px rgba(20, 20, 40, .10);
     --radius-sm: 6px;
@@ -300,6 +305,8 @@ _TEMPLATE = """<!doctype html>
       --accent2: #b98cff;
       --accent-soft: #282740;
       --glow: rgba(139, 134, 255, .10);
+      --glow-strong: rgba(140, 156, 255, .20);
+      --glow2-strong: rgba(185, 140, 255, .16);
       --shadow: 0 1px 2px rgba(0, 0, 0, .35), 0 10px 30px rgba(0, 0, 0, .35);
       --shadow-lift: 0 2px 6px rgba(0, 0, 0, .4), 0 16px 40px rgba(0, 0, 0, .45);
     }
@@ -316,6 +323,8 @@ _TEMPLATE = """<!doctype html>
     --accent2: #b98cff;
     --accent-soft: #282740;
     --glow: rgba(139, 134, 255, .10);
+    --glow-strong: rgba(140, 156, 255, .20);
+    --glow2-strong: rgba(185, 140, 255, .16);
     --shadow: 0 1px 2px rgba(0, 0, 0, .35), 0 10px 30px rgba(0, 0, 0, .35);
     --shadow-lift: 0 2px 6px rgba(0, 0, 0, .4), 0 16px 40px rgba(0, 0, 0, .45);
   }
@@ -323,12 +332,16 @@ _TEMPLATE = """<!doctype html>
   html, body { height: 100%; }
   body {
     margin: 0;
-    /* A single very soft wash behind the search box, so the middle of the page
-       has a centre of gravity. Two stops, no animation, no second layer: the
-       point is that the page feels considered, not that it has a gradient. */
+    /* Two soft washes, blue and violet - the same pair the wordmark and every
+       primary button already use - so the page reads as a considered brand
+       moment rather than a grey settings screen with a search box on it.
+       Both are large, both are diffuse, and neither ever sits under text: the
+       point is atmosphere, not a poster behind the content. */
     background:
-      radial-gradient(ellipse 720px 420px at 50% 22%,
-                      var(--glow) 0%, transparent 70%),
+      radial-gradient(ellipse 900px 560px at 28% 8%,
+                      var(--glow-strong) 0%, transparent 62%),
+      radial-gradient(ellipse 820px 620px at 78% 30%,
+                      var(--glow2-strong) 0%, transparent 60%),
       var(--bg);
     color: var(--text);
     font: 14px/1.55 system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
@@ -479,11 +492,16 @@ _TEMPLATE = """<!doctype html>
     border: 1px solid var(--line);
     border-radius: var(--radius-lg);
     cursor: pointer;
+    /* A resting glow, not just a hover one: this is the "ask me anything"
+       entry point and the strongest single call to action on the page after
+       the search box itself - it should look inviting at rest, not only once
+       the cursor happens to find it. */
+    box-shadow: var(--shadow), 0 0 24px -10px var(--accent2);
     transition: border-color .16s ease, box-shadow .16s ease, transform .08s ease;
   }
   .ai:hover {
     border-color: var(--accent);
-    box-shadow: var(--shadow), 0 0 20px -6px var(--accent2);
+    box-shadow: var(--shadow-lift), 0 0 26px -6px var(--accent2);
   }
   .ai:active { transform: translateY(1px); }
   .ai:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
@@ -569,7 +587,7 @@ _TEMPLATE = """<!doctype html>
     background: var(--surface);
     border: 1px solid var(--line);
     border-radius: var(--radius-lg);
-    box-shadow: var(--shadow);
+    box-shadow: var(--shadow-lift);
     padding: 20px 22px;
     margin-bottom: 28px;
   }
@@ -587,9 +605,11 @@ _TEMPLATE = """<!doctype html>
   .onboarding .try {
     height: 34px; padding: 0 16px; border-radius: 8px; cursor: pointer;
     font: inherit; font-size: 13px; font-weight: 600;
-    background: var(--accent); color: #fff; border: 1px solid var(--accent);
+    background: var(--gradient); color: #fff; border: 1px solid transparent;
+    box-shadow: 0 0 18px -8px var(--accent2);
+    transition: filter .14s ease, box-shadow .14s ease;
   }
-  .onboarding .try:hover { opacity: .92; }
+  .onboarding .try:hover { filter: brightness(1.07); box-shadow: 0 0 22px -6px var(--accent2); }
   .onboarding .later {
     background: none; border: none; cursor: pointer; font: inherit;
     font-size: 13px; color: var(--muted); text-decoration: underline;

@@ -24,6 +24,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.ui import icons, theme
+from app.ui.flow_layout import FlowLayout
 from app.ui.mascot import Mascot, MascotState, state_for_agent
 from app.ui.missions import MissionCard, MissionPicker
 
@@ -275,28 +276,56 @@ class AgentPanel(QWidget):
         name_block = QVBoxLayout()
         name_block.setSpacing(0)
         header = QLabel("Py", self)
-        header.setStyleSheet(f"font-size:{m.text_lg}px; font-weight:600;")
+        header.setStyleSheet(
+            f"color:{c.text}; font-size:{m.text_lg}px; font-weight:700;")
         name_block.addWidget(header)
         self.companion = QLabel(self.mascot.companion_text(), self)
         self.companion.setStyleSheet(f"color:{c.muted}; font-size:{m.text_xs}px;")
+        # Word-wrap, not a fixed one-liner: this is a status sentence that
+        # changes with the task ("I need your okay for this.", "Py hit a
+        # temporary rate limit...") and a QLabel with no wrap simply clips
+        # whichever one is too long for a docked panel rather than shrinking -
+        # the model badge and the Clear button used to get pushed half off
+        # the panel because this label refused to give up any width for them.
+        self.companion.setWordWrap(True)
         name_block.addWidget(self.companion)
-        top.addLayout(name_block)
+        top.addLayout(name_block, 1)
         if model:
-            badge = QLabel(model.replace(" (default)", ""), self)
+            model_text = model.replace(" (default)", "")
+            badge = QLabel(self)
             badge.setToolTip(f"Answers come from {model}. Change it in "
                              "Tools \u2192 Configure AI Agent.")
             badge.setStyleSheet(
-                f"color:{c.muted}; font-size:{m.text_xs}px;"
-                f" background:{c.surface_alt}; border-radius:{m.radius_sm}px;"
-                f" padding:2px {m.space_2}px;")
+                f"color:{c.accent}; font-size:{m.text_xs}px; font-weight:600;"
+                f" background:{c.accent_soft}; border-radius:{m.radius_sm}px;"
+                f" padding:3px {m.space_2}px;")
+            # Elided rather than left to clip: a custom or long model id must
+            # never be able to push the Clear button off the edge of a
+            # docked panel the way an unbounded label used to.
+            badge.setMaximumWidth(132)
+            metrics = badge.fontMetrics()
+            badge.setText(metrics.elidedText(model_text, Qt.TextElideMode.ElideRight, 108))
             top.addWidget(badge)
-        top.addStretch(1)
         self.clear_button = QPushButton("Clear", self)
         self.clear_button.setProperty("kind", "quiet")
         self.clear_button.setToolTip("Forget this conversation and start again")
         self.clear_button.clicked.connect(self._clear)
         top.addWidget(self.clear_button)
-        layout.addLayout(top)
+        # A soft card behind the header, not a bare row on the panel's own
+        # background - a gradient fading from Py's own colour into the
+        # surface, as if the glow were coming from him, rather than a flat
+        # strip of grey the character happens to sit on top of.
+        header_card = QWidget(self)
+        # Plain QWidgets do not paint a stylesheet background unless told to -
+        # without this the gradient above is computed and simply never drawn.
+        header_card.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        header_card.setStyleSheet(
+            "QWidget { background: qlineargradient(x1:0, y1:0, x2:1, y2:0.4,"
+            f" stop:0 {c.accent_soft}, stop:1 {c.surface});"
+            f" border-radius:{m.radius_lg}px; }}")
+        header_card.setLayout(top)
+        top.setContentsMargins(m.space_2, m.space_2, m.space_2, m.space_2)
+        layout.addWidget(header_card)
 
         # -- Missions ------------------------------------------------------
         # Two states of one slot: the invitation when nothing is active, the
@@ -320,15 +349,18 @@ class AgentPanel(QWidget):
         # Quick actions. These are not a separate system: each one sends an
         # ordinary message through the same session, so whatever the agent can
         # do by being asked, it does here too.
-        self.quick = QHBoxLayout()
-        self.quick.setSpacing(m.space_1)
+        # A FlowLayout, not a QHBoxLayout: "Compare my tabs" is long enough
+        # that four chips in a row do not fit a docked side panel - they used
+        # to just clip at the panel edge. Wrapping onto a second row costs
+        # nothing and the row still collapses to one line whenever there is
+        # room for it.
+        self.quick = FlowLayout(spacing=m.space_1)
         for label, prompt in QUICK_ACTIONS:
             button = QPushButton(label, self)
             button.setProperty("kind", "chip")
             button.setToolTip(prompt)
             button.clicked.connect(lambda _checked=False, text=prompt: self._ask(text))
             self.quick.addWidget(button)
-        self.quick.addStretch(1)
         layout.addLayout(self.quick)
 
         self.transcript = QTextBrowser(self)

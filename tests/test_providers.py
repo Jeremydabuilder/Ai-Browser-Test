@@ -1160,6 +1160,35 @@ class BackgroundCallTests(unittest.TestCase):
         # guarantees the OS thread itself has actually stopped by this point.
         pump(lambda: dialog._other_worker is None)
 
+    def test_tearing_down_with_deleteLater_mid_fetch_does_not_crash(self):
+        """Same guarantee as test_closing_the_dialog_mid_fetch_does_not_crash,
+        but through the path almost every test in this file (and the rest of
+        the suite) actually uses: plain deleteLater(), never close(). Qt only
+        calls closeEvent() for close() - deleteLater() alone used to skip the
+        wait-for-worker safety net entirely, which could destroy a still-
+        running QThread out from under itself.
+        """
+        import threading
+
+        release = threading.Event()
+
+        def slow_call(_key):
+            release.wait(timeout=5)
+            return []
+
+        dialog = self._dialog()
+        index = dialog.provider_box.findData("groq")
+        with mock.patch.object(GroqClient, "list_models", side_effect=slow_call):
+            with mock.patch.object(
+                    creds, "resolve_for",
+                    return_value=creds.Credential(
+                        creds.Mode.ENV_KEY, "Groq", secret="gsk_x", provider="groq")):
+                dialog.provider_box.setCurrentIndex(index)
+                self.assertIsNotNone(dialog._other_worker)
+                release.set()
+                dialog.deleteLater()          # not close() - the actual gap
+        pump(lambda: dialog._other_worker is None)
+
     def test_switching_away_before_a_slow_fetch_returns_does_not_apply_stale_models(self):
         """Switch to Groq (triggers a slow automatic fetch), switch away to
         OpenRouter (which has no key, so it starts no fetch of its own)

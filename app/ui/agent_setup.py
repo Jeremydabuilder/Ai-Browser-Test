@@ -10,7 +10,7 @@ control the user cannot find is not a cost control.
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, QThread, Signal
+from PySide6.QtCore import QEvent, Qt, QThread, Signal
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -363,23 +363,57 @@ class ApiKeyDialog(QDialog):
         layout.addWidget(self._other_result)
         return box
 
-    def closeEvent(self, event) -> None:
-        """Never destroy this dialog out from under a QThread it started.
+    def _wait_for_workers(self) -> None:
+        """Never let a QThread this dialog started outlive it.
 
         A running QThread whose Python/C++ wrapper is deleted while it is
         still executing crashes the process - the exact failure mode moving
-        list_models/test_connection off the GUI thread must not introduce.
-        The wait is bounded rather than open-ended: closing mid-fetch may
-        block briefly, which is a small and rare cost next to freezing the
-        whole app for up to 20 seconds on every such call, which is what this
-        dialog did before.
+        list_models/test_connection (and the Anthropic status lookup) off the
+        GUI thread must not introduce. The wait is bounded rather than
+        open-ended: tearing this dialog down mid-fetch may block briefly,
+        which is a small and rare cost next to freezing the whole app for up
+        to 20 seconds on every such call, which is what this dialog did
+        before.
         """
-        for worker in (self._other_worker, self._anthropic_worker):
-            if worker is not None and worker.isRunning():
+        # Bounded: a chained fetch (the credential lookup starting a model
+        # list fetch the moment it lands - see _refresh_other_section) could
+        # in principle keep this going, so this gives up after a handful of
+        # rounds rather than looping forever.
+        for _round in range(5):
+            workers = [w for w in (self._other_worker, self._anthropic_worker)
+                      if w is not None and w.isRunning()]
+            if not workers:
+                return
+            for worker in workers:
                 if not worker.wait(3000):
                     worker.terminate()
                     worker.wait()
+            # wait() only guarantees the OS thread has stopped - its queued
+            # `finished` signal may still be sitting undelivered, and
+            # delivering it can itself start the next chained call (the
+            # credential lookup starting a model-list fetch). Flushing it
+            # now, while this dialog is still fully alive, is what stops a
+            # later delivery landing after teardown and touching an
+            # already-deleted widget from inside a Qt signal handler.
+            QApplication.processEvents()
+
+    def closeEvent(self, event) -> None:
+        self._wait_for_workers()
         super().closeEvent(event)
+
+    def event(self, event) -> bool:
+        """Catch teardown via ``deleteLater()`` too, not only ``close()``.
+
+        A caller that never shows this dialog - every test that builds one
+        and tears it down with plain ``deleteLater()``, which is most of
+        them - never sends a close event at all. Qt turns ``deleteLater()``
+        into a queued ``DeferredDelete`` event delivered here, so this is the
+        one place guaranteed to run before the C++ object (and, with it, any
+        QThread still parented to this dialog) is actually destroyed.
+        """
+        if event.type() == QEvent.Type.DeferredDelete:
+            self._wait_for_workers()
+        return super().event(event)
 
     def _current_other_provider(self) -> str:
         return self.provider_box.currentData()

@@ -176,6 +176,41 @@ class PanelTests(unittest.TestCase):
         self.assertEqual(len(self.session.messages), 1)
 
 
+class HeaderLayoutTests(PanelTests):
+    """The header row used to clip: a long companion sentence ("I need your
+    okay for this.") or a long model name could push the model badge and
+    the Clear button half off a docked panel, because nothing in the row
+    was allowed to wrap or shrink. See app/ui/flow_layout.py for the quick
+    actions' half of this same fix."""
+
+    def test_the_companion_label_wraps_instead_of_clipping(self):
+        panel = self.start([says("done")])
+        self.assertTrue(panel.companion.wordWrap())
+
+    def test_the_clear_button_stays_reachable_in_a_narrow_panel(self):
+        panel = self.start([says("done")])
+        panel.setFixedWidth(220)
+        panel.show()
+        _app.processEvents()
+        # The whole point: Clear must still be laid out on-screen, not pushed
+        # past the panel's right edge by a companion label that refused to
+        # give up any width.
+        self.assertLessEqual(panel.clear_button.geometry().right(), panel.width())
+        self.assertTrue(panel.clear_button.isVisible())
+
+    def test_quick_actions_wrap_onto_more_than_one_row_when_narrow(self):
+        panel = self.start([says("done")])
+        panel.setFixedWidth(220)
+        panel.show()
+        _app.processEvents()
+        tops = set()
+        for index in range(panel.quick.count()):
+            widget = panel.quick.itemAt(index).widget()
+            if widget is not None:
+                tops.add(widget.geometry().y())
+        self.assertGreater(len(tops), 1)
+
+
 class ConfirmationBarTests(unittest.TestCase):
     """The approval card's handoff: an editable field for a request that has
     one, none for a request that does not - tested at the widget level since
