@@ -383,7 +383,11 @@ _TEMPLATE = """<!doctype html>
      own sizing. */
   .mark-wrap {
     display: flex; align-items: flex-end; justify-content: center;
-    padding: 20px 40px 4px;
+    /* Real room on every side, not just the top: the artwork is trimmed
+       tight to the character, so the breathing room a full-body pose needs
+       - space for shoes to plant, arms to swing on hover, hands not to
+       brush the edge - has to come from here rather than from the image. */
+    padding: 28px 48px 20px;
     cursor: pointer;
     background: radial-gradient(closest-side, var(--glow), transparent 70%);
   }
@@ -393,7 +397,7 @@ _TEMPLATE = """<!doctype html>
        the final drawing has, it keeps it - and nothing here ever clips it:
        no border-radius, no fixed box the art has to fit inside. */
     display: block;
-    width: auto; height: 272px; max-width: 100%; max-height: 40vh;
+    width: auto; height: 300px; max-width: 100%; max-height: 40vh;
     color: var(--accent);
     filter: drop-shadow(0 16px 22px rgba(20, 20, 40, .16));
     transition: transform .16s ease, filter .16s ease;
@@ -407,16 +411,17 @@ _TEMPLATE = """<!doctype html>
      the screen: on a short window the box is the thing you came for. */
   @media (max-height: 760px) {
     main { padding-top: clamp(24px, 6vh, 72px); }
-    .mark { height: 176px; }
+    .mark { height: 208px; }
+    .mark-wrap { padding: 20px 40px 14px; }
     .brand { margin-bottom: 12px; }
   }
   @media (max-height: 640px) {
-    .mark { height: 158px; }
-    .mark-wrap { padding: 12px 28px 2px; }
+    .mark { height: 178px; }
+    .mark-wrap { padding: 14px 32px 10px; }
   }
   @media (max-height: 520px), (max-width: 420px) {
-    .mark { height: 112px; }
-    .mark-wrap { padding: 6px 20px 0; }
+    .mark { height: 128px; }
+    .mark-wrap { padding: 8px 22px 6px; }
     main { padding-top: clamp(20px, 6vh, 60px); }
     .brand { gap: 8px; margin-bottom: 18px; }
   }

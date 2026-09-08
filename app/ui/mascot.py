@@ -282,6 +282,17 @@ _FRAME_MS = 50          # 20fps: smooth enough for motion this small
 #: seen - the point is that he noticed, not that he reacted.
 _HOVER_SWELL = 0.03
 
+#: Artwork is trimmed tight to the character (see ART-DIRECTION.md), which is
+#: right for a still image and wrong for an animated one: a bob, a lean or a
+#: pulse has nowhere to move without pushing feet or hands past the edge of a
+#: canvas that already touches them. Drawing the artwork at less than the
+#: full box, rather than the box itself, is what gives the motion in
+#: _animated_frame somewhere to go - a margin, not a crop. 0.88 covers the
+#: largest combined displacement any state's motion table produces (WORKING's
+#: bob, APPROVAL's pulse, the hover swell and COMPLETE's entry pop, all with
+#: room to spare) with the character still reading as filling its box.
+_ART_FILL = 0.88
+
 #: How long one state dissolves into the next. Long enough to read as a change
 #: of mind rather than a flicker, short enough that a run through
 #: thinking -> reading -> working never feels like it is waiting for the
@@ -430,12 +441,33 @@ class Mascot(QLabel):
     def _from_file(self, path: str) -> QPixmap:
         if path.lower().endswith(".svg"):
             return self._from_svg(path)
-        pixmap = QPixmap(path)
-        if pixmap.isNull():
+        source = QPixmap(path)
+        if source.isNull():
             return self._drawn()
-        return pixmap.scaled(self._size, self._height,
-                             Qt.AspectRatioMode.KeepAspectRatio,
-                             Qt.TransformationMode.SmoothTransformation)
+        # Drawn onto a canvas the full size of the box - not just scaled to
+        # it - with the artwork itself inset by _ART_FILL. A pixmap returned
+        # at the fitted (smaller) size would still leave _animated_frame
+        # nothing to move it within, since that canvas is sized to match
+        # whatever comes back from here.
+        scale = self.devicePixelRatioF() or 1.0
+        box_w, box_h = self._size, self._height
+        art_w, art_h = source.width(), source.height()
+        if art_w <= 0 or art_h <= 0:
+            return self._drawn()
+        ratio = min(box_w * _ART_FILL / art_w, box_h * _ART_FILL / art_h)
+        draw_w, draw_h = art_w * ratio, art_h * ratio
+        canvas = QPixmap(max(1, int(box_w * scale)), max(1, int(box_h * scale)))
+        canvas.setDevicePixelRatio(scale)
+        canvas.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(canvas)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+        painter.drawPixmap(
+            QRectF((box_w - draw_w) / 2 * scale, (box_h - draw_h) / 2 * scale,
+                   draw_w * scale, draw_h * scale).toRect(),
+            source)
+        painter.end()
+        return canvas
 
     def _from_svg(self, path: str) -> QPixmap:
         """Rasterise at the device pixel ratio, so Py is never soft."""
@@ -451,10 +483,12 @@ class Mascot(QLabel):
         art = renderer.defaultSize()
         box_w, box_h = self._size, self._height
         if art.width() > 0 and art.height() > 0:
-            ratio = min(box_w / art.width(), box_h / art.height())
+            # Inset by _ART_FILL - see its docstring - so the same motion
+            # that would clip a tightly-fit PNG has room here too.
+            ratio = min(box_w * _ART_FILL / art.width(), box_h * _ART_FILL / art.height())
             draw_w, draw_h = art.width() * ratio, art.height() * ratio
         else:
-            draw_w, draw_h = box_w, box_h
+            draw_w, draw_h = box_w * _ART_FILL, box_h * _ART_FILL
         pixmap = QPixmap(max(1, int(box_w * scale)), max(1, int(box_h * scale)))
         pixmap.fill(Qt.GlobalColor.transparent)
         painter = QPainter(pixmap)
