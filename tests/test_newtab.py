@@ -202,7 +202,7 @@ class DataTests(unittest.TestCase):
     def test_py_is_on_the_page(self) -> None:
         html = render(NewTabData())
         self.assertIn("data:image", html, "Py is missing from the new tab page")
-        self.assertIn("Hey, I\u2019m Py", html)
+        self.assertIn("What should Py do?", html)
 
     def test_py_is_inlined_exactly_once(self) -> None:
         """The artwork is large; inlining it twice doubles every new tab.
@@ -215,12 +215,12 @@ class DataTests(unittest.TestCase):
     def test_the_offers_say_what_they_are_for(self) -> None:
         # "Compare" on its own is a word, not an offer.
         html = render(NewTabData())
-        for label, blurb in (("Research", "Go deep on a topic"),
-                             ("Compare", "Weigh options side by side"),
-                             ("Find", "Get a recommendation"),
-                             ("Plan", "Turn research into a plan"),
-                             ("Summarize", "Get the key points"),
-                             ("Explore", "See what stands out")):
+        for label, blurb in (("Research a topic", "Go deep, with sources"),
+                             ("Compare products", "Weigh options side by side"),
+                             ("Summarize my tabs", "Get the key points"),
+                             ("Plan something", "Turn research into a plan"),
+                             ("Find the best option", "Get a recommendation"),
+                             ("Ask about this page", "Anything, right now")):
             self.assertIn(label, html)
             self.assertIn(blurb, html)
 
@@ -342,7 +342,7 @@ class RenderedPageTests(unittest.TestCase):
         # navigated itself anywhere.
         actions = []
         self.tabs.internal_action.connect(lambda name, params: actions.append(name))
-        self.tab.run_javascript("document.getElementById('ai').click();")
+        self.tab.run_javascript("document.querySelector('.mark').click();")
         self.assertTrue(pump(lambda: actions, 6000))
         self.assertEqual(actions[0], "ai")
         self.assertEqual(self.tab.url().toString(), NEW_TAB_URL)

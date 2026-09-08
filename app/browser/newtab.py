@@ -406,7 +406,9 @@ _TEMPLATE = """<!doctype html>
   /* Py steps down before crowding the search box, rather than pushing it off
      the screen: on a short window the box is the thing you came for. */
   @media (max-height: 760px) {
-    .mark { height: 208px; }
+    main { padding-top: clamp(24px, 6vh, 72px); }
+    .mark { height: 176px; }
+    .brand { margin-bottom: 12px; }
   }
   @media (max-height: 640px) {
     .mark { height: 158px; }
@@ -439,8 +441,31 @@ _TEMPLATE = """<!doctype html>
     background-clip: text;
     color: transparent;
   }
+  /* The one-line brand promise, under the wordmark - what PyBrowser is,
+     stated on its own terms rather than against another browser. */
   .greeting {
     margin: 2px 0 0; font-size: 13.5px; color: var(--muted); text-align: center;
+  }
+
+  /* The actual question of the page - the thing a visitor reads first and
+     acts on, not the brand line above it. */
+  .prompt-heading {
+    margin: 30px 0 6px; text-align: center;
+    font-size: 27px; font-weight: 700; letter-spacing: -.015em; color: var(--text);
+  }
+  .prompt-sub {
+    margin: 0 0 4px; text-align: center;
+    font-size: 14.5px; color: var(--muted); line-height: 1.5;
+  }
+  @media (max-height: 760px) {
+    .prompt-heading { margin: 16px 0 6px; font-size: 24px; }
+  }
+  @media (max-height: 640px) {
+    .prompt-heading { margin: 12px 0 6px; font-size: 23px; }
+  }
+  @media (max-height: 520px), (max-width: 420px) {
+    .prompt-heading { margin: 12px 0 4px; font-size: 20px; }
+    .prompt-sub { font-size: 13px; }
   }
 
   form { position: static; }
@@ -481,46 +506,17 @@ _TEMPLATE = """<!doctype html>
     min-height: 17px;
   }
 
-  .ai {
-    margin-top: 10px;
-    display: flex; align-items: center; gap: 11px; width: 100%;
-    padding: 12px 15px;
-    text-align: left;
-    font: inherit;
-    color: var(--text);
-    background: var(--surface);
-    border: 1px solid var(--line);
-    border-radius: var(--radius-lg);
-    cursor: pointer;
-    /* A resting glow, not just a hover one: this is the "ask me anything"
-       entry point and the strongest single call to action on the page after
-       the search box itself - it should look inviting at rest, not only once
-       the cursor happens to find it. */
-    box-shadow: var(--shadow), 0 0 24px -10px var(--accent2);
-    transition: border-color .16s ease, box-shadow .16s ease, transform .08s ease;
+  /* The setup notice when no provider is configured yet - only ever shown
+     then, so a working setup never sees an empty reserved line. */
+  .setup-hint {
+    margin: 10px 4px 0; text-align: center;
+    font-size: 12px; color: var(--muted);
   }
-  .ai:hover {
-    border-color: var(--accent);
-    box-shadow: var(--shadow-lift), 0 0 26px -6px var(--accent2);
-  }
-  .ai:active { transform: translateY(1px); }
-  .ai:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-  .ai .glyph {
-    width: 30px; height: 30px; flex: none;
-    display: flex; align-items: center; justify-content: center;
-    background: var(--gradient); border-radius: 50%;
-  }
-  .ai svg { width: 16px; height: 16px; color: #fff; }
-  .ai b { font-weight: 600; font-size: 13.5px; }
-  .ai small { display: block; color: var(--muted); font-size: 12px; }
 
   /* Things Py can do, offered as cards rather than as a toolbar: each says
      what it is for, because "Compare" on its own is a word, not an offer. */
-  .offer-label {
-    margin: 18px 0 8px; text-align: center;
-    font-size: 12px; color: var(--muted);
-  }
   .actions {
+    margin-top: 22px;
     display: grid; gap: 8px;
     grid-template-columns: repeat(auto-fit, minmax(132px, 1fr));
   }
@@ -587,19 +583,19 @@ _TEMPLATE = """<!doctype html>
     background: var(--surface);
     border: 1px solid var(--line);
     border-radius: var(--radius-lg);
-    box-shadow: var(--shadow-lift);
-    padding: 20px 22px;
-    margin-bottom: 28px;
+    box-shadow: var(--shadow);
+    padding: 16px 40px 16px 18px;
+    margin-bottom: 20px;
   }
   .onboarding h2 {
-    margin: 0 0 10px; font-size: 15px; font-weight: 600; letter-spacing: normal;
+    margin: 0 0 6px; font-size: 15px; font-weight: 700; letter-spacing: normal;
     text-transform: none; color: var(--text);
   }
-  .onboarding ul {
-    margin: 0 0 16px; display: flex; flex-direction: column; gap: 6px;
+  .onboarding p {
+    margin: 0 0 8px; font-size: 12.5px; color: var(--muted); line-height: 1.45;
   }
-  .onboarding li {
-    font-size: 13px; color: var(--muted); padding: 0; line-height: 1.4;
+  .onboarding p.reassurance {
+    margin: 0 0 12px; color: var(--text); opacity: .8;
   }
   .onboarding .row { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
   .onboarding .try {
@@ -635,16 +631,14 @@ _TEMPLATE = """<!doctype html>
 <main>
   <div class="onboarding" id="onboarding" hidden>
     <button class="close" id="onboarding-close" type="button" aria-label="Dismiss">✕</button>
-    <h2>This isn’t Chrome with an AI bolted on.</h2>
-    <ul>
-      <li>Give Py a goal, and it searches, compares, and reads pages for you.</li>
-      <li>Watch what it finds and does, in plain activity you can follow.</li>
-      <li>Py checks with you before anything real - buying, sending, signing in.</li>
-      <li>Leave anytime. Py keeps its progress and picks up where you left off.</li>
-    </ul>
+    <h2>Meet Py. Your browser can do the work now.</h2>
+    <p>Ask a question, research a topic, compare options, or give Py a mission.
+       Py can search, read pages, keep track of what it finds, and bring you
+       back a finished result.</p>
+    <p class="reassurance">You stay in control before anything important happens.</p>
     <div class="row">
-      <button class="try" id="onboarding-demo" type="button">Try a demo mission</button>
-      <button class="later" id="onboarding-later" type="button">Maybe later</button>
+      <button class="try" id="onboarding-demo" type="button">Try a Mission</button>
+      <button class="later" id="onboarding-later" type="button">Explore on my own</button>
     </div>
   </div>
 
@@ -655,8 +649,11 @@ _TEMPLATE = """<!doctype html>
          which inlined the whole drawing a second time, inside a comment. -->
     <div class="mark-wrap">__MASCOT__</div>
     <div class="wordmark">Py<span>Browser</span></div>
-    <p class="greeting" id="greeting">Hey, I\u2019m Py. What do you want to get done?</p>
+    <p class="greeting" id="greeting">The browser that finishes things.</p>
   </div>
+
+  <h1 class="prompt-heading">What should Py do?</h1>
+  <p class="prompt-sub">Research, compare, summarize, plan, or give Py a mission.</p>
 
   <form id="f" autocomplete="off">
     <div class="field">
@@ -671,25 +668,10 @@ _TEMPLATE = """<!doctype html>
     <span class="enter" id="enter">Enter</span>
     </div>
     <p class="hint" id="hint"></p>
+    <p class="setup-hint" id="ai-sub" hidden></p>
   </form>
 
-  <p class="offer-label" id="offer-label">Or give Py a mission\u2026</p>
   <div class="actions" id="actions"></div>
-
-  <button class="ai" id="ai" type="button">
-    <span class="glyph">
-      <svg viewBox="0 0 20 20" fill="none" aria-hidden="true">
-        <path d="M10 2.5 11.6 7 16 8.6 11.6 10.2 10 14.7 8.4 10.2 4 8.6 8.4 7 10 2.5Z"
-              fill="currentColor"/>
-        <path d="M15.5 13.2 16.2 15 18 15.7 16.2 16.4 15.5 18.2 14.8 16.4 13 15.7 14.8 15 15.5 13.2Z"
-              fill="currentColor" opacity=".55"/>
-      </svg>
-    </span>
-    <span>
-      <b>Ask Py something else</b>
-      <small id="ai-sub">Anything about this page, your tabs, or the web</small>
-    </span>
-  </button>
 
   <div class="columns">
     <section>
@@ -826,8 +808,9 @@ _TEMPLATE = """<!doctype html>
   }
 
   if (!data.agentAvailable) {
-    document.getElementById("ai-sub").textContent =
-      "Set Py up first in Tools \\u2192 Configure AI Agent";
+    var setupHint = document.getElementById("ai-sub");
+    setupHint.textContent = "Set Py up first in Tools \\u2192 Configure AI Agent";
+    setupHint.hidden = false;
   }
 
   var box = document.getElementById("q");
@@ -853,10 +836,6 @@ _TEMPLATE = """<!doctype html>
                                     : "Press Enter to search the web";
   });
 
-  document.getElementById("ai").addEventListener("click", function () {
-    act("ai", { q: box.value.trim() });
-  });
-
   // Py is the companion, so Py is also a button: clicking the character opens
   // the panel. The card above is what makes that discoverable.
   var mark = document.querySelector(".mark");
@@ -878,18 +857,18 @@ _TEMPLATE = """<!doctype html>
   // user lands one keystroke from an answer rather than at an empty box. They
   // go through the same action as everything else - there is one AI here.
   var ACTIONS = [
-    ["Research", "Go deep on a topic",
+    ["Research a topic", "Go deep, with sources",
      "Research this for me and give me a few good sources: "],
-    ["Compare", "Weigh options side by side",
+    ["Compare products", "Weigh options side by side",
      "Compare products, prices, features, and reviews."],
-    ["Find", "Get a recommendation",
-     "Find the best option based on my requirements."],
-    ["Plan", "Turn research into a plan",
-     "Research this and organize a plan using what you find on the web."],
-    ["Summarize", "Get the key points",
-     "Summarise the page I am looking at."],
-    ["Explore", "See what stands out",
-     "Explore this topic and tell me what is worth knowing."]
+    ["Summarize my tabs", "Get the key points",
+     "Summarise my open tabs and tell me what is on each one."],
+    ["Plan something", "Turn research into a plan",
+     "Help me plan: "],
+    ["Find the best option", "Get a recommendation",
+     "Find the best option for: "],
+    ["Ask about this page", "Anything, right now",
+     ""]
   ];
   var actions = document.getElementById("actions");
   ACTIONS.forEach(function (spec) {
