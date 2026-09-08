@@ -7,10 +7,11 @@ through them.
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QEasingCurve, QPropertyAnimation, Qt, Signal
 from PySide6.QtGui import QKeyEvent
 from PySide6.QtWidgets import (
     QFrame,
+    QGraphicsOpacityEffect,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -93,10 +94,29 @@ class FindBar(QFrame):
 
     def open_bar(self) -> None:
         self.show()
+        self._enter()
         self.field.setFocus()
         self.field.selectAll()
         if self.field.text():
             self.search_requested.emit(self.field.text(), False)
+
+    def _enter(self) -> None:
+        """A quick fade rather than a snap - Ctrl+F is reached for often
+        enough that the bar appearing should feel like part of the app, not
+        a mode switch."""
+        from app.ui.mascot import reduced_motion
+
+        if reduced_motion():
+            return
+        effect = QGraphicsOpacityEffect(self)
+        self.setGraphicsEffect(effect)
+        anim = QPropertyAnimation(effect, b"opacity", self)
+        anim.setDuration(160)
+        anim.setStartValue(0.6)
+        anim.setEndValue(1.0)
+        anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+        self._enter_anim = anim
+        anim.start()
 
     def close_bar(self) -> None:
         self.hide()

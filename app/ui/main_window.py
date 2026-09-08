@@ -1411,7 +1411,32 @@ class NoticeBar(QFrame):
             self._action_button.show()
         else:
             self._action_button.hide()
+        was_hidden = self.isHidden()
         self.show()
+        if was_hidden:
+            self._enter()
+
+    def _enter(self) -> None:
+        """A blocked certificate or a crashed page deserves to be noticed,
+        not to make the user wonder whether the window just glitched - a
+        quick fade says "something appeared", a snap says "something broke".
+        """
+        from PySide6.QtCore import QEasingCurve, QPropertyAnimation
+        from PySide6.QtWidgets import QGraphicsOpacityEffect
+
+        from app.ui.mascot import reduced_motion
+
+        if reduced_motion():
+            return
+        effect = QGraphicsOpacityEffect(self)
+        self.setGraphicsEffect(effect)
+        anim = QPropertyAnimation(effect, b"opacity", self)
+        anim.setDuration(180)
+        anim.setStartValue(0.6)
+        anim.setEndValue(1.0)
+        anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+        self._enter_anim = anim
+        anim.start()
 
     def _on_action(self) -> None:
         action, self._action = self._action, None
