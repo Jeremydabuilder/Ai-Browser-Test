@@ -14,10 +14,11 @@ the same time it marks this dialog shown - see show_first_run_if_needed.
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QEasingCurve, QPropertyAnimation, Qt, Signal
 from PySide6.QtWidgets import (
     QApplication,
     QDialog,
+    QGraphicsOpacityEffect,
     QHBoxLayout,
     QLabel,
     QPushButton,
@@ -149,7 +150,7 @@ class FirstRunDialog(QDialog):
         if with_mascot:
             from app.ui.mascot import Mascot
 
-            mascot = Mascot(108, page)
+            mascot = Mascot(152, page)
             mascot_row = QHBoxLayout()
             mascot_row.addStretch(1)
             mascot_row.addWidget(mascot)
@@ -213,10 +214,51 @@ class FirstRunDialog(QDialog):
             return
         self.stack.setCurrentIndex(self.stack.currentIndex() + 1)
         self._update_footer()
+        self._animate_page_in()
 
     def _go_back(self) -> None:
         self.stack.setCurrentIndex(max(0, self.stack.currentIndex() - 1))
         self._update_footer()
+        self._animate_page_in()
+
+    def _animate_page_in(self) -> None:
+        """A soft fade for the page that just arrived - three screens shown
+        once should feel like a considered sequence, not a slideshow that
+        snaps between slides."""
+        from app.ui.mascot import reduced_motion
+
+        if reduced_motion():
+            return
+        page = self.stack.currentWidget()
+        if page is None:
+            return
+        effect = QGraphicsOpacityEffect(page)
+        page.setGraphicsEffect(effect)
+        anim = QPropertyAnimation(effect, b"opacity", page)
+        anim.setDuration(220)
+        anim.setStartValue(0.0)
+        anim.setEndValue(1.0)
+        anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+        page._enter_anim = anim  # noqa: SLF001 - keeping it alive, not private access
+        anim.start()
+
+    def _pulse_dot(self, dot: QLabel) -> None:
+        """A small flourish on the step dot that just became current - one
+        beat, not a loop, so three quiet screens still feel like they are
+        responding to you rather than just swapping content underneath."""
+        from app.ui.mascot import reduced_motion
+
+        if reduced_motion():
+            return
+        effect = QGraphicsOpacityEffect(dot)
+        dot.setGraphicsEffect(effect)
+        anim = QPropertyAnimation(effect, b"opacity", dot)
+        anim.setDuration(280)
+        anim.setStartValue(0.25)
+        anim.setEndValue(1.0)
+        anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+        dot._pulse_anim = anim  # noqa: SLF001 - keeping it alive, not private access
+        anim.start()
 
     def _update_footer(self) -> None:
         index = self.stack.currentIndex()
@@ -226,6 +268,8 @@ class FirstRunDialog(QDialog):
         self.next_button.setText("Start browsing" if on_last else "Next")
         c = self._colours
         for i, dot in enumerate(self._step_dots):
+            if i == index:
+                self._pulse_dot(dot)
             dot.setStyleSheet(
                 f"color:{c.accent if i == index else c.line_strong};"
                 f" font-size:{theme.METRICS.text_xs}px; background:transparent; border:none;")
