@@ -628,6 +628,19 @@ class AgentSession(QObject):
         self._set_state(AgentState.THINKING)
         self._dispatch.emit(SYSTEM_PROMPT, self._messages, TOOL_SCHEMAS)
 
+    def retry_now(self) -> None:
+        """Skip the rest of a scheduled auto-retry wait and send it now.
+
+        Called from the panel's "Retry now" button. A no-op if nothing is
+        actually pending - the button that calls this is only ever visible
+        while a retry is scheduled, but a session is not required to trust
+        its own UI's timing.
+        """
+        if self._retry_timer is None:
+            return
+        self._retry_timer.stop()
+        self._run_retry()
+
     def run_routine(self, steps: list[tuple[str, dict]]) -> bool:
         """Play back a taught sequence. Returns False if the agent is busy.
 

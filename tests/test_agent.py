@@ -474,6 +474,27 @@ class ProviderRetryTests(AgentTestCase):
         _app.processEvents()
         self.assertNotIn("must never be reached", self.said)
 
+    def test_retry_now_skips_the_remaining_wait(self):
+        """The panel's "Retry now" button - the request goes out immediately
+        rather than waiting out a long backoff."""
+        self.start([
+            ClaudeError("Rate limited.", retryable=True, retry_after=30.0),
+            says("Recovered immediately."),
+        ])
+        retries = self._retries_seen()
+        self.assertTrue(self.session.send("Do something."))
+        self.assertTrue(pump(lambda: bool(retries), 5000))
+        self.session.retry_now()
+        self.assertTrue(pump(lambda: self.said and self.said[-1] == "Recovered immediately.",
+                            5000))
+        self.assertIsNone(self.session._retry_timer)
+
+    def test_retry_now_with_nothing_pending_is_a_harmless_no_op(self):
+        self.start([says("Done.")])
+        self.assertTrue(self.run_task("Do something."))
+        self.session.retry_now()   # must not raise, even with no retry pending
+        self.assertEqual(self.said[-1], "Done.")
+
 
 # ---------------------------------------------------------------------------
 class ConfirmationTests(AgentTestCase):

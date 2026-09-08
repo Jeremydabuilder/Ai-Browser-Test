@@ -222,6 +222,54 @@ class ConfirmationBar(QFrame):
         self.deny_button.setFocus()
 
 
+class RetryBar(QFrame):
+    """A provider hiccup Py is already recovering from, with a way to skip
+    the wait - not a transcript message, because it is transient state
+    ("retrying in 12s"), not part of the conversation record; it disappears
+    the moment the retry actually happens, same as the approval bar
+    disappears the moment its request is answered.
+    """
+
+    #: The user asked not to wait for the scheduled retry.
+    retry_now_requested = Signal()
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        from app.ui import theme
+
+        c = theme.palette_for(QApplication.instance())
+        m = theme.METRICS
+        self._colours = c
+        self.setObjectName("retrybar")
+        self.setStyleSheet(
+            f"#retrybar {{ background: {c.warning_soft};"
+            f" border: 1px solid {c.warning};"
+            f" border-radius: {m.radius_lg}px; }}"
+            f"#retrybar QLabel {{ background: transparent; border: none;"
+            f" color: {c.warning_text}; }}")
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(m.space_3, m.space_2, m.space_3, m.space_2)
+        layout.setSpacing(m.space_2)
+
+        self._label = QLabel("", self)
+        self._label.setWordWrap(True)
+        layout.addWidget(self._label, 1)
+
+        self.retry_button = QPushButton("Retry now", self)
+        self.retry_button.setProperty("kind", "quiet")
+        self.retry_button.clicked.connect(self.retry_now_requested.emit)
+        layout.addWidget(self.retry_button)
+        self.hide()
+
+    def show_retry(self, message: str, delay: float, attempt: int, limit: int) -> None:
+        seconds = max(1, round(delay))
+        plural = "s" if seconds != 1 else ""
+        self._label.setText(f"{message} Retrying in {seconds} second{plural}… "
+                            f"(attempt {attempt} of {limit})")
+        self.show()
+
+
 class AgentPanel(QWidget):
     """The right-hand panel. Install it with MainWindow.set_side_panel()."""
 
@@ -441,6 +489,10 @@ class AgentPanel(QWidget):
         self.confirmation = ConfirmationBar(self)
         layout.addWidget(self.confirmation)
 
+        self.retry_bar = RetryBar(self)
+        self.retry_bar.retry_now_requested.connect(self._retry_now)
+        layout.addWidget(self.retry_bar)
+
         self.input = _MessageBox(self)
         layout.addWidget(self.input)
 
@@ -547,6 +599,7 @@ class AgentPanel(QWidget):
         self.input.clear()
         self._answered = self._failed = self._stopped = False
         self.recovery.hide()
+        self.retry_bar.hide()
         self._last_user_message = text
         self._begin_conversation()
         self._append("user", text)
@@ -612,6 +665,7 @@ class AgentPanel(QWidget):
             return
         self._answered = self._failed = self._stopped = False
         self.recovery.hide()
+        self.retry_bar.hide()
         self._last_user_message = text
         self._begin_conversation()
         self._append("user", text)
@@ -677,6 +731,7 @@ class AgentPanel(QWidget):
 
     # -- session events --------------------------------------------------
     def _on_assistant(self, text: str) -> None:
+        self.retry_bar.hide()
         self._answered = True
         if self._streaming:
             # Already on screen, written as it arrived.
@@ -733,6 +788,7 @@ class AgentPanel(QWidget):
         self.companion.setText(self.mascot.companion_text())
 
     def _on_step(self, step: Step) -> None:
+        self.retry_bar.hide()
         self._steps_by_index[step.index] = step
         if step.state == StepState.WAITING:
             # Waiting for the user outranks everything: Py must not look busy
@@ -796,18 +852,26 @@ class AgentPanel(QWidget):
         return (text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;"))
 
     def _on_error(self, text: str) -> None:
+        self.retry_bar.hide()
         self._failed = True
         self._append("error", text)
 
     def _on_retry_scheduled(self, message: str, delay: float, attempt: int, limit: int) -> None:
         """A provider hiccup that is being retried automatically, not shown
         as a failure - see AgentSession._on_failure. Said plainly, with the
-        wait time and how many tries are left, so a rate limit reads as
-        "Py is handling this" rather than "Py is broken"."""
-        seconds = max(1, round(delay))
-        plural = "s" if seconds != 1 else ""
-        self._append("retry", f"{message} Retrying in {seconds} second{plural}… "
-                              f"(attempt {attempt} of {limit})")
+        wait time, how many tries are left, and a way to skip the wait, so a
+        rate limit reads as "Py is handling this" rather than "Py is broken".
+
+        A bar, not a transcript message: this is transient state, not part
+        of the conversation record - it disappears the moment the retry
+        actually fires, same as the approval bar disappears once answered.
+        """
+        self.retry_bar.show_retry(message, delay, attempt, limit)
+
+    def _retry_now(self) -> None:
+        if self._session is not None:
+            self._session.retry_now()
+        self.retry_bar.hide()
 
     def _on_error_detail(self, text: str) -> None:
         """What the API said, under what we said about it.
@@ -861,6 +925,7 @@ class AgentPanel(QWidget):
     def _on_finished(self) -> None:
         self._end_stream()
         self.confirmation.hide()
+        self.retry_bar.hide()
         self.status.setText("")
         # A stopped task was the user's own choice and needs no way back in;
         # a failed one broke on its own, mid-mission, and must not leave them

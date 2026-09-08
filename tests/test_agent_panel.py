@@ -428,6 +428,40 @@ class ErrorReportingTests(unittest.TestCase):
         self.assertNotEqual(self.panel.mascot.state(), MascotState.COMPLETE)
 
 
+class RetryBarTests(PanelTests):
+    """The retry bar: shown while an automatic retry is pending, with a way
+    to skip the wait - see agent_panel.py's RetryBar."""
+
+    @staticmethod
+    def _rate_limit(retry_after: float = 30.0):
+        from app.agent.claude_client import ClaudeError
+
+        return ClaudeError("Rate limited.", retryable=True, retry_after=retry_after)
+
+    def test_the_bar_is_hidden_before_anything_happens(self) -> None:
+        panel = self.start([says("done")])
+        self.assertTrue(panel.retry_bar.isHidden())
+
+    def test_a_retryable_failure_shows_the_bar_with_the_wait_time(self) -> None:
+        panel = self.start([self._rate_limit(retry_after=17.0), says("Recovered.")])
+        self.session.send("Do something.")
+        self.assertTrue(pump(lambda: not panel.retry_bar.isHidden()))
+        self.assertIn("17 second", panel.retry_bar._label.text())
+
+    def test_clicking_retry_now_skips_the_wait_and_hides_the_bar(self) -> None:
+        panel = self.start([self._rate_limit(retry_after=60.0), says("Recovered.")])
+        self.session.send("Do something.")
+        self.assertTrue(pump(lambda: not panel.retry_bar.isHidden()))
+        panel.retry_bar.retry_button.click()
+        self.assertTrue(panel.retry_bar.isHidden())
+        self.assertTrue(pump(lambda: "Recovered." in panel.transcript.toPlainText()))
+
+    def test_the_bar_hides_once_the_task_finishes(self) -> None:
+        panel = self.start([self._rate_limit(retry_after=0.01), says("Recovered.")])
+        self.run_task(panel, "Do something.")
+        self.assertTrue(panel.retry_bar.isHidden())
+
+
 class RecoveryTests(PanelTests):
     """A task that breaks mid-mission must offer a way back in, not just an
     error message - see the note in agent_panel.py on self.recovery."""
