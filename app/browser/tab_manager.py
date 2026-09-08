@@ -304,7 +304,7 @@ class TabManager(QTabWidget):
             colours = theme.palette_for(QApplication.instance())
             button = QToolButton(self)
             button.setIcon(icons.icon("close", colours.muted, size=32, weight=2.4))
-            button.setIconSize(QSize(13, 13))
+            button.setIconSize(QSize(theme.METRICS.icon_sm, theme.METRICS.icon_sm))
             button.setAutoRaise(True)
             button.setCursor(Qt.CursorShape.ArrowCursor)
             button.setToolTip("Close tab")

@@ -209,10 +209,15 @@ def stylesheet(palette: Palette, m: Metrics = METRICS) -> str:
     QWidget {{ color: {p.text}; font-size: {m.text}px; }}
 
     /* -- the toolbar ------------------------------------------------- */
+    /* A hairline under the nav toolbar (the menu bar sits above it, same
+       background) is the one thing that turns "one flat strip of grey"
+       into an intentional stack of chrome: menu, then controls, then tabs -
+       each doing one job, each visually its own row. */
     QToolBar {{
         background: {p.bg};
         border: none;
-        padding: {m.space_2}px {m.space_3}px {m.space_1}px;
+        border-bottom: 1px solid {p.line};
+        padding: {m.space_2}px {m.space_3}px {m.space_2}px;
         spacing: {m.space_1}px;
     }}
     QToolBar QToolButton {{
@@ -247,26 +252,35 @@ def stylesheet(palette: Palette, m: Metrics = METRICS) -> str:
     QLineEdit:disabled {{ color: {p.muted}; background: {p.surface_alt}; }}
 
     /* -- tabs ---------------------------------------------------------- */
+    /* Rounded at the top only and flush at the bottom: a tab reads as a folder
+       edge rising out of the page it holds, not a button that happens to sit
+       in a row. Squaring every corner is what made the strip look like a
+       toolbar wearing a costume. */
     QTabWidget::pane {{ border: none; background: {p.bg}; }}
     QTabBar {{ background: {p.bg}; qproperty-drawBase: 0; }}
     QTabBar::tab {{
         background: {p.surface_alt};
         color: {p.muted};
         border: 1px solid transparent;
-        border-radius: {m.radius_md}px;
+        border-top-left-radius: {m.radius_md}px;
+        border-top-right-radius: {m.radius_md}px;
         height: {m.tab}px;
-        padding: 0 {m.space_2}px;
+        padding: 2px {m.space_2}px 0;
         margin: {m.space_1}px {m.space_1}px 0 0;
         min-width: {m.tab_min_width}px;
         max-width: {m.tab_max_width}px;
     }}
     QTabBar::tab:hover {{ background: {p.surface_hover}; color: {p.text}; }}
     /* The active tab is the one thing on screen that must be unmistakable:
-       it is the only tab with the page's own background. */
+       it is the only tab with the page's own background, AND the only one
+       with the brand accent along its top edge - a second, unambiguous
+       signal that never depends on colour contrast alone to read. */
     QTabBar::tab:selected {{
         background: {p.surface};
         color: {p.text};
         border-color: {p.line};
+        border-top: 2px solid {p.accent};
+        padding-top: 0;
         font-weight: 600;
     }}
     QTabBar::close-button {{ subcontrol-position: right; }}

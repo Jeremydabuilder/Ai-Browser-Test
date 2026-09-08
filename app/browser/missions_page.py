@@ -343,21 +343,24 @@ _TEMPLATE = """<!doctype html>
   :root {
     --bg: #f4f4f7; --surface: #ffffff; --surface-alt: #eaeaf0; --line: #e0e0e8;
     --text: #17171d; --muted: #65656f; --disabled: #a8a8b4;
-    --accent: #3d5afe; --accent-soft: #eeedfc; --danger: #b3261e; --good: #2e7d32;
+    --accent: #3d5afe; --accent-soft: #eeedfc; --danger: #b3261e;
+    --success: #2e7d32; --warning: #a97400;
     --shadow: 0 1px 2px rgba(20,20,40,.04), 0 10px 30px rgba(20,20,40,.06);
   }
   @media (prefers-color-scheme: dark) {
     :root:not([data-theme="light"]) {
       --bg: #141419; --surface: #1e1e25; --surface-alt: #262630; --line: #30303b;
       --text: #eeeef3; --muted: #9797a6; --disabled: #61616e;
-      --accent: #8c9cff; --accent-soft: #282740; --danger: #f2b8b5; --good: #7bc47f;
+      --accent: #8c9cff; --accent-soft: #282740; --danger: #f2b8b5;
+      --success: #7bc47f; --warning: #e0b661;
       --shadow: 0 1px 2px rgba(0,0,0,.35), 0 10px 30px rgba(0,0,0,.35);
     }
   }
   :root[data-theme="dark"] {
     --bg: #141419; --surface: #1e1e25; --surface-alt: #262630; --line: #30303b;
     --text: #eeeef3; --muted: #9797a6; --disabled: #61616e;
-    --accent: #8c9cff; --accent-soft: #282740; --danger: #f2b8b5; --good: #7bc47f;
+    --accent: #8c9cff; --accent-soft: #282740; --danger: #f2b8b5;
+    --success: #7bc47f; --warning: #e0b661;
     --shadow: 0 1px 2px rgba(0,0,0,.35), 0 10px 30px rgba(0,0,0,.35);
   }
   * { box-sizing: border-box; }
@@ -422,7 +425,7 @@ _TEMPLATE = """<!doctype html>
   .constraints { list-style: none; margin: -14px 0 22px; padding: 0;
                  display: flex; flex-direction: column; gap: 4px; }
   .constraints li { color: var(--text); font-size: 13px; }
-  .constraints li::before { content: "\2022 "; color: var(--muted); }
+  .constraints li::before { content: "•  "; color: var(--muted); }
   /* A stage label, not a progress bar - see Mission.progress. Quiet, and
      never claims a precision an open-ended web task does not have. */
   .progress-pill {
@@ -472,16 +475,24 @@ _TEMPLATE = """<!doctype html>
   ul.activity li.activity-failed .t { color: var(--danger); }
   ul.activity li a { text-decoration: none; overflow: hidden; text-overflow: ellipsis; }
   ul.activity li a:hover .t { color: var(--accent); text-decoration: underline; }
-  .actions { display: flex; gap: 8px; margin: 0 0 26px; }
+  .actions { display: flex; gap: 10px; margin: 0 0 26px; flex-wrap: wrap; }
   button.act {
     height: 32px; padding: 0 14px; border-radius: 8px; cursor: pointer;
     font: inherit; background: var(--surface); color: var(--text);
     border: 1px solid var(--line);
+    transition: border-color .12s ease, color .12s ease, background .12s ease;
   }
   button.act:hover { border-color: var(--accent); color: var(--accent); }
   button.act.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
   button.act.primary:hover { color: #fff; opacity: .9; }
-  button.act.danger:hover { border-color: var(--danger); color: var(--danger); }
+  /* Delete is not "another button in the row": it reads as the one
+     destructive option even before a hover proves it, the same way the
+     Qt chrome's own danger buttons are tinted at rest, not only on hover. */
+  button.act.danger { color: var(--danger); }
+  button.act.danger:hover {
+    border-color: var(--danger);
+    background: color-mix(in srgb, var(--danger) 12%, transparent);
+  }
   /* The decision leads the page and does not look like another card in a row
      of cards: it is the answer the mission was for. */
   .decision {
@@ -575,7 +586,7 @@ _TEMPLATE = """<!doctype html>
   li.page a:hover .t { color: var(--accent); }
   li.page .d { margin-left: auto; color: var(--muted); font-size: 12px; }
   .outcome { font-size: 12px; flex: none; }
-  .outcome-useful { color: var(--good); }
+  .outcome-useful { color: var(--success); }
   .outcome-skipped { color: var(--muted); }
   .tag { font-size: 10px; font-weight: 700; letter-spacing: .08em;
          color: var(--accent); }

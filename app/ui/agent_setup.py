@@ -834,8 +834,19 @@ class ApiKeyDialog(QDialog):
 
         column.addWidget(QLabel("<b>Effort</b>", box))
         self.effort_box = QComboBox(box)
+        # Each item's label is a full explanatory sentence, not a word - and a
+        # QComboBox sizes its closed box to its widest item by default, which
+        # pushed the whole dialog wider than its own window and clipped
+        # everything below it. Capping the box's own width to a sensible
+        # measure (eliding what does not fit) keeps the dropdown honest while
+        # letting the popup list still show each description in full.
+        self.effort_box.setSizeAdjustPolicy(
+            QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        self.effort_box.setMinimumContentsLength(28)
         for level, description in EFFORT_LEVELS:
             self.effort_box.addItem(description, level)
+            self.effort_box.setItemData(
+                self.effort_box.count() - 1, description, Qt.ItemDataRole.ToolTipRole)
         index = self.effort_box.findData(current.effort)
         self.effort_box.setCurrentIndex(index if index >= 0 else 0)
         column.addWidget(self.effort_box)
