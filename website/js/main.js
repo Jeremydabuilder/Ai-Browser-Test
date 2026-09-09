@@ -74,24 +74,66 @@
     stuck: "assets/mascot/py-stuck.webp",
   };
 
+  // A short "anticipation" beat before the crossfade - a small dip in scale
+  // and opacity, like a breath held for a beat - rather than a hard cut from
+  // one pose straight to the next. Runs on the compositor only (transform +
+  // opacity), and is skipped entirely under reduced motion.
+  function crossfadeTo(img, src) {
+    if (reducedMotion.matches || !img.animate) {
+      img.src = src;
+      return;
+    }
+    const out = img.animate(
+      [{ transform: "scale(1)", opacity: 1 }, { transform: "scale(.93)", opacity: .35 }],
+      { duration: 180, easing: "ease-in", fill: "forwards" }
+    );
+    out.onfinish = () => {
+      img.src = src;
+      img.animate(
+        [{ transform: "scale(.93)", opacity: .35 }, { transform: "scale(1.03)", opacity: 1 },
+         { transform: "scale(1)", opacity: 1 }],
+        { duration: 260, easing: "cubic-bezier(.2,.7,.3,1.2)" }
+      );
+    };
+  }
+
+  // A one-time success beat on reaching "finished" - not a loop, just a
+  // single small pop, so a Mission actually completing feels like a small
+  // event rather than another idle animation running in the background.
+  function playFinishPop(anchor) {
+    const img = anchor.querySelector("[data-mascot-img]");
+    if (!img || reducedMotion.matches || !img.animate) return;
+    img.animate(
+      [{ transform: "scale(1) rotate(0deg)" },
+       { transform: "scale(1.12) rotate(-3deg)", offset: .5 },
+       { transform: "scale(1) rotate(0deg)" }],
+      { duration: 520, easing: "cubic-bezier(.2,.8,.3,1.2)" }
+    );
+  }
+
   function setMascot(anchor, state, caption) {
     const img = anchor.querySelector("[data-mascot-img]");
     const cap = anchor.querySelector("[data-py-caption]");
     const stateLabel = anchor.querySelector("[data-py-state]");
     const src = MASCOT_SRC[state];
+    const changed = anchor.dataset.state !== state;
     if (img && src && !img.src.endsWith(src)) {
+      crossfadeTo(img, src);
+    }
+    if (changed) anchor.dataset.state = state;
+    if (cap && caption && cap.textContent !== caption) {
       if (reducedMotion.matches) {
-        img.src = src;
+        cap.textContent = caption;
       } else {
-        img.style.opacity = "0";
+        cap.style.opacity = "0";
         window.setTimeout(() => {
-          img.src = src;
-          img.style.opacity = "1";
-        }, 120);
+          cap.textContent = caption;
+          cap.style.opacity = "1";
+        }, 150);
       }
     }
-    if (cap && caption) cap.textContent = caption;
     if (stateLabel) stateLabel.textContent = state.charAt(0).toUpperCase() + state.slice(1);
+    if (changed && state === "finished") playFinishPop(anchor);
   }
 
   document.querySelectorAll("[data-story]").forEach((story) => {
@@ -100,6 +142,7 @@
     if (!anchor || !steps.length) return;
 
     const initial = steps[0];
+    anchor.dataset.state = initial.dataset.state;
     setMascot(anchor, initial.dataset.state, initial.dataset.caption);
     initial.setAttribute("data-active", "");
 
@@ -116,6 +159,82 @@
     );
     steps.forEach((step) => observer.observe(step));
   });
+
+  // -- hero: look toward whatever the visitor is considering --------------------------------------------------------
+  const heroMascotEl = document.querySelector(".hero-mascot[data-mascot-anchor]");
+  const heroCta = document.querySelector(".hero-ctas .btn-primary");
+  const heroShot = document.querySelector(".shot-frame--hero");
+  if (heroMascotEl && !reducedMotion.matches) {
+    const look = (target, on) => {
+      if (on) heroMascotEl.setAttribute("data-look", target);
+      else if (heroMascotEl.getAttribute("data-look") === target) heroMascotEl.removeAttribute("data-look");
+    };
+    if (heroCta) {
+      heroCta.addEventListener("mouseenter", () => look("cta", true));
+      heroCta.addEventListener("mouseleave", () => look("cta", false));
+      heroCta.addEventListener("focus", () => look("cta", true));
+      heroCta.addEventListener("blur", () => look("cta", false));
+    }
+    if (heroShot) {
+      heroShot.addEventListener("mouseenter", () => look("product", true));
+      heroShot.addEventListener("mouseleave", () => look("product", false));
+    }
+  }
+
+  // -- Meet Py: hover/click/keyboard preview, plus a slow auto-demo --------------------------------------------------------
+  const showcase = document.querySelector("[data-state-showcase]");
+  if (showcase) {
+    const cards = Array.from(showcase.querySelectorAll(".state-card"));
+    let autoTimer = null;
+
+    function stopAuto() {
+      if (autoTimer) { window.clearInterval(autoTimer); autoTimer = null; }
+      cards.forEach((c) => c.removeAttribute("data-spotlight"));
+    }
+    function play(card) {
+      card.classList.add("is-playing");
+    }
+    function stop(card) {
+      card.classList.remove("is-playing");
+    }
+
+    cards.forEach((card) => {
+      card.addEventListener("mouseenter", () => play(card));
+      card.addEventListener("mouseleave", () => stop(card));
+      card.addEventListener("focus", () => play(card));
+      card.addEventListener("blur", () => stop(card));
+      card.addEventListener("click", () => {
+        stopAuto();
+        play(card);
+        window.setTimeout(() => stop(card), 1800);
+      });
+      card.addEventListener("keydown", (e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          card.click();
+        }
+      });
+    });
+
+    // A slow, quiet spotlight moves from card to card so the showcase reads
+    // as alive even before anyone touches it - never faster than a person
+    // could comfortably read the caption underneath, and it stops for good
+    // the moment someone interacts with the showcase themselves.
+    if (!reducedMotion.matches && cards.length) {
+      let i = 0;
+      cards[0].setAttribute("data-spotlight", "");
+      autoTimer = window.setInterval(() => {
+        cards[i].removeAttribute("data-spotlight");
+        stop(cards[i]);
+        i = (i + 1) % cards.length;
+        cards[i].setAttribute("data-spotlight", "");
+        play(cards[i]);
+        window.setTimeout(() => stop(cards[i]), 2600);
+      }, 4200);
+      showcase.addEventListener("pointerdown", stopAuto, { once: true });
+      showcase.addEventListener("focusin", stopAuto, { once: true });
+    }
+  }
 
   // -- hero mascot: a one-time settle animation, then idle --------------------------------------------------------
   const heroAnchor = document.querySelector(".hero-mascot[data-mascot-anchor]");

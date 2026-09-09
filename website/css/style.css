@@ -293,7 +293,7 @@ h1 {
   z-index: 5;
   text-align: center;
 }
-.mascot-img { width: 100%; height: auto; }
+.mascot-img { width: 100%; height: auto; transform-origin: 50% 100%; will-change: transform; }
 .hero-caption {
   font-size: 12px; font-weight: 600; color: var(--muted);
   background: var(--surface);
@@ -303,6 +303,70 @@ h1 {
   margin-top: -8px;
   box-shadow: var(--shadow-sm);
   display: inline-block;
+  transition: opacity .2s ease;
+}
+
+/* -- Py motion system --------------------------------------------------------
+   A handful of small, named keyframes reused everywhere Py appears, keyed
+   off a `data-state` (or `data-look`) attribute rather than one-off inline
+   styles - so "what does Py do when thinking" is answered in one place.
+   All of it is transform/opacity only (cheap to animate), and every rule
+   here is disabled wholesale by the prefers-reduced-motion block at the
+   end of this file. */
+@keyframes py-breathe {
+  0%, 100% { transform: translateY(0) scale(1); }
+  50% { transform: translateY(-4px) scale(1.008); }
+}
+@keyframes py-sway {
+  0%, 100% { transform: rotate(0deg); }
+  50% { transform: rotate(2.2deg); }
+}
+@keyframes py-track {
+  0%, 100% { transform: translateX(0); }
+  50% { transform: translateX(3px); }
+}
+@keyframes py-calm {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-2px); }
+}
+@keyframes py-active {
+  0%, 100% { transform: translateY(0) rotate(0deg); }
+  50% { transform: translateY(-3px) rotate(-1.4deg); }
+}
+@keyframes py-alert-ring {
+  0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 30%, transparent); }
+  50% { box-shadow: 0 0 0 8px color-mix(in srgb, var(--accent) 0%, transparent); }
+}
+
+.hero-mascot .mascot-img { animation: py-breathe 4.6s ease-in-out infinite; }
+.hero-mascot[data-look="cta"] .mascot-img {
+  animation: none;
+  transform: translate(-6px, -2px) rotate(-3deg) scale(1.03);
+  transition: transform .35s cubic-bezier(.2, .8, .3, 1.1);
+}
+.hero-mascot[data-look="product"] .mascot-img {
+  animation: none;
+  transform: translateX(-5px) rotate(-2deg);
+  transition: transform .35s ease;
+}
+
+.story-py[data-state="searching"] img { animation: py-sway 2.3s ease-in-out infinite; }
+.story-py[data-state="reading"] img { animation: py-track 2.8s ease-in-out infinite; }
+.story-py[data-state="thinking"] img { animation: py-calm 5s ease-in-out infinite; }
+.story-py[data-state="working"] img { animation: py-active 1.7s ease-in-out infinite; }
+.story-py[data-state="approval"] { animation: py-alert-ring 2.2s ease-in-out infinite; }
+.story-py[data-state="finished"] img { animation: none; }
+
+.state-card img { transition: transform .3s cubic-bezier(.2, .8, .3, 1.2); transform-origin: 50% 100%; }
+.state-card.is-playing[data-state="searching"] img { animation: py-sway 2.3s ease-in-out infinite; }
+.state-card.is-playing[data-state="reading"] img { animation: py-track 2.8s ease-in-out infinite; }
+.state-card.is-playing[data-state="thinking"] img { animation: py-calm 5s ease-in-out infinite; }
+.state-card.is-playing[data-state="working"] img { animation: py-active 1.7s ease-in-out infinite; }
+.state-card.is-playing[data-state="approval"] img { animation: py-sway 2.6s ease-in-out infinite; }
+.state-card.is-playing[data-state="idle"] img { animation: py-breathe 4.6s ease-in-out infinite; }
+.state-card[data-spotlight] {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
 }
 .shot-frame {
   margin: 0;
@@ -402,10 +466,11 @@ h2 {
   border: 1px solid var(--line);
   border-radius: var(--radius-lg);
 }
-.story-py img { width: 70%; margin: 0 auto var(--space-3); height: auto; transition: opacity .25s ease; }
+.story-py img { width: 70%; margin: 0 auto var(--space-3); height: auto; }
 .story-caption {
   font-size: 14px; font-weight: 600; color: var(--text);
   min-height: 40px;
+  transition: opacity .15s ease;
 }
 .story-state {
   font-size: 11px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase;
@@ -524,7 +589,10 @@ h2 {
   border-radius: var(--radius-md);
   background: var(--surface);
   border: 1px solid var(--line);
+  cursor: pointer;
+  transition: border-color .2s ease, box-shadow .2s ease;
 }
+.state-card:hover, .state-card:focus-visible { border-color: var(--accent); }
 .state-card img { width: 100%; height: auto; margin-bottom: var(--space-2); }
 .state-name { font-weight: 700; font-size: 14px; }
 .state-desc { font-size: 12px; color: var(--muted); margin-top: 2px; }

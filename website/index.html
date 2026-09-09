@@ -186,13 +186,13 @@
     </div>
 
     <div class="story-steps">
-      <article class="story-step" data-state="searching" data-caption="I can search, read sources, and keep track as I go.">
+      <article class="story-step" data-state="searching" data-caption="I'm checking a few sources.">
         <h3>Searching</h3>
         <p>Py opens the pages that look relevant to your goal, the same way
           you would — one tab, one source, at a time.</p>
       </article>
 
-      <article class="story-step" data-state="reading" data-caption="Reading each source, and deciding what's actually useful.">
+      <article class="story-step" data-state="reading" data-caption="I found something useful.">
         <h3>Reading</h3>
         <p>Every source gets reviewed, whether or not it turns into a finding.
           A page Py opened, read, and ruled out still counts as real work —
@@ -204,7 +204,7 @@
         </ul>
       </article>
 
-      <article class="story-step" data-state="thinking" data-caption="Weighing what disagrees, and flagging what's still unclear.">
+      <article class="story-step" data-state="thinking" data-caption="Here's where the sources disagree.">
         <h3>Thinking</h3>
         <p>Findings, constraints, and open questions build up as Py goes —
           nothing is thrown away, and nothing is invented to fill a gap.</p>
@@ -215,7 +215,7 @@
         </div>
       </article>
 
-      <article class="story-step" data-state="finished" data-caption="Done — here's the result, and how I got there.">
+      <article class="story-step" data-state="finished" data-caption="Done.">
         <h3>Finished</h3>
         <p>The result is structured, not a wall of chat text — with the
           findings and sources it's built on still attached, so you can check
@@ -362,39 +362,39 @@
         and expression are tied directly to what the browser is actually doing.</p>
     </div>
 
-    <div class="states-grid">
-      <div class="state-card">
+    <div class="states-grid" data-state-showcase>
+      <div class="state-card" data-state="idle" tabindex="0" role="button" aria-label="Preview Py's idle state">
         <img src="assets/mascot/py-idle.webp" alt="Py idle" loading="lazy" width="200" height="500">
         <p class="state-name">Idle</p>
         <p class="state-desc">Ready when you are.</p>
       </div>
-      <div class="state-card">
+      <div class="state-card" data-state="reading" tabindex="0" role="button" aria-label="Preview Py's reading state">
         <img src="assets/mascot/py-reading.webp" alt="Py reading" loading="lazy" width="200" height="500">
         <p class="state-name">Reading</p>
         <p class="state-desc">Going through a page or a source.</p>
       </div>
-      <div class="state-card">
+      <div class="state-card" data-state="thinking" tabindex="0" role="button" aria-label="Preview Py's thinking state">
         <img src="assets/mascot/py-thinking.webp" alt="Py thinking" loading="lazy" width="200" height="500">
         <p class="state-name">Thinking</p>
         <p class="state-desc">Weighing what it's found so far.</p>
       </div>
-      <div class="state-card">
+      <div class="state-card" data-state="working" tabindex="0" role="button" aria-label="Preview Py's working state">
         <img src="assets/mascot/py-working.webp" alt="Py working" loading="lazy" width="200" height="500">
         <p class="state-name">Working</p>
         <p class="state-desc">Acting on a step of the Mission.</p>
       </div>
-      <div class="state-card">
+      <div class="state-card" data-state="approval" tabindex="0" role="button" aria-label="Preview Py's waiting-for-approval state">
         <img src="assets/mascot/py-approval.webp" alt="Py waiting for approval" loading="lazy" width="200" height="500">
         <p class="state-name">Waiting for approval</p>
         <p class="state-desc">Paused before something that matters.</p>
       </div>
-      <div class="state-card">
+      <div class="state-card" data-state="finished" tabindex="0" role="button" aria-label="Preview Py's finished state">
         <img src="assets/mascot/py-complete.webp" alt="Py finished" loading="lazy" width="200" height="500">
         <p class="state-name">Finished</p>
         <p class="state-desc">Done, with a result ready to read.</p>
       </div>
     </div>
-    <p class="section-note section-note--center">Motion is subtle by design —
+    <p class="section-note section-note--center">Hover or select a state to see its motion. Motion is subtle by design —
       a breath, a lean, a small transition between states — and it stops
       entirely when your system asks for reduced motion.</p>
   </div>
