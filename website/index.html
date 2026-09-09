@@ -1,0 +1,539 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PyBrowser — The browser that finishes things</title>
+<meta name="description" content="PyBrowser is an AI-native desktop browser built in Python. Browse normally, ask Py questions, research across the web, and give Py multi-step Missions.">
+<link rel="canonical" href="https://pybrowser.example/">
+
+<!-- Open Graph -->
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="PyBrowser">
+<meta property="og:title" content="PyBrowser — The browser that finishes things">
+<meta property="og:description" content="Browse normally. Ask Py anything. Give it research and multi-step jobs when you don't want to do them yourself.">
+<meta property="og:image" content="assets/brand/icon-512.png">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="PyBrowser — The browser that finishes things">
+<meta name="twitter:description" content="An AI-native desktop browser built in Python.">
+<meta name="twitter:image" content="assets/brand/icon-512.png">
+
+<link rel="icon" type="image/svg+xml" href="assets/brand/pi-badge.svg">
+<link rel="icon" type="image/png" sizes="32x32" href="assets/brand/favicon-32.png">
+<link rel="icon" type="image/png" sizes="16x16" href="assets/brand/favicon-16.png">
+<link rel="apple-touch-icon" href="assets/brand/apple-touch-icon.png">
+<link rel="alternate icon" href="assets/brand/favicon.ico">
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+
+<a class="skip-link" href="#main">Skip to content</a>
+
+<!-- ============================= NAV ============================= -->
+<header class="site-nav" id="site-nav">
+  <div class="wrap nav-inner">
+    <a class="brand" href="#top" aria-label="PyBrowser home">
+      <img class="brand-mark" src="assets/brand/pi-mark.svg" alt="" width="22" height="22">
+      <span class="brand-name">PyBrowser</span>
+    </a>
+
+    <nav class="nav-links" aria-label="Primary">
+      <a href="#product">Product</a>
+      <a href="#research">Research</a>
+      <a href="#missions">Missions</a>
+      <a href="#technology">Technology</a>
+      <a href="#about">About</a>
+    </nav>
+
+    <div class="nav-actions">
+      <button class="theme-toggle" id="theme-toggle" type="button" aria-label="Toggle dark mode">
+        <svg class="icon-sun" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><circle cx="12" cy="12" r="4.2" fill="none" stroke="currentColor" stroke-width="1.8"/><g stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M12 2.5v2.4M12 19.1v2.4M4.2 4.2l1.7 1.7M18.1 18.1l1.7 1.7M2.5 12h2.4M19.1 12h2.4M4.2 19.8l1.7-1.7M18.1 5.9l1.7-1.7"/></g></svg>
+        <svg class="icon-moon" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M20.4 14.7A8.6 8.6 0 1 1 9.3 3.6a7 7 0 0 0 11.1 11.1Z"/></svg>
+      </button>
+      <a class="btn btn-ghost nav-github" href="https://github.com/Jeremydabuilder/Ai-Browser-Test" target="_blank" rel="noopener">GitHub</a>
+      <a class="btn btn-primary" href="#early-access">Get Early Access</a>
+    </div>
+
+    <button class="nav-burger" id="nav-burger" type="button" aria-label="Open menu" aria-expanded="false" aria-controls="mobile-nav">
+      <span></span><span></span><span></span>
+    </button>
+  </div>
+
+  <div class="mobile-nav" id="mobile-nav" hidden>
+    <a href="#product">Product</a>
+    <a href="#research">Research</a>
+    <a href="#missions">Missions</a>
+    <a href="#technology">Technology</a>
+    <a href="#about">About</a>
+    <a href="https://github.com/Jeremydabuilder/Ai-Browser-Test" target="_blank" rel="noopener">GitHub</a>
+    <a class="btn btn-primary" href="#early-access">Get Early Access</a>
+  </div>
+</header>
+
+<main id="main">
+
+<!-- ============================= HERO ============================= -->
+<section class="hero" id="top">
+  <div class="wrap hero-inner">
+    <div class="hero-copy">
+      <p class="eyebrow"><img src="assets/brand/pi-mark.svg" class="eyebrow-mark" alt="" width="16" height="16"> PyBrowser</p>
+      <h1>The browser that finishes things.</h1>
+      <p class="hero-sub">Browse normally. Ask Py anything. Give it research and
+        multi-step jobs when you don't want to do them yourself.</p>
+      <div class="hero-ctas">
+        <a class="btn btn-primary btn-lg" href="#early-access">Get Early Access</a>
+        <a class="btn btn-ghost btn-lg" href="#product">See how it works</a>
+      </div>
+      <p class="hero-status"><span class="status-dot"></span> In active development — independent project</p>
+    </div>
+
+    <div class="hero-visual">
+      <div class="hero-mascot" data-mascot-anchor>
+        <img src="assets/mascot/py-idle.webp" alt="Py, the PyBrowser assistant, standing ready" width="360" height="900" class="mascot-img" data-mascot-img>
+        <p class="hero-caption" data-py-caption>Hi, I'm Py.</p>
+      </div>
+      <figure class="shot-frame shot-frame--hero">
+        <picture>
+          <source srcset="assets/screenshots/hero-dark.webp" media="(prefers-color-scheme: dark)">
+          <img src="assets/screenshots/hero.webp" alt="PyBrowser's new tab page, showing the PyBrowser wordmark, the Py mascot, and the prompt &quot;What should Py do?&quot;" loading="eager" width="1440" height="900">
+        </picture>
+      </figure>
+    </div>
+  </div>
+</section>
+
+<!-- ========================= PRODUCT OVERVIEW ========================= -->
+<section class="section" id="product">
+  <div class="wrap">
+    <div class="section-head">
+      <p class="kicker">Product</p>
+      <h2>Three ways to work with Py</h2>
+      <p class="section-sub">You can browse normally, ask me questions, or give me bigger jobs.</p>
+    </div>
+
+    <div class="tier-grid">
+      <div class="tier-card">
+        <div class="tier-num">01</div>
+        <h3>Browse</h3>
+        <p>PyBrowser is a real desktop browser first — tabs, history, bookmarks,
+          downloads, dark mode. Use it exactly like the browser you already know.</p>
+      </div>
+      <div class="tier-card">
+        <div class="tier-num">02</div>
+        <h3>Ask Py</h3>
+        <p>Ask about the page you're on, selected text, or your open tabs.
+          Quick questions get quick, page-aware answers — no new window, no
+          copy-pasting URLs into a chat box.</p>
+      </div>
+      <div class="tier-card tier-card--accent">
+        <div class="tier-num">03</div>
+        <h3>Missions &amp; Research</h3>
+        <p>Give Py a goal. It searches, reads, compares, keeps findings and
+          sources organized, flags open questions, and checks with you before
+          anything that matters — then hands back a structured result.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============================= ASK PY ============================= -->
+<section class="section section--split" id="ask-py">
+  <div class="wrap split-inner">
+    <div class="split-copy">
+      <p class="kicker">Ask Py</p>
+      <h2>Available anywhere you're browsing.</h2>
+      <p class="section-sub">Py sits in a panel next to the page, not in a
+        separate app. Ask it things like:</p>
+      <ul class="quote-list">
+        <li>&ldquo;Summarize this page.&rdquo;</li>
+        <li>&ldquo;Explain this paragraph.&rdquo;</li>
+        <li>&ldquo;Compare my open tabs.&rdquo;</li>
+        <li>&ldquo;Research this topic deeper.&rdquo;</li>
+        <li>&ldquo;Which option is best?&rdquo;</li>
+      </ul>
+      <p class="section-note">A quick question stays quick. A bigger one becomes a Mission.</p>
+    </div>
+    <figure class="shot-frame">
+      <picture>
+        <source srcset="assets/screenshots/ask-py-dark.webp" media="(prefers-color-scheme: dark)">
+        <img src="assets/screenshots/ask-py.webp" alt="The Py side panel answering a question about the page currently open, with Py's mascot shown in its reading state" loading="lazy" width="1440" height="900">
+      </picture>
+    </figure>
+  </div>
+</section>
+
+<!-- ============================= RESEARCH (scroll story) ============================= -->
+<section class="story" id="research" data-story>
+  <div class="wrap story-head">
+    <p class="kicker">Research</p>
+    <h2>Research without the tab chaos.</h2>
+    <p class="section-sub">Py can search across pages, review sources, and keep
+      findings organized instead of leaving you with forty open tabs.</p>
+  </div>
+
+  <div class="story-grid">
+    <div class="story-sticky">
+      <div class="story-py" data-mascot-anchor>
+        <img src="assets/mascot/py-searching.webp" data-mascot-img alt="Py, the PyBrowser assistant" width="320" height="800">
+        <p class="story-caption" data-py-caption>Searching…</p>
+        <p class="story-state" data-py-state>Searching</p>
+      </div>
+    </div>
+
+    <div class="story-steps">
+      <article class="story-step" data-state="searching" data-caption="I can search, read sources, and keep track as I go.">
+        <h3>Searching</h3>
+        <p>Py opens the pages that look relevant to your goal, the same way
+          you would — one tab, one source, at a time.</p>
+      </article>
+
+      <article class="story-step" data-state="reading" data-caption="Reading each source, and deciding what's actually useful.">
+        <h3>Reading</h3>
+        <p>Every source gets reviewed, whether or not it turns into a finding.
+          A page Py opened, read, and ruled out still counts as real work —
+          you can see it was checked, not skipped.</p>
+        <ul class="mini-list">
+          <li><span class="dot dot--ok"></span> ASICS Gel-Resolution 9 Review — useful</li>
+          <li><span class="dot dot--skip"></span> Nike Court Vapor 11 Review — skipped</li>
+          <li><span class="dot dot--ok"></span> Wilson Rush Pro 4.0 Review — useful</li>
+        </ul>
+      </article>
+
+      <article class="story-step" data-state="thinking" data-caption="Weighing what disagrees, and flagging what's still unclear.">
+        <h3>Thinking</h3>
+        <p>Findings, constraints, and open questions build up as Py goes —
+          nothing is thrown away, and nothing is invented to fill a gap.</p>
+        <div class="mini-panel">
+          <p class="mini-label">Open Questions · 1</p>
+          <p class="mini-text">Reviewers disagree on how long the Nike Court
+            Vapor 11's outsole actually lasts on hard courts.</p>
+        </div>
+      </article>
+
+      <article class="story-step" data-state="finished" data-caption="Done — here's the result, and how I got there.">
+        <h3>Finished</h3>
+        <p>The result is structured, not a wall of chat text — with the
+          findings and sources it's built on still attached, so you can check
+          Py's work.</p>
+      </article>
+    </div>
+  </div>
+
+  <div class="wrap">
+    <figure class="shot-frame shot-frame--wide">
+      <picture>
+        <source srcset="assets/screenshots/mission-dark.webp" media="(prefers-color-scheme: dark)">
+        <img src="assets/screenshots/mission.webp" alt="A completed PyBrowser Mission: goal, constraints, a written result, two findings, one open question, and a list of sources marked useful or skipped" loading="lazy" width="1440" height="1500">
+      </picture>
+    </figure>
+  </div>
+</section>
+
+<!-- ============================= MISSIONS ============================= -->
+<section class="section" id="missions">
+  <div class="wrap">
+    <div class="section-head">
+      <p class="kicker">Missions</p>
+      <h2>Give Py a goal.</h2>
+      <p class="section-sub">A Mission is a persistent workspace for one goal —
+        it keeps its own goal, constraints, findings, sources, and result
+        together, and you can leave and come back to it.</p>
+    </div>
+
+    <div class="mission-example">
+      <div class="mission-example-head">
+        <p class="mini-label">Goal</p>
+        <h3>Find the best hard-court tennis shoes under $120.</h3>
+      </div>
+      <div class="mission-example-grid">
+        <div class="mex-card">
+          <p class="mini-label">Constraints</p>
+          <ul class="chip-list">
+            <li>under $120</li>
+            <li>hard-court durability</li>
+            <li>lateral support</li>
+          </ul>
+        </div>
+        <div class="mex-card">
+          <p class="mini-label">Findings</p>
+          <ul class="mini-list mini-list--plain">
+            <li>ASICS Gel-Resolution 9 — $115, strong lateral support</li>
+            <li>Wilson Rush Pro 4.0 — $110, reinforced for hard courts</li>
+          </ul>
+        </div>
+        <div class="mex-card">
+          <p class="mini-label">Sources</p>
+          <p class="mex-stat">3 reviewed · 2 useful · 1 skipped</p>
+        </div>
+        <div class="mex-card mex-card--accent">
+          <p class="mini-label">Result</p>
+          <p class="mex-text">The Wilson Rush Pro 4.0 is the best fit — $110,
+            reinforced for hard courts, with strong lateral support.</p>
+        </div>
+      </div>
+    </div>
+
+    <p class="section-note section-note--center">Missions keep their goal,
+      constraints, progress, findings, sources, and result together — so
+      picking a task back up doesn't mean starting over.</p>
+  </div>
+</section>
+
+<!-- ============================= STRUCTURED RESULTS ============================= -->
+<section class="section section--muted" id="results">
+  <div class="wrap">
+    <div class="section-head">
+      <p class="kicker">Structured results</p>
+      <h2>Not just another chat window.</h2>
+      <p class="section-sub">What Py hands back matches the shape of what you
+        asked for.</p>
+    </div>
+
+    <div class="result-grid">
+      <div class="result-card">
+        <h3>Comparison</h3>
+        <p>Options weighed side by side against your constraints.</p>
+      </div>
+      <div class="result-card">
+        <h3>Ranked options</h3>
+        <p>A short list, ordered, with the reasoning kept next to it.</p>
+      </div>
+      <div class="result-card">
+        <h3>Research summary</h3>
+        <p>Findings and sources, organized under the question you asked.</p>
+      </div>
+      <div class="result-card">
+        <h3>Tab comparison</h3>
+        <p>What's different — and what agrees — across the tabs you have open.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============================= SAFETY (scroll story) ============================= -->
+<section class="story story--safety" id="safety" data-story>
+  <div class="story-grid story-grid--reverse">
+    <div class="story-steps">
+      <article class="story-step" data-state="approval" data-caption="I'll ask before anything important.">
+        <p class="kicker">Safety &amp; control</p>
+        <h2>You stay in control.</h2>
+        <p>PyBrowser asks before important actions — the kind that reach
+          outside your own Mission board and actually change something. Py
+          keeps working on everything else without interrupting you for it.</p>
+        <ul class="mini-list mini-list--plain">
+          <li>Submitting forms</li>
+          <li>Sending messages</li>
+          <li>Purchases</li>
+          <li>Deleting data</li>
+          <li>Sharing sensitive information</li>
+        </ul>
+      </article>
+    </div>
+    <div class="story-sticky">
+      <div class="story-py" data-mascot-anchor>
+        <img src="assets/mascot/py-approval.webp" data-mascot-img alt="Py, the PyBrowser assistant, waiting for approval" width="320" height="800">
+        <p class="story-caption" data-py-caption>I'll ask before anything important.</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="wrap">
+    <figure class="shot-frame shot-frame--wide">
+      <picture>
+        <source srcset="assets/screenshots/approval-dark.webp" media="(prefers-color-scheme: dark)">
+        <img src="assets/screenshots/approval.webp" alt="PyBrowser pausing before submitting a form and asking the user to approve or decline the action" loading="lazy" width="1440" height="900">
+      </picture>
+    </figure>
+  </div>
+</section>
+
+<!-- ============================= MEET PY ============================= -->
+<section class="section" id="meet-py">
+  <div class="wrap">
+    <div class="section-head">
+      <p class="kicker">Meet Py</p>
+      <h2>The assistant inside PyBrowser.</h2>
+      <p class="section-sub">Py is not the logo, and not decoration — Py's pose
+        and expression are tied directly to what the browser is actually doing.</p>
+    </div>
+
+    <div class="states-grid">
+      <div class="state-card">
+        <img src="assets/mascot/py-idle.webp" alt="Py idle" loading="lazy" width="200" height="500">
+        <p class="state-name">Idle</p>
+        <p class="state-desc">Ready when you are.</p>
+      </div>
+      <div class="state-card">
+        <img src="assets/mascot/py-reading.webp" alt="Py reading" loading="lazy" width="200" height="500">
+        <p class="state-name">Reading</p>
+        <p class="state-desc">Going through a page or a source.</p>
+      </div>
+      <div class="state-card">
+        <img src="assets/mascot/py-thinking.webp" alt="Py thinking" loading="lazy" width="200" height="500">
+        <p class="state-name">Thinking</p>
+        <p class="state-desc">Weighing what it's found so far.</p>
+      </div>
+      <div class="state-card">
+        <img src="assets/mascot/py-working.webp" alt="Py working" loading="lazy" width="200" height="500">
+        <p class="state-name">Working</p>
+        <p class="state-desc">Acting on a step of the Mission.</p>
+      </div>
+      <div class="state-card">
+        <img src="assets/mascot/py-approval.webp" alt="Py waiting for approval" loading="lazy" width="200" height="500">
+        <p class="state-name">Waiting for approval</p>
+        <p class="state-desc">Paused before something that matters.</p>
+      </div>
+      <div class="state-card">
+        <img src="assets/mascot/py-complete.webp" alt="Py finished" loading="lazy" width="200" height="500">
+        <p class="state-name">Finished</p>
+        <p class="state-desc">Done, with a result ready to read.</p>
+      </div>
+    </div>
+    <p class="section-note section-note--center">Motion is subtle by design —
+      a breath, a lean, a small transition between states — and it stops
+      entirely when your system asks for reduced motion.</p>
+  </div>
+</section>
+
+<!-- ============================= TECHNOLOGY ============================= -->
+<section class="section section--muted" id="technology">
+  <div class="wrap">
+    <div class="section-head">
+      <p class="kicker">Technology</p>
+      <h2>Built with Python. Designed for AI-native browsing.</h2>
+      <p class="section-sub">PyBrowser is a desktop browser built primarily in
+        Python, with a Qt-based interface and Chromium-powered web rendering.
+        Its AI systems are integrated directly into the browser, rather than
+        living in a separate chat window — Py understands pages, navigates the
+        web, manages Missions, and returns structured results from inside the
+        browsing session itself.</p>
+    </div>
+
+    <div class="tech-grid">
+      <div class="tech-card">
+        <p class="tech-name">Python</p>
+        <p class="tech-desc">Core application logic, end to end.</p>
+      </div>
+      <div class="tech-card">
+        <p class="tech-name">Qt (PySide6)</p>
+        <p class="tech-desc">The native desktop interface.</p>
+      </div>
+      <div class="tech-card">
+        <p class="tech-name">Qt WebEngine</p>
+        <p class="tech-desc">Chromium-based web rendering — real pages, not a mock.</p>
+      </div>
+      <div class="tech-card">
+        <p class="tech-name">Multiple AI providers</p>
+        <p class="tech-desc">Anthropic (Claude), Google Gemini, Groq, and OpenRouter.</p>
+      </div>
+      <div class="tech-card">
+        <p class="tech-name">Mission system</p>
+        <p class="tech-desc">Persistent, structured multi-step tasks with their own store.</p>
+      </div>
+      <div class="tech-card">
+        <p class="tech-name">Safety layer</p>
+        <p class="tech-desc">Action sensitivity is classified by the browser, not the model.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============================= ENGINEERING ============================= -->
+<section class="section" id="engineering">
+  <div class="wrap">
+    <div class="section-head">
+      <p class="kicker">Engineering</p>
+      <h2>Built from the ground up.</h2>
+    </div>
+    <ul class="eng-list">
+      <li>Missions persist their goal, constraints, findings, sources, and result across restarts.</li>
+      <li>Browser actions go through one structured, auditable API — not raw scripting.</li>
+      <li>History, bookmarks, and downloads are backed by a real local database.</li>
+      <li>Light and dark themes follow the desktop's own preference.</li>
+      <li>Covered by an automated test suite exercised on every change.</li>
+    </ul>
+  </div>
+</section>
+
+<!-- ============================= ABOUT ============================= -->
+<section class="section section--muted" id="about">
+  <div class="wrap about-inner">
+    <div>
+      <p class="kicker">About</p>
+      <h2>About PyBrowser</h2>
+      <p>PyBrowser is an experimental AI-native desktop browser focused on
+        making the web more actionable. Instead of only displaying pages,
+        PyBrowser is designed to help you research, compare, organize, and
+        complete work directly across the web.</p>
+      <p>PyBrowser is an independent software project, built in Python and
+        currently in active development.</p>
+      <p class="status-badge">Early Access &middot; In active development</p>
+    </div>
+  </div>
+</section>
+
+<!-- ============================= EARLY ACCESS ============================= -->
+<section class="section" id="early-access">
+  <div class="wrap">
+    <div class="access-card">
+      <div class="access-copy">
+        <p class="kicker">Try it</p>
+        <h2>Get Early Access</h2>
+        <p>PyBrowser doesn't have a packaged installer yet. In the meantime,
+          it runs from source on Windows, macOS, and Linux.</p>
+        <div class="hero-ctas">
+          <a class="btn btn-primary btn-lg" href="https://github.com/Jeremydabuilder/Ai-Browser-Test" target="_blank" rel="noopener">View on GitHub</a>
+        </div>
+      </div>
+      <div class="access-platforms">
+        <div class="platform-row"><span>Windows</span><span class="tag">Runs from source</span></div>
+        <div class="platform-row"><span>macOS</span><span class="tag">Runs from source</span></div>
+        <div class="platform-row"><span>Linux</span><span class="tag">Runs from source</span></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============================= FINAL CTA ============================= -->
+<section class="final-cta">
+  <div class="wrap final-cta-inner">
+    <img src="assets/mascot/py-complete.webp" alt="Py, finished and ready to help" class="final-mascot" width="280" height="700" data-mascot-anchor data-mascot-img>
+    <p class="eyebrow eyebrow--light"><img src="assets/brand/pi-mark.svg" class="eyebrow-mark eyebrow-mark--light" alt="" width="16" height="16"> PyBrowser</p>
+    <h2>So — what should I do?</h2>
+    <p class="final-sub">Browse normally. Give Py the rest.</p>
+    <a class="btn btn-primary btn-lg" href="#early-access">Get Early Access</a>
+  </div>
+</section>
+
+</main>
+
+<!-- ============================= FOOTER ============================= -->
+<footer class="site-footer">
+  <div class="wrap footer-inner">
+    <div class="footer-brand">
+      <img class="brand-mark" src="assets/brand/pi-mark.svg" alt="" width="18" height="18">
+      <span>PyBrowser</span>
+    </div>
+    <nav class="footer-links" aria-label="Footer">
+      <a href="#product">Product</a>
+      <a href="#research">Research</a>
+      <a href="#missions">Missions</a>
+      <a href="#technology">Technology</a>
+      <a href="#about">About</a>
+      <a href="https://github.com/Jeremydabuilder/Ai-Browser-Test" target="_blank" rel="noopener">GitHub</a>
+    </nav>
+    <div class="footer-meta">
+      <p>Currently in active development.</p>
+      <p class="footer-copy">&copy; <span id="year"></span> PyBrowser</p>
+    </div>
+  </div>
+</footer>
+
+<script src="js/main.js"></script>
+</body>
+</html>

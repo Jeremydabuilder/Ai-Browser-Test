@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" fill="none" role="img" aria-label="PyBrowser">
+  <path fill="currentColor" d="
+    M17 24
+    a7 7 0 0 1 7-7
+    h52
+    a7 7 0 0 1 0 14
+    H24
+    a7 7 0 0 1 -7-7
+    Z
+  "/>
+  <path fill="currentColor" d="M26 24 h14 v52 a7 7 0 0 1 -14 0 Z"/>
+  <path fill="currentColor" d="M60 24 h14 v45 a7 7 0 0 1 -14 3 Z"/>
+</svg>
