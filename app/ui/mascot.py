@@ -299,6 +299,12 @@ _ART_FILL = 0.88
 #: animation. Four frames.
 _FADE_MS = 200
 
+#: A click is a real event, not a state - so it gets a quick, rigid squash-
+#: and-recover rather than anything in _MOTION, and it layers on top of
+#: whatever state motion is already running rather than replacing it.
+_TAP_MS = 220
+_TAP_DIP = 0.05
+
 
 class Mascot(QLabel):
     """Py, at one size, in one state.
@@ -330,6 +336,7 @@ class Mascot(QLabel):
         self._elapsed = 0
         self._blink_at = self._next_blink()
         self._blinking = 0
+        self._tap_left = 0
         self._movie: QMovie | None = None
         self._still: QPixmap | None = None
         #: The previous state's artwork, held only while it dissolves out.
@@ -412,6 +419,9 @@ class Mascot(QLabel):
         self._render()
 
     def mousePressEvent(self, event) -> None:  # noqa: N802
+        if not reduced_motion():
+            self._tap_left = _TAP_MS
+            self._sync_motion()
         self.clicked.emit()
         super().mousePressEvent(event)
 
@@ -512,7 +522,7 @@ class Mascot(QLabel):
             self._frames.stop()
             return
         motion = _MOTION.get(self._state, _Motion())
-        if motion.period_ms or motion.blinks or self._fade_left:
+        if motion.period_ms or motion.blinks or self._fade_left or self._tap_left:
             if not self._frames.isActive():
                 self._frames.start()
         else:
@@ -524,6 +534,10 @@ class Mascot(QLabel):
             self._fade_left = max(0, self._fade_left - _FRAME_MS)
             if not self._fade_left:
                 self._fade_from = None
+                self._sync_motion()     # a motionless state can stop again
+        if self._tap_left:
+            self._tap_left = max(0, self._tap_left - _FRAME_MS)
+            if not self._tap_left:
                 self._sync_motion()     # a motionless state can stop again
         motion = _MOTION.get(self._state, _Motion())
         if motion.blinks:
@@ -629,7 +643,8 @@ class Mascot(QLabel):
         """
         motion = _MOTION.get(self._state, _Motion())
         if reduced_motion() or not (motion.period_ms or motion.entry_ms
-                                    or self._blinking or self._hovered):
+                                    or self._blinking or self._hovered
+                                    or self._tap_left):
             return base
 
         import math
@@ -638,11 +653,16 @@ class Mascot(QLabel):
                  if motion.period_ms else 0)
         wave = math.sin(phase * 2 * math.pi)
         arrival = self._entry_curve(motion)
+        # A click is felt once, on top of whatever the state is already
+        # doing - a single quick dip, not a loop, so it reads as "that
+        # registered" rather than becoming part of the resting motion.
+        tap = (math.sin((1 - self._tap_left / _TAP_MS) * math.pi)
+              if self._tap_left else 0.0)
 
         offset = motion.bob * wave - motion.entry_rise * arrival
         lean = motion.lean * wave
         scale = (1.0 + motion.pulse * (wave + 1) / 2 + motion.entry_pop * arrival
-                 + (_HOVER_SWELL if self._hovered else 0.0))
+                 + (_HOVER_SWELL if self._hovered else 0.0) - _TAP_DIP * tap)
 
         canvas = QPixmap(base.size())
         canvas.setDevicePixelRatio(base.devicePixelRatio())

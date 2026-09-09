@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, Signal
+from datetime import datetime
+
+from PySide6.QtCore import QSize, QUrl, Qt, Signal
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QApplication,
     QDialog,
     QHBoxLayout,
     QHeaderView,
@@ -19,9 +22,35 @@ from PySide6.QtWidgets import (
 )
 
 from app.storage import BookmarkStore, HistoryStore
+from app.ui import icons, theme
+from app.utils.urls import short_host
 
 _URL_ROLE = Qt.ItemDataRole.UserRole
 _ID_ROLE = Qt.ItemDataRole.UserRole + 1
+
+
+def _time_of_day(dt: datetime) -> str:
+    """"3:45 PM", not "03:45 PM" - %-I is Linux/Mac only, so the leading
+    zero is stripped by hand instead of relying on a platform-specific
+    strftime flag that would raise on Windows."""
+    return dt.strftime("%I:%M %p").lstrip("0")
+
+
+def _when(dt: datetime) -> str:
+    """A glance-friendly moment: today and yesterday say so, by name -
+    everything else is a scannable date. The raw ISO timestamp underneath
+    is still there in the tooltip for anyone who wants the precise one.
+    """
+    local = dt.astimezone()
+    today = datetime.now().astimezone().date()
+    day = local.date()
+    if day == today:
+        return f"Today · {_time_of_day(local)}"
+    if (today - day).days == 1:
+        return f"Yesterday · {_time_of_day(local)}"
+    if day.year == today.year:
+        return f"{local.strftime('%b')} {local.day} · {_time_of_day(local)}"
+    return f"{local.strftime('%b')} {local.day}, {local.year}"
 
 
 class _ListDialog(QDialog):
@@ -33,6 +62,9 @@ class _ListDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle(title)
         self.resize(760, 480)
+        m = theme.METRICS
+        colours = theme.palette_for(QApplication.instance())
+        self._row_icon = icons.icon("page", colours.muted, size=32, weight=1.8)
 
         self.filter_box = QLineEdit(self)
         self.filter_box.setPlaceholderText("Filter…")
@@ -43,8 +75,20 @@ class _ListDialog(QDialog):
         self.tree.setHeaderLabels(headers)
         self.tree.setRootIsDecorated(False)
         self.tree.setAlternatingRowColors(True)
+        # The alternate row colour comes from the OS palette, not this
+        # theme, on every style/platform this was tried on - a white-ish
+        # default row landed on top of the app's own dark palette and was
+        # nearly unreadable. Pinning it to the theme's own surface_alt
+        # keeps the stripe legible in both themes, the same tone every
+        # other "recessed" surface in the app already uses.
+        self.tree.setStyleSheet(
+            f"QTreeWidget {{ alternate-background-color: {colours.surface_alt}; }}")
+        self.tree.setUniformRowHeights(True)
+        self.tree.setIconSize(QSize(16, 16))
         self.tree.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.tree.header().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        self.tree.header().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        self.tree.header().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
         self.tree.itemActivated.connect(self._on_activated)
 
         # Shown instead of the tree when there is nothing in it - an empty
@@ -68,12 +112,15 @@ class _ListDialog(QDialog):
         self.close_button.clicked.connect(self.accept)
 
         self.button_row = buttons = QHBoxLayout()
+        buttons.setSpacing(m.space_2)
         buttons.addWidget(self.open_button)
         buttons.addWidget(self.delete_button)
         buttons.addStretch(1)
         buttons.addWidget(self.close_button)
 
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(m.space_4, m.space_4, m.space_4, m.space_4)
+        layout.setSpacing(m.space_3)
         layout.addWidget(self.filter_box)
         layout.addWidget(self.tree, 1)
         layout.addWidget(self._empty_label, 1)
@@ -86,6 +133,20 @@ class _ListDialog(QDialog):
 
     def _empty_message(self, term: str) -> str:  # pragma: no cover - overridden
         raise NotImplementedError
+
+    def _row(self, title: str, url: str, when: str) -> QTreeWidgetItem:
+        """One row, built the same way in both dialogs: an icon (the same
+        generic page glyph the tab strip and the new-tab page fall back to -
+        there is no real favicon on record for a history or bookmark entry,
+        so this says "a page", not "this exact page"), the title, the
+        domain rather than the full address, and a glance-friendly time.
+        """
+        domain = short_host(QUrl(url))
+        item = QTreeWidgetItem([title, domain, when])
+        item.setIcon(0, self._row_icon)
+        item.setToolTip(0, url)
+        item.setToolTip(1, url)
+        return item
 
     def _update_empty_state(self, term: str) -> None:
         """Call at the end of a subclass's refresh(), once the tree is filled.
@@ -119,7 +180,7 @@ class _ListDialog(QDialog):
 class HistoryDialog(_ListDialog):
     def __init__(self, history: HistoryStore, parent: QWidget | None = None) -> None:
         self._history = history
-        super().__init__("History", ["Title", "URL", "Visited"], parent)
+        super().__init__("History", ["Page", "Domain", "Visited"], parent)
         clear_all = QPushButton("Clear all history", self)
         clear_all.setProperty("kind", "danger")
         clear_all.clicked.connect(self._clear_all)
@@ -130,7 +191,11 @@ class HistoryDialog(_ListDialog):
         entries = self._history.search(term, 500) if term else self._history.recent(500)
         self.tree.clear()
         for entry in entries:
-            item = QTreeWidgetItem([entry.title or entry.url, entry.url, entry.visited_at])
+            try:
+                when = _when(entry.visited_datetime)
+            except ValueError:
+                when = entry.visited_at
+            item = self._row(entry.title or entry.url, entry.url, when)
             item.setData(0, _URL_ROLE, entry.url)
             item.setData(0, _ID_ROLE, entry.id)
             self.tree.addTopLevelItem(item)
@@ -158,7 +223,7 @@ class HistoryDialog(_ListDialog):
 class BookmarksDialog(_ListDialog):
     def __init__(self, bookmarks: BookmarkStore, parent: QWidget | None = None) -> None:
         self._bookmarks = bookmarks
-        super().__init__("Bookmarks", ["Title", "URL", "Added"], parent)
+        super().__init__("Bookmarks", ["Page", "Domain", "Added"], parent)
 
     def refresh(self) -> None:
         term = self.filter_box.text().strip().lower()
@@ -167,9 +232,11 @@ class BookmarksDialog(_ListDialog):
             haystack = f"{bookmark.title} {bookmark.url}".lower()
             if term and term not in haystack:
                 continue
-            item = QTreeWidgetItem(
-                [bookmark.title or bookmark.url, bookmark.url, bookmark.created_at]
-            )
+            try:
+                when = _when(datetime.fromisoformat(bookmark.created_at))
+            except ValueError:
+                when = bookmark.created_at
+            item = self._row(bookmark.title or bookmark.url, bookmark.url, when)
             item.setData(0, _URL_ROLE, bookmark.url)
             item.setData(0, _ID_ROLE, bookmark.id)
             self.tree.addTopLevelItem(item)

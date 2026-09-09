@@ -495,24 +495,46 @@ _TEMPLATE = """<!doctype html>
   ul.activity li.activity-failed .t { color: var(--danger); }
   ul.activity li a { text-decoration: none; overflow: hidden; text-overflow: ellipsis; }
   ul.activity li a:hover .t { color: var(--accent); text-decoration: underline; }
-  .actions { display: flex; gap: 10px; margin: 0 0 26px; flex-wrap: wrap; }
-  button.act {
+  .actions { display: flex; align-items: center; gap: 10px; margin: 0 0 26px; flex-wrap: wrap; }
+  /* .act, not button.act: <summary> (the "More" disclosure toggle) wears
+     this class too and needs to look like the same family of control,
+     not a second visual language bolted on next to it. */
+  .act {
+    display: inline-flex; align-items: center;
     height: 32px; padding: 0 14px; border-radius: 8px; cursor: pointer;
     font: inherit; background: var(--surface); color: var(--text);
     border: 1px solid var(--line);
     transition: border-color .12s ease, color .12s ease, background .12s ease,
                 transform .1s ease;
   }
-  button.act:hover { border-color: var(--accent); color: var(--accent); }
-  button.act:active { transform: scale(.96); transition-duration: .06s; }
-  button.act.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
-  button.act.primary:hover { color: #fff; opacity: .9; }
+  .act:hover { border-color: var(--accent); color: var(--accent); }
+  .act:active { transform: scale(.96); transition-duration: .06s; }
+  .act.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .act.primary:hover { color: #fff; opacity: .9; }
   /* Delete is not "another button in the row": it reads as the one
      destructive option even before a hover proves it, the same way the
      Qt chrome's own danger buttons are tinted at rest, not only on hover. */
-  button.act.danger { color: var(--danger); }
-  button.act.danger:hover {
+  .act.danger { color: var(--danger); }
+  .act.danger:hover {
     border-color: var(--danger);
+    background: color-mix(in srgb, var(--danger) 12%, transparent);
+  }
+  /* The overflow disclosure: a real <details>/<summary>, so "click
+     elsewhere closes it" and keyboard behaviour come from the browser
+     rather than a hand-rolled popover with its own listener to leak on
+     every re-render. */
+  .overflow { position: relative; margin-left: auto; }
+  .overflow summary { list-style: none; user-select: none; }
+  .overflow summary::-webkit-details-marker { display: none; }
+  .overflow .menu {
+    position: absolute; top: calc(100% + 6px); right: 0; z-index: 5;
+    display: flex; flex-direction: column; gap: 4px; min-width: 190px;
+    background: var(--surface); border: 1px solid var(--line);
+    border-radius: 10px; padding: 6px; box-shadow: var(--shadow);
+  }
+  .overflow .menu .act { width: 100%; justify-content: flex-start; border: none; }
+  .overflow .menu .act:hover { background: var(--accent-soft); }
+  .overflow .menu .act.danger:hover {
     background: color-mix(in srgb, var(--danger) 12%, transparent);
   }
   /* The decision leads the page and does not look like another card in a row
@@ -939,6 +961,11 @@ _TEMPLATE = """<!doctype html>
                          mission.progress));
     }
 
+    // Three tiers, not six equal buttons: the one thing to do next, the
+    // handful of things you might reasonably do on this visit, and the
+    // ones you touch once in a mission's life (or never want to hit by
+    // mistake) tucked behind "More" - so which button matters is obvious
+    // before any label is even read.
     var actions = el("div", "actions");
     var resume = el("button", "act primary",
                     mission.status === "active" ? "Go to mission" : "Resume");
@@ -950,20 +977,30 @@ _TEMPLATE = """<!doctype html>
       pause.addEventListener("click", function () { act("pause", { id: mission.id }); });
       actions.appendChild(pause);
     }
-    var rename = el("button", "act", "Rename");
-    rename.addEventListener("click", function () { act("rename", { id: mission.id }); });
-    actions.appendChild(rename);
     var editGoal = el("button", "act", "Edit goal");
     editGoal.title = "Change what this mission is for - Py sees the new goal next time it resumes";
     editGoal.addEventListener("click", function () { act("edit-goal", { id: mission.id }); });
     actions.appendChild(editGoal);
-    var remove = el("button", "act danger", "Delete");
-    remove.addEventListener("click", function () { act("delete", { id: mission.id }); });
-    actions.appendChild(remove);
+
+    // <details>/<summary> rather than a hand-built popover: a real
+    // disclosure with no click-outside listener to leak across re-renders,
+    // since this whole card is thrown away and rebuilt on every update.
+    var overflow = el("details", "overflow");
+    var moreToggle = el("summary", "act", "⋯ More");
+    overflow.appendChild(moreToggle);
+    var menu = el("div", "menu");
+    var rename = el("button", "act", "Rename");
+    rename.addEventListener("click", function () { act("rename", { id: mission.id }); });
+    menu.appendChild(rename);
     var branch = el("button", "act", "Branch this mission");
     branch.title = "Fork an independent copy - its own findings, its own decision";
     branch.addEventListener("click", function () { act("branch", { id: mission.id }); });
-    actions.appendChild(branch);
+    menu.appendChild(branch);
+    var remove = el("button", "act danger", "Delete");
+    remove.addEventListener("click", function () { act("delete", { id: mission.id }); });
+    menu.appendChild(remove);
+    overflow.appendChild(menu);
+    actions.appendChild(overflow);
     body.appendChild(actions);
 
     // Two columns from here: the mission's own substance on the left - what

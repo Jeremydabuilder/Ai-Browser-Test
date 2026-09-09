@@ -29,8 +29,9 @@ from PySide6.QtWidgets import (
 )
 
 from app.browser.downloads import DownloadItem, DownloadManager
-from app.ui import theme
+from app.ui import icons, theme
 from app.ui.theme import METRICS
+from app.utils.urls import short_host
 
 
 class _Row(QWidget):
@@ -44,9 +45,24 @@ class _Row(QWidget):
 
         m = METRICS
         c = theme.palette_for(QApplication.instance())
+        self._colours = c
+        # A card, not a bare row: the same surface/radius/hover language as
+        # every other list this session touched (Mission's source rows, the
+        # Mission list page), so Downloads stops being the one place still
+        # rendered as an unstyled QWidget in a stack.
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.setStyleSheet(
+            f"_Row {{ background: {c.surface}; border-radius: {m.radius_md}px; }}"
+            f"_Row:hover {{ background: {c.surface_hover}; }}")
         layout = QHBoxLayout(self)
         layout.setContentsMargins(m.space_3, m.space_2, m.space_3, m.space_2)
-        layout.setSpacing(m.space_2)
+        layout.setSpacing(m.space_3)
+
+        icon = QLabel(self)
+        icon.setPixmap(icons.icon("download", c.muted, size=32, weight=2.0)
+                       .pixmap(m.icon, m.icon))
+        icon.setFixedWidth(m.icon)
+        layout.addWidget(icon, 0, Qt.AlignmentFlag.AlignTop)
 
         text = QVBoxLayout()
         text.setSpacing(2)
@@ -56,7 +72,7 @@ class _Row(QWidget):
         text.addWidget(self.name)
 
         self.status = QLabel("", self)
-        self.status.setStyleSheet(f"color:{c.muted}; font-size:{m.text_xs}px;")
+        self.status.setStyleSheet(f"font-size:{m.text_xs}px;")
         text.addWidget(self.status)
 
         self.bar = QProgressBar(self)
@@ -66,15 +82,32 @@ class _Row(QWidget):
         layout.addLayout(text, 1)
 
         self.action = QPushButton("", self)
+        self.action.setProperty("kind", "quiet")
         self.action.clicked.connect(self._act)
-        layout.addWidget(self.action)
+        layout.addWidget(self.action, 0, Qt.AlignmentFlag.AlignVCenter)
 
         self.refresh(item)
+
+    #: The colour a status line reads in, by state - the same tones the
+    #: rest of the app already uses for success/danger/muted/in-progress,
+    #: so "this one failed" is felt before the word "Failed" is read.
+    def _status_colour(self, state: str) -> str:
+        c = self._colours
+        return {
+            "completed": c.success,
+            "cancelled": c.disabled,
+            "interrupted": c.danger,
+        }.get(state, c.accent)
 
     def refresh(self, item: DownloadItem) -> None:
         self._item = item
         self.name.setText(item.file_name)
-        self.status.setText(item.describe())
+        domain = short_host(QUrl(item.url))
+        detail = item.describe()
+        self.status.setText(f"{detail} · {domain}" if domain else detail)
+        self.status.setStyleSheet(
+            f"color:{self._status_colour(item.state)}; font-size:{METRICS.text_xs}px;"
+            f"{'font-weight:600;' if item.state == 'interrupted' else ''}")
         if item.finished:
             self.bar.hide()
             self.action.setText("Show in folder" if item.state == "completed" else "")
@@ -129,15 +162,18 @@ class DownloadsDialog(QDialog):
 
         self.setWindowTitle("Downloads")
         self.resize(560, 420)
+        m = METRICS
 
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(m.space_4, m.space_4, m.space_4, m.space_4)
+        layout.setSpacing(m.space_3)
         scroll = QScrollArea(self)
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QScrollArea.Shape.NoFrame)
         self._body = QWidget(scroll)
         self._list = QVBoxLayout(self._body)
-        self._list.setContentsMargins(0, 0, 0, 0)
-        self._list.setSpacing(1)
+        self._list.setContentsMargins(0, 0, 0, 2)
+        self._list.setSpacing(m.space_2)
         self._list.addStretch(1)
         scroll.setWidget(self._body)
         layout.addWidget(scroll, 1)
