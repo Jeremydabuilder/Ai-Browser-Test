@@ -20,7 +20,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from PySide6.QtCore import QObject, Signal
+import shiboken6
+from PySide6.QtCore import QObject, QUrl, Signal
 from PySide6.QtWebEngineCore import QWebEngineDownloadRequest
 
 _STATE_NAMES = {
@@ -155,6 +156,55 @@ class DownloadManager(QObject):
             return False
         request.cancel()
         self._sync(download_id)
+        return True
+
+    def can_retry(self, download_id: int) -> bool:
+        """Whether Retry has any real chance of starting a new download.
+
+        Qt gives a `QWebEngineDownloadRequest` no way to restart itself once
+        it has stopped - the only way back in is to ask the page that
+        originated it to download the same URL again, which is exactly what
+        the original click did. That only works while the originating page
+        still exists, so a tab closed since is an honest "no", not a button
+        that quietly does nothing when pressed.
+        """
+        item = self._items.get(download_id)
+        if item is None or item.state not in ("cancelled", "interrupted"):
+            return False
+        request = self._requests.get(download_id)
+        if request is None:
+            return False
+        try:
+            page = request.page()
+        except RuntimeError:
+            return False
+        # `page()` can still hand back a Python wrapper for a page whose C++
+        # object is already gone (deleteLater has not run yet) - shiboken's
+        # isValid() is what actually tells the two apart; `is not None` does
+        # not, since a wrapper around a dead object is still a wrapper.
+        return page is not None and shiboken6.isValid(page)
+
+    def retry(self, download_id: int) -> bool:
+        """Ask the originating page to fetch the same URL again.
+
+        This does not resume or reuse the failed `QWebEngineDownloadRequest` -
+        Qt exposes no such thing. It starts an ordinary new download, which
+        arrives through `downloadRequested` exactly like the first attempt
+        and is accepted the same way, landing as a new row rather than
+        rewriting the failed one - the failed attempt stays in the list as
+        a true record of what happened.
+        """
+        if not self.can_retry(download_id):
+            return False
+        item = self._items[download_id]
+        request = self._requests[download_id]
+        try:
+            page = request.page()
+        except RuntimeError:
+            return False
+        if page is None or not shiboken6.isValid(page):
+            return False
+        page.download(QUrl(item.url))
         return True
 
     def clear_finished(self) -> None:

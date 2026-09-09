@@ -29,6 +29,38 @@ _URL_ROLE = Qt.ItemDataRole.UserRole
 _ID_ROLE = Qt.ItemDataRole.UserRole + 1
 
 
+def confirm_destructive(
+    parent: QWidget | None,
+    title: str,
+    text: str,
+    confirm_label: str,
+    *,
+    informative: str = "",
+    cancel_label: str = "Cancel",
+    danger: bool = True,
+) -> bool:
+    """One confirmation dialog every destructive action in the app shares.
+
+    A button that names the action ("Delete permanently") answers the
+    question by itself; a bare "Yes" only answers it next to the sentence
+    above it, which is gone the moment the dialog closes. Cancel is always
+    the dialog's default button, so Escape and an accidental Enter both land
+    on the safe outcome - only a deliberate click reaches the destructive one.
+    """
+    box = QMessageBox(parent)
+    box.setWindowTitle(title)
+    box.setText(text)
+    if informative:
+        box.setInformativeText(informative)
+    confirm = box.addButton(confirm_label, QMessageBox.ButtonRole.DestructiveRole)
+    if danger:
+        confirm.setProperty("kind", "danger")
+    cancel = box.addButton(cancel_label, QMessageBox.ButtonRole.RejectRole)
+    box.setDefaultButton(cancel)
+    box.exec()
+    return box.clickedButton() is confirm
+
+
 def _time_of_day(dt: datetime) -> str:
     """"3:45 PM", not "03:45 PM" - %-I is Linux/Mac only, so the leading
     zero is stripped by hand instead of relying on a platform-specific
@@ -212,10 +244,11 @@ class HistoryDialog(_ListDialog):
         self.refresh()
 
     def _clear_all(self) -> None:
-        confirm = QMessageBox.question(
-            self, "Clear history", "Delete the entire browsing history?"
-        )
-        if confirm == QMessageBox.StandardButton.Yes:
+        if confirm_destructive(
+            self, "Clear history", "Delete your entire browsing history?",
+            "Clear history",
+            informative="This cannot be undone.",
+        ):
             self._history.clear()
             self.refresh()
 

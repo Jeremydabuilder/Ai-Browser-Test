@@ -32,7 +32,7 @@ from app.browser.load_error import ErrorCategory, LoadError
 from app.browser.profile import BrowserProfile
 from app.browser.tab_manager import TabManager
 from app.storage import BookmarkStore, Database, HistoryStore, SettingsStore
-from app.ui.dialogs import BookmarksDialog, HistoryDialog
+from app.ui.dialogs import BookmarksDialog, HistoryDialog, confirm_destructive
 from app.ui.find_bar import FindBar
 from app.ui.navigation_bar import NavigationBar
 from app.utils import urls as url_utils
@@ -600,22 +600,25 @@ class MainWindow(QMainWindow):
         box.setInformativeText(
             "It is removed from your library. Its findings and pages are kept, "
             "so it can be brought back.")
-        delete = box.addButton("Delete", QMessageBox.ButtonRole.AcceptRole)
+        delete = box.addButton("Delete", QMessageBox.ButtonRole.DestructiveRole)
+        delete.setProperty("kind", "danger")
         forever = box.addButton("Delete permanently", QMessageBox.ButtonRole.DestructiveRole)
-        box.addButton(QMessageBox.StandardButton.Cancel)
+        forever.setProperty("kind", "danger")
+        cancel = box.addButton(QMessageBox.StandardButton.Cancel)
+        box.setDefaultButton(cancel)
         box.exec()
 
         clicked = box.clickedButton()
         if clicked is delete:
             self.missions.delete(mission_id)
         elif clicked is forever:
-            confirm = QMessageBox.warning(
+            if not confirm_destructive(
                 self, "Delete permanently",
                 f"Permanently delete \u201c{mission.title}\u201d and everything "
-                "recorded in it? This cannot be undone.",
-                QMessageBox.StandardButton.Cancel | QMessageBox.StandardButton.Yes,
-                QMessageBox.StandardButton.Cancel)
-            if confirm != QMessageBox.StandardButton.Yes:
+                "recorded in it?",
+                "Delete permanently",
+                informative="This cannot be undone.",
+            ):
                 return
             self.missions.delete(mission_id, permanent=True)
         else:
@@ -655,19 +658,17 @@ class MainWindow(QMainWindow):
         self._reload_mission_views(mission_id)
 
     def _clear_decision(self, mission_id: int) -> None:
-        from PySide6.QtWidgets import QMessageBox
-
         decision = self.missions.decision(mission_id)
         if decision is None:
             return
-        answer = QMessageBox.question(
+        if confirm_destructive(
             self, "Clear decision",
-            f"Clear the decision \u201c{decision.decision}\u201d?\n\n"
-            "The mission keeps its findings, and the record that this was "
-            "decided is kept too.",
-            QMessageBox.StandardButton.Cancel | QMessageBox.StandardButton.Yes,
-            QMessageBox.StandardButton.Cancel)
-        if answer == QMessageBox.StandardButton.Yes:
+            f"Clear the decision \u201c{decision.decision}\u201d?",
+            "Clear decision",
+            informative=(
+                "The mission keeps its findings, and the record that this "
+                "was decided is kept too."),
+        ):
             self.missions.clear_decision(mission_id)
             self._reload_mission_views(mission_id)
 

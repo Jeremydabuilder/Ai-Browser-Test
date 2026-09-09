@@ -230,6 +230,24 @@ class _Handler(BaseHTTPRequestHandler):
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
+        elif path == "/download-slow":
+            # Trickles out over half a second so a test can reliably cancel
+            # it mid-transfer instead of racing a download that is done
+            # before cancel() is even called.
+            import time as _time
+            chunk = b"slow-chunk\n"
+            self.send_response(200)
+            self.send_header("Content-Type", "application/octet-stream")
+            self.send_header("Content-Disposition", 'attachment; filename="slow.bin"')
+            self.send_header("Content-Length", str(len(chunk) * 20))
+            self.end_headers()
+            try:
+                for _ in range(20):
+                    self.wfile.write(chunk)
+                    self.wfile.flush()
+                    _time.sleep(0.05)
+            except (BrokenPipeError, ConnectionResetError):
+                pass
         elif path == "/download-unsized":
             # No Content-Length: the engine cannot know the total, which is the
             # case where a percentage would have to be invented.
@@ -370,6 +388,7 @@ DOWNLOADS_PAGE = """<!doctype html><html><head><title>Downloads</title></head>
 <body><h1>Downloads</h1>
 <a id="file" href="/download">Get the file</a>
 <a id="unsized" href="/download-unsized">Get the unsized file</a>
+<a id="slow" href="/download-slow">Get the slow file</a>
 </body></html>"""
 
 

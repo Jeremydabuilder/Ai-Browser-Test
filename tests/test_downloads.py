@@ -195,6 +195,69 @@ class RealDownloadTests(unittest.TestCase):
         self._download("file")
         self.assertEqual(self.manager.active_count(), 0)
 
+    def _download_and_cancel(self, element_id: str) -> DownloadItem:
+        started = []
+        self.manager.started.connect(started.append)
+        self.tab.run_javascript(f"document.getElementById('{element_id}').click();")
+        self.assertTrue(pump(lambda: started), "the download never started")
+        item = started[-1]
+        self.assertTrue(
+            pump(lambda: self.manager.get(item.id).state == "in_progress"),
+            "the download never reached in_progress")
+        self.manager.cancel(item.id)
+        self.assertTrue(
+            pump(lambda: self.manager.get(item.id).finished),
+            "the cancelled download never settled")
+        return self.manager.get(item.id)
+
+    def test_a_completed_download_cannot_be_retried(self) -> None:
+        item = self._download("file")
+        self.assertFalse(self.manager.can_retry(item.id))
+
+    def test_an_unknown_download_cannot_be_retried(self) -> None:
+        self.assertFalse(self.manager.can_retry(999999))
+        self.assertFalse(self.manager.retry(999999))
+
+    def test_a_cancelled_download_can_be_retried(self) -> None:
+        item = self._download_and_cancel("slow")
+        self.assertEqual(item.state, "cancelled")
+        self.assertTrue(self.manager.can_retry(item.id))
+
+    def test_retrying_a_cancelled_download_fetches_it_again(self) -> None:
+        cancelled = self._download_and_cancel("slow")
+        finished = []
+        self.manager.finished.connect(finished.append)
+        self.assertTrue(self.manager.retry(cancelled.id))
+        self.assertTrue(
+            pump(lambda: any(item.id != cancelled.id for item in finished)),
+            "the retried download never finished")
+        retried = [item for item in finished if item.id != cancelled.id][-1]
+        self.assertNotEqual(retried.id, cancelled.id)
+        self.assertEqual(retried.state, "completed")
+        self.assertEqual(retried.url, cancelled.url)
+        # The failed attempt is still in the list as its own true record,
+        # not silently replaced by the retry that followed it.
+        self.assertEqual(self.manager.get(cancelled.id).state, "cancelled")
+
+    def test_retry_survives_the_tab_that_started_it_being_closed(self) -> None:
+        # QWebEnginePage teardown is asynchronous and, in this offscreen test
+        # environment, not guaranteed to finish before the test does - the
+        # same engine quirk noted elsewhere in this suite. What matters here
+        # is not the exact millisecond can_retry() flips to False, but that
+        # neither it nor retry() ever raises once the page they check is on
+        # its way out, which is exactly the crash the shiboken6.isValid()
+        # guard in DownloadManager exists to prevent.
+        cancelled = self._download_and_cancel("slow")
+        self.assertTrue(self.manager.can_retry(cancelled.id))
+        self.tabs.close_tab(self.tabs.tabs().index(self.tab))
+        for _ in range(5):
+            _app.processEvents()
+        try:
+            self.manager.can_retry(cancelled.id)
+            self.manager.retry(cancelled.id)
+        except RuntimeError:
+            self.fail("can_retry/retry raised on a closed tab's download")
+
 
 if __name__ == "__main__":
     unittest.main()

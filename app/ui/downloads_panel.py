@@ -110,8 +110,15 @@ class _Row(QWidget):
             f"{'font-weight:600;' if item.state == 'interrupted' else ''}")
         if item.finished:
             self.bar.hide()
-            self.action.setText("Show in folder" if item.state == "completed" else "")
-            self.action.setVisible(item.state == "completed")
+            if item.state == "completed":
+                self.action.setText("Show in folder")
+                self.action.setVisible(True)
+            elif self._manager.can_retry(item.id):
+                self.action.setText("Retry")
+                self.action.setVisible(True)
+            else:
+                self.action.setText("")
+                self.action.setVisible(False)
         else:
             self.bar.show()
             share = item.percent
@@ -125,10 +132,12 @@ class _Row(QWidget):
             self.action.setText("Cancel")
 
     def _act(self) -> None:
-        if self._item.finished:
+        if not self._item.finished:
+            self._manager.cancel(self._item.id)
+        elif self._item.state == "completed":
             reveal(os.path.join(self._item.directory, self._item.file_name))
         else:
-            self._manager.cancel(self._item.id)
+            self._manager.retry(self._item.id)
 
 
 def reveal(path: str) -> bool:

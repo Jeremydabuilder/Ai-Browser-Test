@@ -1000,6 +1000,17 @@ _TEMPLATE = """<!doctype html>
     remove.addEventListener("click", function () { act("delete", { id: mission.id }); });
     menu.appendChild(remove);
     overflow.appendChild(menu);
+    // <details> has no built-in Escape-to-close, unlike <dialog> - without
+    // this, the one native keyboard convention every menu is expected to
+    // honour silently does not work here. Focus goes back to the toggle
+    // that opened it, the same place a click on it would have left focus.
+    overflow.addEventListener("keydown", function (event) {
+      if (event.key === "Escape" && overflow.open) {
+        event.preventDefault();
+        overflow.open = false;
+        moreToggle.focus();
+      }
+    });
     actions.appendChild(overflow);
     body.appendChild(actions);
 

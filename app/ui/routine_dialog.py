@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from PySide6.QtWidgets import (
+    QApplication,
     QDialog,
     QDialogButtonBox,
     QFormLayout,
@@ -13,6 +14,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.routines.model import Routine
+from app.ui import theme
 
 
 class RoutineRunDialog(QDialog):
@@ -27,13 +29,21 @@ class RoutineRunDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle(f"Run “{routine.name}”")
         self._fields: dict[str, QLineEdit] = {}
+        m = theme.METRICS
+        c = theme.palette_for(QApplication.instance())
 
         layout = QVBoxLayout(self)
-        layout.addWidget(QLabel(
+        layout.setContentsMargins(m.space_5, m.space_5, m.space_5, m.space_4)
+        layout.setSpacing(m.space_3)
+        note = QLabel(
             f"{len(routine.steps)} step{'s' if len(routine.steps) != 1 else ''}. "
-            "Review the inputs below, then run.", self))
+            "Review the inputs below, then run.", self)
+        note.setWordWrap(True)
+        note.setStyleSheet(f"color:{c.muted}; font-size:{m.text_sm}px;")
+        layout.addWidget(note)
 
         form = QFormLayout()
+        form.setSpacing(m.space_2)
         for step in routine.steps:
             for key in step.variable_keys():
                 slot = step.slot(key)
@@ -45,6 +55,12 @@ class RoutineRunDialog(QDialog):
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel,
             self)
+        run_button = buttons.button(QDialogButtonBox.StandardButton.Ok)
+        if run_button is not None:
+            run_button.setText("Run")
+            run_button.setProperty("kind", "primary")
+            run_button.setDefault(True)
+            run_button.setAutoDefault(True)
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)

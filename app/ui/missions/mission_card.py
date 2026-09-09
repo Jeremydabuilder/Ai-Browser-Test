@@ -845,6 +845,11 @@ class _FindingDialog(QDialog):
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel,
             self)
+        save = buttons.button(QDialogButtonBox.StandardButton.Save)
+        if save is not None:
+            save.setProperty("kind", "primary")
+            save.setDefault(True)
+            save.setAutoDefault(True)
         challenge = buttons.addButton("Challenge",
                                       QDialogButtonBox.ButtonRole.ActionRole)
         challenge.setToolTip("Ask Py to try to prove this wrong")

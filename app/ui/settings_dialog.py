@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
     QButtonGroup,
     QDialog,
     QDialogButtonBox,
+    QFrame,
     QLabel,
     QLineEdit,
     QRadioButton,
@@ -71,20 +72,33 @@ class SettingsDialog(QDialog):
             label.setStyleSheet(f"color:{c.muted}; font-size:{m.text_sm}px;")
             return label
 
+        def divider() -> QFrame:
+            line = QFrame(self)
+            line.setFrameShape(QFrame.Shape.HLine)
+            line.setStyleSheet(f"background:{c.line}; max-height:1px; border:none;")
+            return line
+
         heading = section_heading("When I open a new tab or press Home")
         layout.addWidget(heading)
 
+        # Indented under its heading, the same way a menu's sub-items read as
+        # belonging to the item above them - without it the radio group and
+        # the section title floated at the same depth as everything else.
+        modes_layout = QVBoxLayout()
+        modes_layout.setContentsMargins(m.space_3, m.space_1, 0, 0)
+        modes_layout.setSpacing(0)
         self._modes = QButtonGroup(self)
         current_mode = settings.new_tab_mode
         for index, (mode, label) in enumerate(NEW_TAB_MODES):
             button = QRadioButton(label, self)
             button.setChecked(mode == current_mode)
             self._modes.addButton(button, index)
-            layout.addWidget(button)
+            modes_layout.addWidget(button)
 
         self.custom = QLineEdit(settings.new_tab_custom_url, self)
         self.custom.setPlaceholderText("https://example.com/")
-        layout.addWidget(self.custom)
+        modes_layout.addWidget(self.custom)
+        layout.addLayout(modes_layout)
         self._modes.idToggled.connect(self._sync_custom)
         self._sync_custom()
 
@@ -92,15 +106,21 @@ class SettingsDialog(QDialog):
             "PyBrowser New Tab is a page inside the browser. It opens "
             "instantly, works offline, and sends nothing anywhere."))
 
-        layout.addSpacing(m.space_3)
+        layout.addSpacing(m.space_2)
+        layout.addWidget(divider())
+        layout.addSpacing(m.space_2)
         layout.addWidget(section_heading("Search with"))
 
         self.search = QLineEdit(settings.search_url, self)
         self.search.setPlaceholderText("https://example.com/search?q={query}")
         layout.addWidget(self.search)
+        self.search.textChanged.connect(self._clear_problem)
+        self.custom.textChanged.connect(self._clear_problem)
 
         presets = QLabel(
-            "  ".join(f"<a href='{url}'>{name}</a>" for name, url in _SEARCH_PRESETS),
+            "  ".join(f"<a href='{url}' style='color:{c.accent}; "
+                      f"text-decoration:none;'>{name}</a>"
+                      for name, url in _SEARCH_PRESETS),
             self)
         presets.setTextFormat(Qt.TextFormat.RichText)
         presets.setStyleSheet(f"font-size:{m.text_sm}px;")
@@ -123,6 +143,11 @@ class SettingsDialog(QDialog):
         save_button = buttons.button(QDialogButtonBox.StandardButton.Save)
         if save_button is not None:
             save_button.setProperty("kind", "primary")
+            # Enter should save, from anywhere in the dialog, the same way
+            # Enter confirms every other dialog in the app - not just when
+            # focus happens to already sit on the button.
+            save_button.setDefault(True)
+            save_button.setAutoDefault(True)
         buttons.accepted.connect(self._save)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
@@ -134,6 +159,12 @@ class SettingsDialog(QDialog):
 
     def _sync_custom(self) -> None:
         self.custom.setEnabled(self._selected_mode() == NEW_TAB_CUSTOM)
+
+    def _clear_problem(self) -> None:
+        # A stale "The search address must contain {query}" left on screen
+        # after the user has already fixed it reads as the browser not
+        # noticing its own error went away.
+        self.problem.setText("")
 
     def _save(self) -> None:
         template = self.search.text().strip()
