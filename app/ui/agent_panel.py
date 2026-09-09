@@ -8,7 +8,7 @@ logic - every decision belongs to AgentSession, which this panel only watches.
 from __future__ import annotations
 
 from PySide6.QtCore import QEasingCurve, QPropertyAnimation, Qt, Signal
-from PySide6.QtGui import QKeyEvent, QTextCursor
+from PySide6.QtGui import QFont, QFontMetrics, QKeyEvent, QTextCursor
 from PySide6.QtWidgets import (
     QApplication,
     QFrame,
@@ -378,7 +378,16 @@ class AgentPanel(QWidget):
             # never be able to push the Clear button off the edge of a
             # docked panel the way an unbounded label used to.
             badge.setMaximumWidth(132)
-            metrics = badge.fontMetrics()
+            # Measured against an explicit QFont matching the stylesheet's
+            # size/weight, not badge.fontMetrics(): a stylesheet's font-size
+            # is not guaranteed to be reflected until the widget is shown and
+            # polished, so measuring right after setStyleSheet() can use the
+            # wrong (larger, unstyled) font - over-eliding "Claude Opus 5"
+            # down to "Claude Op" even though the styled text would fit.
+            badge_font = QFont(badge.font())
+            badge_font.setPixelSize(m.text_xs)
+            badge_font.setBold(True)
+            metrics = QFontMetrics(badge_font)
             badge.setText(metrics.elidedText(model_text, Qt.TextElideMode.ElideRight, 108))
             top.addWidget(badge)
         self.clear_button = QPushButton("Clear", self)
