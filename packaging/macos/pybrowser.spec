@@ -9,7 +9,12 @@
 import os
 import sys
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(SPECPATH)), "..", "common"))
+# SPECPATH is PyInstaller's own global for this spec file's directory - not
+# the file path itself, despite the name (confirmed the hard way: the extra
+# dirname() this line used to have walked one directory too high and made
+# `from spec_common import ...` fail with "No module named 'spec_common'"
+# on the first real CI run).
+sys.path.insert(0, os.path.abspath(os.path.join(SPECPATH, "..", "common")))
 from spec_common import REPO_ROOT, DATAS, HIDDENIMPORTS, COLLECT_ALL, VERSION  # noqa: E402
 
 block_cipher = None

@@ -9,7 +9,11 @@
 import os
 import sys
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(SPECPATH)), "..", "common"))
+# SPECPATH is PyInstaller's own global for this spec file's directory - not
+# the file path itself, despite the name (see packaging/macos/pybrowser.spec
+# for how this was actually caught: the extra dirname() this line used to
+# have walked one directory too high on the first real CI run).
+sys.path.insert(0, os.path.abspath(os.path.join(SPECPATH, "..", "common")))
 from spec_common import REPO_ROOT, DATAS, HIDDENIMPORTS, COLLECT_ALL, VERSION  # noqa: E402
 
 block_cipher = None
