@@ -377,18 +377,19 @@ class AgentPanel(QWidget):
             # Elided rather than left to clip: a custom or long model id must
             # never be able to push the Clear button off the edge of a
             # docked panel the way an unbounded label used to.
-            badge.setMaximumWidth(132)
+            badge.setMaximumWidth(190)
             # Measured against an explicit QFont matching the stylesheet's
             # size/weight, not badge.fontMetrics(): a stylesheet's font-size
             # is not guaranteed to be reflected until the widget is shown and
             # polished, so measuring right after setStyleSheet() can use the
-            # wrong (larger, unstyled) font - over-eliding "Claude Opus 5"
-            # down to "Claude Op" even though the styled text would fit.
+            # wrong (larger, unstyled) font.
             badge_font = QFont(badge.font())
             badge_font.setPixelSize(m.text_xs)
             badge_font.setBold(True)
-            metrics = QFontMetrics(badge_font)
-            badge.setText(metrics.elidedText(model_text, Qt.TextElideMode.ElideRight, 108))
+            self._model_badge = badge
+            self._model_text = model_text
+            self._model_badge_font = badge_font
+            self._resync_model_badge()
             top.addWidget(badge)
         self.clear_button = QPushButton("Clear", self)
         self.clear_button.setProperty("kind", "quiet")
@@ -561,6 +562,32 @@ class AgentPanel(QWidget):
         else:
             self._connect(session)
             self._show_empty_state()
+
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        self._resync_model_badge()
+
+    def _resync_model_badge(self) -> None:
+        """Show as much of the model name as the panel's real width allows.
+
+        A single fixed elide budget cannot serve both cases: tight enough to
+        keep the Clear button on-screen in a squeezed panel
+        (test_the_clear_button_stays_reachable_in_a_narrow_panel, at 220px)
+        would truncate "Claude Opus 5" down to a few letters in the *normal*
+        panel (380px by default) - and that used to be exactly what
+        happened. 340px is the same threshold main_window.py already uses
+        to decide between the large and small mascot, so a panel roomy
+        enough for the big mascot is treated as roomy enough for the model
+        name to read in full.
+        """
+        badge = getattr(self, "_model_badge", None)
+        if badge is None:
+            return
+        budget = 160 if self.width() >= 340 else 108
+        metrics = QFontMetrics(self._model_badge_font)
+        text = metrics.elidedText(self._model_text, Qt.TextElideMode.ElideRight, budget)
+        if text != badge.text():
+            badge.setText(text)
 
     # -- wiring ----------------------------------------------------------
     def _connect(self, session: AgentSession) -> None:

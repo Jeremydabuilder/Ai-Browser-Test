@@ -198,6 +198,25 @@ class HeaderLayoutTests(PanelTests):
         self.assertLessEqual(panel.clear_button.geometry().right(), panel.width())
         self.assertTrue(panel.clear_button.isVisible())
 
+    def test_the_model_badge_shows_the_full_name_at_a_normal_panel_width(self):
+        # Regression: the badge used to elide against one fixed, narrow
+        # budget regardless of how much room the panel actually had, so
+        # "Claude Opus 5" rendered as "Claude Op" even at the default
+        # (380px) panel width. 340px is the same threshold main_window.py
+        # uses for the large vs. small mascot.
+        panel = self.start([says("done")])
+        panel.setFixedWidth(380)
+        panel.show()
+        _app.processEvents()
+        self.assertEqual(panel._model_badge.text(), panel._model_text)
+
+    def test_the_model_badge_still_elides_in_a_narrow_panel(self):
+        panel = self.start([says("done")])
+        panel.setFixedWidth(220)
+        panel.show()
+        _app.processEvents()
+        self.assertLessEqual(panel.clear_button.geometry().right(), panel.width())
+
     def test_quick_actions_wrap_onto_more_than_one_row_when_narrow(self):
         panel = self.start([says("done")])
         panel.setFixedWidth(220)
