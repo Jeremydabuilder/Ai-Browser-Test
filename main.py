@@ -6,6 +6,8 @@ Run with:  python main.py [url ...]
 from __future__ import annotations
 
 import argparse
+import logging
+import logging.handlers
 import os
 import signal
 import sys
@@ -20,10 +22,38 @@ from PySide6.QtWidgets import QApplication
 from app import APP_NAME, ORG_NAME, __version__
 from app.browser.newtab import register_scheme
 from app.browser.profile import BrowserProfile
-from app.config import database_path, icon_path
+from app.config import database_path, icon_path, log_path
 from app.storage import Database
 from app.ui import theme
 from app.ui.main_window import MainWindow
+
+
+def configure_logging() -> None:
+    """Write warnings and up to a rotating file, and catch what nothing else
+    would: an uncaught exception in a windowed, no-console packaged build has
+    no terminal to print a traceback to, so without this the app just
+    silently vanishes with no way for anyone to say what happened.
+
+    Deliberately just the exception's own type/message/traceback - never any
+    application data. Nothing here should ever be handed an API key: the
+    Credential type callers pass around exposes only a fingerprint for this
+    exact reason (see app/agent/credentials.py), never the key itself.
+    """
+    handler = logging.handlers.RotatingFileHandler(
+        log_path(), maxBytes=2_000_000, backupCount=2, encoding="utf-8")
+    handler.setFormatter(logging.Formatter(
+        "%(asctime)s %(levelname)s %(name)s: %(message)s"))
+    logging.getLogger().addHandler(handler)
+    logging.getLogger().setLevel(logging.WARNING)
+
+    def log_uncaught(exc_type, exc_value, exc_tb) -> None:
+        if issubclass(exc_type, KeyboardInterrupt):
+            sys.__excepthook__(exc_type, exc_value, exc_tb)
+            return
+        logging.getLogger("pybrowser.crash").critical(
+            "Unhandled exception", exc_info=(exc_type, exc_value, exc_tb))
+
+    sys.excepthook = log_uncaught
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
@@ -34,6 +64,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
 
 
 def main(argv: list[str] | None = None) -> int:
+    configure_logging()
     args = parse_args(argv if argv is not None else sys.argv[1:])
 
     # Chromium reads its scheme registry once, before the application exists,

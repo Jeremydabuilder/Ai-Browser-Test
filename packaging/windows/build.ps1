@@ -28,11 +28,14 @@ if ($LASTEXITCODE -ne 0) { throw "PyInstaller failed" }
 Write-Host "== dist\PyBrowser built ==" -ForegroundColor Green
 Get-ChildItem "dist\PyBrowser\PyBrowser.exe" | Format-List
 
+$Version = (python -c "from app import __version__; print(__version__)").Trim()
+Write-Host "== Building version $Version ==" -ForegroundColor Cyan
+
 $iscc = Get-Command "iscc.exe" -ErrorAction SilentlyContinue
 if ($iscc) {
     Write-Host "== Building installer with Inno Setup ==" -ForegroundColor Cyan
     New-Item -ItemType Directory -Force -Path "packaging\windows\output" | Out-Null
-    & $iscc.Path "packaging\windows\installer.iss"
+    & $iscc.Path "/DMyAppVersion=$Version" "packaging\windows\installer.iss"
     if ($LASTEXITCODE -ne 0) { throw "Inno Setup compile failed" }
     Write-Host "== Installer written to packaging\windows\output\ ==" -ForegroundColor Green
 } else {

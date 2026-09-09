@@ -76,6 +76,18 @@ def cache_path() -> Path:
     return path
 
 
+def log_path() -> Path:
+    """Where startup/runtime errors are written.
+
+    A packaged build has no terminal to print a traceback to - without a
+    file, an uncaught exception during startup just makes the app vanish
+    with no way for anyone to say what happened. See main.py's excepthook.
+    """
+    path = user_data_dir() / "logs"
+    path.mkdir(parents=True, exist_ok=True)
+    return path / "pybrowser.log"
+
+
 def downloads_path() -> Path:
     path = Path.home() / "Downloads"
     try:

@@ -18,8 +18,16 @@ the repo root without hardcoding an absolute path.
 from __future__ import annotations
 
 import os
+import sys
 
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+
+# The one place a build reads PyBrowser's version from - app/__init__.py.
+# Importing it (rather than re-parsing the file with a regex) means a spec
+# and the app can never quietly disagree about what version they are.
+if REPO_ROOT not in sys.path:
+    sys.path.insert(0, REPO_ROOT)
+from app import __version__ as VERSION  # noqa: E402
 
 # -- data files ---------------------------------------------------------
 # Py's artwork and the app icon are resolved at runtime relative to

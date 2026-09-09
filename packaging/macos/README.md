@@ -63,6 +63,13 @@ environment on it, using only `PyBrowser.app` (or the mounted `.dmg`):
       drag-to-Applications reinstall, since that replaces the `.app` bundle
       but must never touch this directory)
 
+## Logs
+
+`~/Library/Application Support/PyBrowser/logs/pybrowser.log` (rotated at
+2MB, 2 backups kept) - same mechanism as Windows: `main.py` installs a
+`sys.excepthook` so a crash in a windowed app has somewhere to go instead of
+vanishing silently. Never contains application data or API keys.
+
 ## Known gaps
 
 - No Developer ID signature, no hardened runtime entitlements, no

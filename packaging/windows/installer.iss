@@ -8,8 +8,14 @@
 ;
 ; Requires Inno Setup 6: https://jrsoftware.org/isinfo.php
 
+; MyAppVersion is normally passed in from CI (iscc /DMyAppVersion=X.Y.Z),
+; read from the same app/__init__.py that packaging/common/spec_common.py
+; reads for the PyInstaller build - see build.ps1. This fallback is only
+; for a local `iscc installer.iss` run with no override.
+#ifndef MyAppVersion
+  #define MyAppVersion "0.1.0"
+#endif
 #define MyAppName "PyBrowser"
-#define MyAppVersion "0.1.0"
 #define MyAppPublisher "AiBrowserTest"
 #define MyAppExeName "PyBrowser.exe"
 #define MyAppURL "https://github.com/Jeremydabuilder/Ai-Browser-Test"

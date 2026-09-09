@@ -10,7 +10,7 @@ import os
 import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(SPECPATH)), "..", "common"))
-from spec_common import REPO_ROOT, DATAS, HIDDENIMPORTS, COLLECT_ALL  # noqa: E402
+from spec_common import REPO_ROOT, DATAS, HIDDENIMPORTS, COLLECT_ALL, VERSION  # noqa: E402
 
 block_cipher = None
 
@@ -67,8 +67,8 @@ app = BUNDLE(
     info_plist={
         "CFBundleName": "PyBrowser",
         "CFBundleDisplayName": "PyBrowser",
-        "CFBundleShortVersionString": "0.1.0",
-        "CFBundleVersion": "0.1.0",
+        "CFBundleShortVersionString": VERSION,
+        "CFBundleVersion": VERSION,
         "NSHighResolutionCapable": True,
         # PyBrowser makes real HTTP(S) requests to whatever a person
         # navigates to, and to the AI provider they configure - both are

@@ -34,6 +34,10 @@ jobs:
           QT_QPA_PLATFORM: offscreen
         run: python -m pytest tests/ -q
 
+      - name: Read the app version
+        id: version
+        run: echo "version=$(python3 -c 'from app import __version__; print(__version__)')" >> "$GITHUB_OUTPUT"
+
       - name: Build the .icns app icon
         run: bash packaging/macos/make_icns.sh
 
@@ -47,6 +51,26 @@ jobs:
         # packaging/SIGNING.md. Never treat this step as "it's signed."
         run: codesign --force --deep --sign - dist/PyBrowser.app
 
+      - name: Smoke test - launch the app bundle
+        # Same honest limitation as the Windows workflow: this proves the
+        # frozen .app actually starts on a real Mac and survives past
+        # whatever would crash it immediately, not that a person clicked
+        # through the UI. See packaging/macos/README.md for the real
+        # first-run checklist.
+        run: |
+          export PYBROWSER_DATA_DIR="$RUNNER_TEMP/pybrowser-smoke"
+          open dist/PyBrowser.app
+          sleep 15
+          if pgrep -f "dist/PyBrowser.app/Contents/MacOS/PyBrowser" > /dev/null; then
+            echo "PyBrowser.app ran for 15s without exiting."
+            pkill -f "dist/PyBrowser.app/Contents/MacOS/PyBrowser"
+          else
+            echo "PyBrowser.app exited early - this is a real release bug, not a flaky test."
+            LOG="$PYBROWSER_DATA_DIR/logs/pybrowser.log"
+            if [ -f "$LOG" ]; then cat "$LOG"; else echo "(no log file was written at $LOG)"; fi
+            exit 1
+          fi
+
       - name: Install create-dmg
         run: brew install create-dmg
 
@@ -59,12 +83,12 @@ jobs:
             --icon-size 96 \
             --icon "PyBrowser.app" 140 160 \
             --app-drop-link 400 160 \
-            "packaging/macos/output/PyBrowser-0.1.0.dmg" \
+            "packaging/macos/output/PyBrowser-macOS-${{ steps.version.outputs.version }}.dmg" \
             "dist/PyBrowser.app"
 
       - uses: actions/upload-artifact@v4
         with:
-          name: PyBrowser-macos-dmg
+          name: PyBrowser-macOS-${{ steps.version.outputs.version }}
           path: packaging/macos/output/*.dmg
           if-no-files-found: error
 

@@ -90,6 +90,17 @@ folder) - not a dev checkout:
       inside the install directory - uninstalling must not delete it)
 - [ ] Uninstalling removes the program files only, not user data
 
+## Logs
+
+`%LOCALAPPDATA%\PyBrowser\logs\pybrowser.log` (rotated at 2MB, 2 backups
+kept). A windowed, no-console build has nowhere to print a traceback to, so
+`main.py` installs a `sys.excepthook` that writes any uncaught exception
+here instead of the app just silently vanishing. Only the exception's own
+type/message/traceback is logged - never application data, and never an API
+key (`app/agent/credentials.py`'s `Credential` type only ever exposes a
+fingerprint, by design, so there is nothing sensitive for a traceback to
+capture in the first place).
+
 ## Known gaps
 
 - No code-signing certificate is applied - see `packaging/SIGNING.md`. An

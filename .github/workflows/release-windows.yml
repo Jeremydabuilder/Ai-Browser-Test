@@ -38,24 +38,53 @@ jobs:
           QT_QPA_PLATFORM: offscreen
         run: python -m pytest tests/ -q
 
+      - name: Read the app version
+        id: version
+        run: |
+          $v = (python -c "from app import __version__; print(__version__)").Trim()
+          echo "version=$v" >> $env:GITHUB_OUTPUT
+        shell: pwsh
+
       - name: Build with PyInstaller
         run: pyinstaller packaging/windows/pybrowser.spec --noconfirm
+
+      - name: Smoke test - launch the frozen exe
+        # This is NOT a substitute for a human clicking through the app - it
+        # is the one thing CI can honestly verify without a GUI session: that
+        # the packaged exe starts, survives past whatever would make it crash
+        # immediately (a missing DLL, a Qt WebEngine resource PyInstaller's
+        # hook failed to collect, an import error with no console to print
+        # to), and stays alive. A real first-run checklist still has to be
+        # run by a person - see packaging/windows/README.md.
+        shell: pwsh
+        run: |
+          $env:PYBROWSER_DATA_DIR = "$env:RUNNER_TEMP\pybrowser-smoke"
+          $proc = Start-Process -FilePath "dist\PyBrowser\PyBrowser.exe" -PassThru
+          Start-Sleep -Seconds 15
+          if ($proc.HasExited) {
+            Write-Host "PyBrowser exited early (code $($proc.ExitCode)) - this is a real release bug, not a flaky test."
+            $log = "$env:PYBROWSER_DATA_DIR\logs\pybrowser.log"
+            if (Test-Path $log) { Get-Content $log } else { Write-Host "(no log file was written at $log)" }
+            throw "PyBrowser.exe did not stay running"
+          }
+          Write-Host "PyBrowser.exe ran for 15s without exiting."
+          Stop-Process -Id $proc.Id -Force
 
       - name: Build installer with Inno Setup
         run: |
           choco install innosetup -y --no-progress
-          & "C:\Program Files (x86)\Inno Setup 6\iscc.exe" packaging\windows\installer.iss
+          & "C:\Program Files (x86)\Inno Setup 6\iscc.exe" "/DMyAppVersion=${{ steps.version.outputs.version }}" packaging\windows\installer.iss
         shell: pwsh
 
       - uses: actions/upload-artifact@v4
         with:
-          name: PyBrowser-windows-installer
+          name: PyBrowser-Windows-Setup-${{ steps.version.outputs.version }}
           path: packaging/windows/output/*.exe
           if-no-files-found: error
 
       - uses: actions/upload-artifact@v4
         with:
-          name: PyBrowser-windows-onedir
+          name: PyBrowser-Windows-x64-${{ steps.version.outputs.version }}
           path: dist/PyBrowser/
           if-no-files-found: error
 

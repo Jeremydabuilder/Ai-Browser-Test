@@ -10,9 +10,35 @@ import os
 import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(SPECPATH)), "..", "common"))
-from spec_common import REPO_ROOT, DATAS, HIDDENIMPORTS, COLLECT_ALL  # noqa: E402
+from spec_common import REPO_ROOT, DATAS, HIDDENIMPORTS, COLLECT_ALL, VERSION  # noqa: E402
 
 block_cipher = None
+
+# Windows' own "Details" tab (right-click PyBrowser.exe -> Properties) reads
+# this, so it should say the same version as everything else rather than a
+# separate hardcoded number nobody remembers to update.
+from PyInstaller.utils.win32.versioninfo import (  # noqa: E402
+    FixedFileInfo, StringFileInfo, StringStruct, StringTable, VarFileInfo,
+    VarStruct, VSVersionInfo,
+)
+
+_version_tuple = tuple(int(p) for p in VERSION.split(".")) + (0, 0, 0, 0)
+_version_tuple = _version_tuple[:4]
+version_info = VSVersionInfo(
+    ffi=FixedFileInfo(filevers=_version_tuple, prodvers=_version_tuple),
+    kids=[
+        StringFileInfo([StringTable("040904B0", [
+            StringStruct("CompanyName", "AiBrowserTest"),
+            StringStruct("FileDescription", "PyBrowser"),
+            StringStruct("FileVersion", VERSION),
+            StringStruct("InternalName", "PyBrowser"),
+            StringStruct("OriginalFilename", "PyBrowser.exe"),
+            StringStruct("ProductName", "PyBrowser"),
+            StringStruct("ProductVersion", VERSION),
+        ])]),
+        VarFileInfo([VarStruct("Translation", [1033, 1200])]),
+    ],
+)
 
 a = Analysis(
     [os.path.join(REPO_ROOT, "main.py")],
@@ -48,6 +74,7 @@ exe = EXE(
     upx=False,
     console=False,
     icon=os.path.join(REPO_ROOT, "packaging", "common", "icons", "pybrowser.ico"),
+    version=version_info,
 )
 
 # --onedir, not --onefile: a --onefile build re-extracts the entire Chromium
