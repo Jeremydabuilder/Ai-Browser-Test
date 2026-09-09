@@ -20,7 +20,7 @@ from PySide6.QtWidgets import QApplication
 from app import APP_NAME, ORG_NAME, __version__
 from app.browser.newtab import register_scheme
 from app.browser.profile import BrowserProfile
-from app.config import database_path
+from app.config import database_path, icon_path
 from app.storage import Database
 from app.ui import theme
 from app.ui.main_window import MainWindow
@@ -45,7 +45,11 @@ def main(argv: list[str] | None = None) -> int:
     QCoreApplication.setApplicationVersion(__version__)
 
     app = QApplication(sys.argv[:1])
-    app.setWindowIcon(QIcon.fromTheme("web-browser"))
+    # The bundled file is what actually shows up on Windows/macOS; fromTheme
+    # only resolves on Linux desktops with a matching icon theme installed,
+    # so it is a fallback, never the primary source.
+    bundled_icon = QIcon(str(icon_path()))
+    app.setWindowIcon(bundled_icon if not bundled_icon.isNull() else QIcon.fromTheme("web-browser"))
     # PyBrowser's own look, following the desktop's light/dark preference.
     theme.apply(app)
     # Ctrl+C in the terminal should kill the app instead of being swallowed by

@@ -1,0 +1,66 @@
+name: Release build - Windows
+
+# Builds, never publishes. Runs on a manual trigger or a version tag; either
+# way the result is a workflow artifact someone downloads and tests, not
+# something pushed to a release automatically. Add a publish step only once
+# a build has actually been through packaging/windows/README.md's checklist.
+on:
+  workflow_dispatch: {}
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install "pyinstaller>=6.0" "pyinstaller-hooks-contrib>=2024.0"
+
+      - name: Run the test suite
+        # A packaging change that breaks the app is worse than no packaging
+        # change - build only on a green suite. Same offscreen setup the
+        # project's own tests already use.
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: python -m pytest tests/ -q
+
+      - name: Build with PyInstaller
+        run: pyinstaller packaging/windows/pybrowser.spec --noconfirm
+
+      - name: Build installer with Inno Setup
+        run: |
+          choco install innosetup -y --no-progress
+          & "C:\Program Files (x86)\Inno Setup 6\iscc.exe" packaging\windows\installer.iss
+        shell: pwsh
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PyBrowser-windows-installer
+          path: packaging/windows/output/*.exe
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PyBrowser-windows-onedir
+          path: dist/PyBrowser/
+          if-no-files-found: error
+
+# Code signing: intentionally not wired up. Signing needs a real Authenticode
+# certificate and its private key, which do not belong in this file even as
+# a "placeholder" - see packaging/SIGNING.md for exactly what a real signing
+# step would need (a secrets.WINDOWS_CERT_* pair and a signtool invocation)
+# once a certificate actually exists.

@@ -13,6 +13,21 @@ from pathlib import Path
 
 APP_DIR_NAME = "PyBrowser"
 
+#: The app's own icon, shipped as a real file rather than relying on
+#: QIcon.fromTheme("web-browser") - that only resolves on a Linux desktop
+#: with a matching icon theme installed. Without a bundled file, a packaged
+#: Windows or macOS build shows a blank generic icon in the taskbar/dock and
+#: window title bar, which is the whole reason this exists.
+_ICON_DIR = Path(__file__).resolve().parent / "ui" / "assets" / "icons"
+
+
+def icon_path() -> Path:
+    """The best icon file for this platform: a multi-resolution .ico on
+    Windows (native taskbar/title-bar quality), a .png everywhere else."""
+    if os.name == "nt":
+        return _ICON_DIR / "pybrowser.ico"
+    return _ICON_DIR / "pybrowser.png"
+
 # PyBrowser's own new-tab page - not a website. A search provider is where
 # searches GO; it is not the browser's home. See app/browser/newtab.py.
 NEW_TAB_URL = "pybrowser://newtab/"

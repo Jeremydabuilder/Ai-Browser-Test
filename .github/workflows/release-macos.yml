@@ -1,0 +1,75 @@
+name: Release build - macOS
+
+# Builds, never publishes - see release-windows.yml's header for the same
+# reasoning. Runs on the real macOS runner GitHub provides, since a macOS
+# binary cannot be produced anywhere else.
+on:
+  workflow_dispatch: {}
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install "pyinstaller>=6.0" "pyinstaller-hooks-contrib>=2024.0"
+
+      - name: Run the test suite
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: python -m pytest tests/ -q
+
+      - name: Build the .icns app icon
+        run: bash packaging/macos/make_icns.sh
+
+      - name: Build with PyInstaller
+        run: pyinstaller packaging/macos/pybrowser.spec --noconfirm
+
+      - name: Ad-hoc sign for local testing
+        # NOT a real signature - satisfies nothing but this runner's own
+        # Gatekeeper check well enough to smoke-test the .app. Real
+        # distribution needs a Developer ID + notarization; see
+        # packaging/SIGNING.md. Never treat this step as "it's signed."
+        run: codesign --force --deep --sign - dist/PyBrowser.app
+
+      - name: Install create-dmg
+        run: brew install create-dmg
+
+      - name: Build the .dmg
+        run: |
+          mkdir -p packaging/macos/output
+          create-dmg \
+            --volname "PyBrowser" \
+            --window-size 540 380 \
+            --icon-size 96 \
+            --icon "PyBrowser.app" 140 160 \
+            --app-drop-link 400 160 \
+            "packaging/macos/output/PyBrowser-0.1.0.dmg" \
+            "dist/PyBrowser.app"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PyBrowser-macos-dmg
+          path: packaging/macos/output/*.dmg
+          if-no-files-found: error
+
+# Notarization: intentionally not wired up. It needs a paid Apple Developer
+# ID, an app-specific password or API key, and `xcrun notarytool` /
+# `stapler` - none of which belong here even as placeholders. See
+# packaging/SIGNING.md for exactly what those steps would look like once
+# real credentials exist.
