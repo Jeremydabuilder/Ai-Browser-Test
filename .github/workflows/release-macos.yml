@@ -30,9 +30,12 @@ jobs:
           pip install "pyinstaller>=6.0" "pyinstaller-hooks-contrib>=2024.0"
 
       - name: Run the test suite
+        # unittest, not pytest - see release-windows.yml's comment on the
+        # same step: this matches the project's own documented test command
+        # instead of adding an undeclared dependency.
         env:
           QT_QPA_PLATFORM: offscreen
-        run: python -m pytest tests/ -q
+        run: python -m unittest discover -s tests -v
 
       - name: Read the app version
         id: version
