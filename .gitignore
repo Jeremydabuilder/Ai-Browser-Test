@@ -7,3 +7,11 @@ venv/
 profile/
 .DS_Store
 validation-report.json
+
+# PyInstaller build output (packaging/{windows,macos}/*.spec) - never
+# checked in, always rebuilt from the spec.
+/build/
+/dist/
+packaging/windows/output/
+packaging/macos/output/
+packaging/macos/pybrowser.icns

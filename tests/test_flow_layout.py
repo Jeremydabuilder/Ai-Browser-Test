@@ -47,7 +47,17 @@ class FlowLayoutTests(unittest.TestCase):
     def test_a_button_that_does_not_fit_wraps_to_a_new_row(self):
         host, flow, buttons = self._row(
             ["Summarise", "Key points", "Explain", "Compare my tabs"])
-        host.resize(150, 400)
+        # A fixed pixel width here was fragile across platforms: these are
+        # real button labels, and a hardcoded 150px assumed a font metric
+        # this test never actually measured - Windows' default UI font
+        # rendered "Compare my tabs" alone past 150px, which made the widest
+        # single button "not fit" anywhere, not the row failing to wrap
+        # (FlowLayout correctly never wraps a lone item to an empty row -
+        # that would still overflow, just as uselessly). Sized instead from
+        # the buttons' own measured widths: always wide enough for any one
+        # of them, narrow enough that not all four fit on one line.
+        widest = max(button.sizeHint().width() for button in buttons)
+        host.resize(widest + 20, 400)
         host.show()
         tops = [button.geometry().y() for button in buttons]
         self.assertGreater(len(set(tops)), 1, "a too-narrow row must wrap, not clip")
@@ -55,7 +65,7 @@ class FlowLayoutTests(unittest.TestCase):
         # the right edge, which is the whole point of wrapping instead of a
         # plain QHBoxLayout.
         for button in buttons:
-            self.assertLessEqual(button.geometry().right(), 150)
+            self.assertLessEqual(button.geometry().right(), host.width())
 
     def test_count_and_item_at_track_added_widgets(self):
         _host, flow, buttons = self._row(["A", "B", "C"])
