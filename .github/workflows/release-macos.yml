@@ -79,8 +79,7 @@ jobs:
             echo "PyBrowser.app ran for 15s without exiting."
             kill "$APP_PID"
           else
-            wait "$APP_PID"
-            STATUS=$?
+            wait "$APP_PID" && STATUS=0 || STATUS=$?
             echo "PyBrowser.app exited early (status $STATUS) - this is a real release bug, not a flaky test."
             echo "--- stdout/stderr ---"
             cat "$OUT" || true
