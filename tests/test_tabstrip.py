@@ -138,9 +138,18 @@ class NewTabButtonTests(unittest.TestCase):
     def test_it_comes_back_when_there_is_room_again(self) -> None:
         self.add(12)
         self.assertTrue(self.tabs._button_in_corner)
+        # Each close_tab() queues its own deferred reposition (see
+        # _reposition_soon's docstring - it has to run after the bar's own
+        # layout settles, not before). Closing all ten in a tight loop and
+        # pumping only once left ten queued repositions to fire back-to-back
+        # against a bar whose width the platform's own font metrics can
+        # shrink to different tab widths - on a real macOS CI run this let
+        # the wrong one win, leaving the button 14px short of the last tab's
+        # right edge. Pumping after every close lets each reposition settle
+        # against the strip's actual state before the next removal.
         while self.tabs.count() > 2:
             self.tabs.close_tab(0)
-        pump()
+            pump()
         self.assertFalse(self.tabs._button_in_corner)
         last = self.tabs.tabBar().tabRect(self.tabs.count() - 1)
         self.assertGreater(self.button.x(), last.right())
