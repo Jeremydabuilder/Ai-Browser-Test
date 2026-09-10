@@ -659,6 +659,9 @@ h2 {
   align-items: center;
 }
 .access-copy p { color: var(--muted); margin: var(--space-3) 0 var(--space-4); max-width: 46ch; }
+.download-note { font-size: 13px; margin-top: var(--space-4) !important; max-width: 48ch; }
+.download-note a { color: var(--muted); text-decoration: underline; }
+.download-note a:hover { color: var(--accent); }
 .access-platforms { display: flex; flex-direction: column; gap: var(--space-2); }
 .platform-row {
   display: flex; justify-content: space-between; align-items: center;
