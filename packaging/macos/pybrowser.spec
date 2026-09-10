@@ -17,6 +17,13 @@ import sys
 sys.path.insert(0, os.path.abspath(os.path.join(SPECPATH, "..", "common")))
 from spec_common import REPO_ROOT, DATAS, HIDDENIMPORTS, COLLECT_ALL, VERSION  # noqa: E402
 
+# Analysis/PYZ/EXE/BUNDLE/COLLECT are injected into a spec file's namespace
+# by PyInstaller itself - collect_all is not one of them and has to be
+# imported explicitly (caught on the second real CI run: everything up to
+# this point built cleanly, then died with "NameError: name 'collect_all'
+# is not defined").
+from PyInstaller.utils.hooks import collect_all  # noqa: E402
+
 block_cipher = None
 
 a = Analysis(
