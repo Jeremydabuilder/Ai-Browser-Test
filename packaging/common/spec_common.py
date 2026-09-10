@@ -33,12 +33,22 @@ from app import __version__ as VERSION  # noqa: E402
 # Py's artwork and the app icon are resolved at runtime relative to
 # app/ui/__file__ (see app/ui/mascot.py and app/config.py:icon_path) - both
 # read from app/ui/assets/, so bundling that one directory covers both.
-# Nothing else in the app loads a sibling file this way (verified by
-# grepping the codebase for __file__-relative path construction before
-# writing this spec) - templates and generated pages are inline Python
-# string constants, not files on disk.
+#
+# app/browser/profile.py:_install_automation_script also loads a sibling
+# file this way (Path(__file__).with_name("page_script.js")) - missed by
+# the original __file__-relative-path grep before this spec was written,
+# because PyInstaller only bundles .py sources into the frozen app (as
+# bytecode in the PYZ archive); a .js file sitting next to profile.py on
+# disk is invisible to it unless listed here explicitly. Without this, a
+# frozen build's BrowserProfile.__init__ raises FileNotFoundError on
+# startup - a real crash caught on a real macOS CI run (run 34425593612)
+# once the app got past every earlier packaging bug and actually tried to
+# launch. Templates and generated pages elsewhere in the app are inline
+# Python string constants, not files on disk, so this is the only other
+# case.
 DATAS = [
     (os.path.join(REPO_ROOT, "app", "ui", "assets"), "app/ui/assets"),
+    (os.path.join(REPO_ROOT, "app", "browser", "page_script.js"), "app/browser"),
 ]
 
 # -- hidden imports ---------------------------------------------------------
