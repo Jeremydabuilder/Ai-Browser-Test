@@ -26,12 +26,29 @@ from PyInstaller.utils.hooks import collect_all  # noqa: E402
 
 block_cipher = None
 
+# collect_all() returns plain (dest, source) pairs meant for Analysis's own
+# datas=/binaries= constructor arguments - NOT the 3-tuple (dest, src,
+# typecode) TOC entries Analysis builds internally. Appending these to
+# a.datas/a.binaries *after* Analysis() (as this spec used to) mixed 2-tuples
+# into an otherwise all-3-tuple TOC list, which blew up inside COLLECT with
+# "ValueError: not enough values to unpack (expected 3, got 2)" on the third
+# real CI run (macOS run 34420258143) to get this far. Merging them into the
+# constructor arguments instead means Analysis normalizes everything itself.
+extra_datas: list = []
+extra_binaries: list = []
+extra_hiddenimports: list = list(HIDDENIMPORTS)
+for pkg in COLLECT_ALL:
+    collected = collect_all(pkg)
+    extra_datas += collected[0]
+    extra_binaries += collected[1]
+    extra_hiddenimports += collected[2]
+
 a = Analysis(
     [os.path.join(REPO_ROOT, "main.py")],
     pathex=[REPO_ROOT],
-    binaries=[],
-    datas=DATAS,
-    hiddenimports=HIDDENIMPORTS,
+    binaries=extra_binaries,
+    datas=DATAS + extra_datas,
+    hiddenimports=extra_hiddenimports,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
@@ -39,12 +56,6 @@ a = Analysis(
     cipher=block_cipher,
     noarchive=False,
 )
-
-for pkg in COLLECT_ALL:
-    collected = collect_all(pkg)
-    a.datas += collected[0]
-    a.binaries += collected[1]
-    a.hiddenimports += collected[2]
 
 pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 
