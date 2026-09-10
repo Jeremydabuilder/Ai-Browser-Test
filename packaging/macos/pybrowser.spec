@@ -49,7 +49,14 @@ a = Analysis(
     binaries=extra_binaries,
     datas=DATAS + extra_datas,
     hiddenimports=extra_hiddenimports,
-    hookspath=[],
+    # Overrides PyInstaller's own hook-PySide6.QtWebEngineCore.py with a
+    # corrected copy (see pyinstaller_hooks/hook-PySide6.QtWebEngineCore.py
+    # for the full story): the built-in hook picks the wrong
+    # QtWebEngineCore.framework "version" directory on macOS, which makes
+    # the QtWebEngineProcess helper end up somewhere Qt's own runtime search
+    # never looks, aborting PyBrowser (SIGABRT) the instant it needs to show
+    # a web view - a real crash confirmed on CI run 34423969649/34422919205.
+    hookspath=[os.path.join(SPECPATH, "pyinstaller_hooks")],
     hooksconfig={},
     runtime_hooks=[],
     excludes=[],
