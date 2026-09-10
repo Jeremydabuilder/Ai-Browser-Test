@@ -60,16 +60,32 @@ jobs:
         # whatever would crash it immediately, not that a person clicked
         # through the UI. See packaging/macos/README.md for the real
         # first-run checklist.
+        #
+        # `open dist/PyBrowser.app` (used here originally) hands the launch
+        # off to Launch Services, which starts the app as a *detached*
+        # process - it does not inherit this shell's exported env vars, and
+        # there is no way to capture its stdout/stderr. That made an earlier
+        # real CI failure undiagnosable: the app exited within 15s and the
+        # smoke test could not show why. Launching the bootloader binary
+        # directly keeps it a normal child process, so PYBROWSER_DATA_DIR
+        # actually reaches it and a crash's stdout/stderr is captured.
         run: |
           export PYBROWSER_DATA_DIR="$RUNNER_TEMP/pybrowser-smoke"
-          open dist/PyBrowser.app
+          OUT="$RUNNER_TEMP/pybrowser-smoke-stdout.log"
+          "dist/PyBrowser.app/Contents/MacOS/PyBrowser" > "$OUT" 2>&1 &
+          APP_PID=$!
           sleep 15
-          if pgrep -f "dist/PyBrowser.app/Contents/MacOS/PyBrowser" > /dev/null; then
+          if kill -0 "$APP_PID" 2>/dev/null; then
             echo "PyBrowser.app ran for 15s without exiting."
-            pkill -f "dist/PyBrowser.app/Contents/MacOS/PyBrowser"
+            kill "$APP_PID"
           else
-            echo "PyBrowser.app exited early - this is a real release bug, not a flaky test."
+            wait "$APP_PID"
+            STATUS=$?
+            echo "PyBrowser.app exited early (status $STATUS) - this is a real release bug, not a flaky test."
+            echo "--- stdout/stderr ---"
+            cat "$OUT" || true
             LOG="$PYBROWSER_DATA_DIR/logs/pybrowser.log"
+            echo "--- $LOG ---"
             if [ -f "$LOG" ]; then cat "$LOG"; else echo "(no log file was written at $LOG)"; fi
             exit 1
           fi
