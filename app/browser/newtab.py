@@ -329,20 +329,39 @@ _TEMPLATE = """<!doctype html>
     --shadow-lift: 0 2px 6px rgba(0, 0, 0, .4), 0 16px 40px rgba(0, 0, 0, .45);
   }
   * { box-sizing: border-box; }
-  html, body { height: 100%; }
+  /* min-height, not height: this page is routinely taller than one viewport
+     (mascot, search, six action cards, three columns, footer), and a fixed
+     height locks body's own box - and therefore the gradient background
+     painted on it - to exactly one viewport tall. Content past that still
+     renders, just with no box left under it to paint on, so the page fell
+     back to the browser's own default white canvas for everything below
+     roughly one screen's worth of content: a hard purple-to-white seam right
+     around the action cards on a typical window size, which is exactly the
+     "white band" bug this fixes. min-height still fills the screen when
+     content is shorter, and grows with it otherwise - there is no longer a
+     point where the background box can end before the content does. html
+     gets the same treatment (and its own solid --bg as a plain fallback) so
+     neither element can ever leave a gap. */
+  html, body { min-height: 100%; }
+  html { background: var(--bg); }
   body {
     margin: 0;
     /* Two soft washes, blue and violet - the same pair the wordmark and every
        primary button already use - so the page reads as a considered brand
        moment rather than a grey settings screen with a search box on it.
        Both are large, both are diffuse, and neither ever sits under text: the
-       point is atmosphere, not a poster behind the content. */
+       point is atmosphere, not a poster behind the content. background-attachment:
+       fixed keeps both washes anchored to the viewport (not the page's full
+       scroll height) so they read as one continuous stage lit from a couple
+       of fixed points, rather than stretching - and washing out - over
+       whatever the page's total height happens to be. */
     background:
       radial-gradient(ellipse 900px 560px at 28% 8%,
                       var(--glow-strong) 0%, transparent 62%),
       radial-gradient(ellipse 820px 620px at 78% 30%,
                       var(--glow2-strong) 0%, transparent 60%),
       var(--bg);
+    background-attachment: fixed, fixed, fixed;
     color: var(--text);
     font: 14px/1.55 system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
     display: flex;
