@@ -80,6 +80,16 @@ coll = COLLECT(
     strip=False,
     upx=False,
     name="PyBrowser",
+    # PyInstaller 6+ defaults to nesting bundled frameworks under
+    # Contents/MacOS/_internal/ instead of the standard macOS
+    # Contents/Frameworks/ layout. Qt WebEngine's own compiled-in helper
+    # search only checks Contents/Frameworks/.../QtWebEngineProcess.app and
+    # Contents/MacOS/QtWebEngineProcess - neither matches _internal, so the
+    # browser process aborts (SIGABRT) the moment it needs a web view,
+    # exactly as seen on a real CI run (macOS run 34422919205, the first
+    # run where the smoke test's own diagnostics survived to actually show
+    # this). "." restores the pre-6.0 flat layout BUNDLE expects.
+    contents_directory=".",
 )
 
 app = BUNDLE(
