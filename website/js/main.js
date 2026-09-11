@@ -5,6 +5,38 @@
 
   const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
 
+  // Gates every CSS rule that hides content until JS reveals it (scroll
+  // reveals, the story's dimmed-until-active steps) - added only once this
+  // script has actually run, so a no-JS visitor, or one whose script failed
+  // to load, always sees the fully-visible, un-animated page rather than
+  // content stuck at opacity:0 waiting for a callback that will never fire.
+  document.documentElement.classList.add("js-ready");
+
+  // -- generic scroll reveal --------------------------------------------------------
+  // Fades/rises any [data-reveal] element into place the first time it
+  // enters the viewport, then stops watching it - a one-time entrance, not
+  // a toggle that replays every time someone scrolls past. Cheap (one
+  // shared observer, transform/opacity only) and skipped instantly under
+  // reduced motion by the blanket transition-duration override in CSS.
+  const revealTargets = document.querySelectorAll("[data-reveal]");
+  if (revealTargets.length) {
+    if (reducedMotion.matches || !("IntersectionObserver" in window)) {
+      revealTargets.forEach((el) => el.classList.add("is-visible"));
+    } else {
+      const revealObserver = new IntersectionObserver(
+        (entries, obs) => {
+          entries.forEach((entry) => {
+            if (!entry.isIntersecting) return;
+            entry.target.classList.add("is-visible");
+            obs.unobserve(entry.target);
+          });
+        },
+        { threshold: 0.12, rootMargin: "0px 0px -8% 0px" }
+      );
+      revealTargets.forEach((el) => revealObserver.observe(el));
+    }
+  }
+
   // -- mobile nav --------------------------------------------------------
   const burger = document.getElementById("nav-burger");
   const mobileNav = document.getElementById("mobile-nav");
@@ -141,6 +173,16 @@
     const steps = Array.from(story.querySelectorAll(".story-step"));
     if (!anchor || !steps.length) return;
 
+    // The one screenshot this story is building toward - if it has one -
+    // gets a single glow pulse the moment "Finished" actually becomes the
+    // active step, so reaching the end of the demo reads as a small event.
+    const finishShot = story.querySelector("[data-finish-shot]");
+    function markFinished(state) {
+      if (state === "finished" && finishShot && !reducedMotion.matches) {
+        finishShot.classList.add("just-finished");
+      }
+    }
+
     const initial = steps[0];
     anchor.dataset.state = initial.dataset.state;
     setMascot(anchor, initial.dataset.state, initial.dataset.caption);
@@ -152,7 +194,9 @@
           if (!entry.isIntersecting) return;
           steps.forEach((s) => s.removeAttribute("data-active"));
           entry.target.setAttribute("data-active", "");
+          const changedToState = anchor.dataset.state !== entry.target.dataset.state;
           setMascot(anchor, entry.target.dataset.state, entry.target.dataset.caption);
+          if (changedToState) markFinished(entry.target.dataset.state);
         });
       },
       { rootMargin: "-45% 0px -45% 0px", threshold: 0 }
@@ -237,15 +281,38 @@
   }
 
   // -- hero mascot: a one-time settle animation, then idle --------------------------------------------------------
+  // Timed to land after the headline and screenshot have already started
+  // moving (see hero-rise / hero-shot-in in CSS) - Py arrives into a scene
+  // that is already forming, rather than all three racing in at once.
   const heroAnchor = document.querySelector(".hero-mascot[data-mascot-anchor]");
   if (heroAnchor && !reducedMotion.matches) {
-    heroAnchor.style.transform = "translateY(8px)";
+    heroAnchor.style.transform = "translateY(10px) scale(.96)";
     heroAnchor.style.opacity = "0";
-    requestAnimationFrame(() => {
-      heroAnchor.style.transition = "transform .5s ease, opacity .5s ease";
-      heroAnchor.style.transform = "translateY(0)";
+    window.setTimeout(() => {
+      heroAnchor.style.transition = "transform 560ms cubic-bezier(.16,1,.3,1), opacity 560ms cubic-bezier(.16,1,.3,1)";
+      heroAnchor.style.transform = "none";
       heroAnchor.style.opacity = "1";
-    });
+    }, 320);
+  }
+
+  // -- final CTA: Py's arrival pop, once the section is actually seen --------------------------------------------------------
+  // Reuses the same one-time "finished" beat Py plays at the end of a
+  // Mission - the last thing on the page is Py finishing, which is the
+  // whole pitch, so it gets the same satisfying reaction rather than a
+  // new one-off animation invented just for this spot.
+  const finalMascotAnchor = document.querySelector(".final-cta-inner[data-reveal]");
+  if (finalMascotAnchor && !reducedMotion.matches && "IntersectionObserver" in window) {
+    const finalObserver = new IntersectionObserver(
+      (entries, obs) => {
+        entries.forEach((entry) => {
+          if (!entry.isIntersecting) return;
+          window.setTimeout(() => playFinishPop(finalMascotAnchor), 420);
+          obs.disconnect();
+        });
+      },
+      { threshold: 0.4 }
+    );
+    finalObserver.observe(finalMascotAnchor);
   }
 
   // -- scroll-spy nav highlighting --------------------------------------------------------

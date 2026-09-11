@@ -38,6 +38,22 @@
   --shadow-md: 0 8px 30px rgba(20, 20, 30, .08);
   --shadow-lg: 0 20px 60px rgba(20, 20, 30, .12);
 
+  /* -- motion system ---------------------------------------------------
+     One easing family, a handful of named durations - reused everywhere
+     instead of one-off numbers per rule, so the whole site moves like one
+     thing. `--ease-premium` is a soft decelerate (no spring overshoot) for
+     anything structural (reveals, layout-adjacent movement); `--ease-pop`
+     is the one place a small overshoot is allowed, reserved for a
+     one-time "arrived" moment (Py's finish beat, a completed download
+     card) rather than sprinkled across routine hovers. */
+  --ease-premium: cubic-bezier(.16, 1, .3, 1);
+  --ease-pop: cubic-bezier(.2, .8, .3, 1.15);
+  --dur-micro: 160ms;
+  --dur-card: 220ms;
+  --dur-section: 420ms;
+  --dur-py: 420ms;
+  --dur-hero: 620ms;
+
   color-scheme: light;
 }
 
@@ -114,6 +130,34 @@ ul { margin: 0; padding: 0; list-style: none; }
 h1, h2, h3, p { margin: 0; }
 button { font: inherit; }
 
+/* -- background atmosphere ---------------------------------------------
+   Two very soft, slow-drifting washes behind the whole page - the same
+   "considered brand moment, not a poster" two-tone glow the app's own
+   new-tab page uses, at a fraction of the intensity so it reads as
+   atmosphere, not decoration. Lives on a fixed pseudo-element that is
+   `body`'s first child, so normal DOM/paint order alone puts every real
+   section on top of it (opaque sections like .section--muted simply
+   cover it in their own region) with no z-index gymnastics required.
+   transform-only animation, GPU-composited, one element, and it freezes
+   under reduced motion below. */
+body::before {
+  content: "";
+  position: fixed;
+  inset: -15%;
+  z-index: 0;
+  pointer-events: none;
+  background:
+    radial-gradient(38% 30% at 16% 10%, color-mix(in srgb, var(--accent) 9%, transparent), transparent 70%),
+    radial-gradient(34% 28% at 86% 26%, color-mix(in srgb, var(--accent-2) 7%, transparent), transparent 70%);
+  animation: atmosphere-drift 60s var(--ease-premium) infinite alternate;
+  will-change: transform;
+}
+@keyframes atmosphere-drift {
+  0%   { transform: translate3d(0, 0, 0) scale(1); }
+  100% { transform: translate3d(-2.5%, 2%, 0) scale(1.06); }
+}
+.site-nav, main, .site-footer { position: relative; z-index: 1; }
+
 .wrap {
   max-width: var(--max-w);
   margin: 0 auto;
@@ -121,6 +165,48 @@ button { font: inherit; }
 }
 
 section[id] { scroll-margin-top: 84px; }
+
+/* -- scroll reveal ---------------------------------------------------
+   A generic fade/rise, applied via [data-reveal] and read by an
+   IntersectionObserver in main.js. Gated behind .js-ready (added by that
+   same script once it has run) so content already visible before any
+   observer fires - a slow connection, JS disabled, a mid-scroll refresh -
+   is never left invisible waiting for a callback that already missed it.
+   [data-reveal-group] staggers its own [data-reveal] children a beat
+   apart via nth-child, for the "cards arrive as a set" moments (tier
+   cards, result cards, etc.) without any per-card JS bookkeeping. */
+.js-ready [data-reveal] {
+  opacity: 0;
+  transform: translateY(16px);
+  transition: opacity var(--dur-section) var(--ease-premium),
+              transform var(--dur-section) var(--ease-premium);
+}
+.js-ready [data-reveal].is-visible { opacity: 1; transform: none; }
+
+.js-ready [data-reveal-group] [data-reveal] { transition-delay: 0ms; }
+.js-ready [data-reveal-group] [data-reveal]:nth-child(2) { transition-delay: 60ms; }
+.js-ready [data-reveal-group] [data-reveal]:nth-child(3) { transition-delay: 120ms; }
+.js-ready [data-reveal-group] [data-reveal]:nth-child(4) { transition-delay: 180ms; }
+.js-ready [data-reveal-group] [data-reveal]:nth-child(5) { transition-delay: 240ms; }
+.js-ready [data-reveal-group] [data-reveal]:nth-child(6) { transition-delay: 300ms; }
+
+/* -- shared card hover lift ---------------------------------------------
+   One small, consistent response applied across every card-shaped surface
+   on the page - tier, result, tech, mission-example, and state cards -
+   so hovering *anything* on the site feels like part of the same system
+   instead of a few components having a hover style and the rest sitting
+   dead. Kept to opacity/transform/shadow (cheap), and specific components
+   below may still add their own accents on top (a border-color change,
+   Py's own motion) without repeating this base lift. */
+.tier-card, .result-card, .tech-card, .mex-card, .state-card, .eng-list li {
+  transition: transform var(--dur-card) var(--ease-premium),
+              box-shadow var(--dur-card) var(--ease-premium),
+              border-color var(--dur-card) var(--ease-premium);
+}
+.tier-card:hover, .result-card:hover, .tech-card:hover, .mex-card:hover, .eng-list li:hover {
+  transform: translateY(-3px);
+  box-shadow: var(--shadow-md);
+}
 
 .skip-link {
   position: absolute;
@@ -142,6 +228,7 @@ section[id] { scroll-margin-top: 84px; }
 
 /* -- buttons --------------------------------------------------------- */
 .btn {
+  position: relative;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -152,7 +239,11 @@ section[id] { scroll-margin-top: 84px; }
   font-size: 14px;
   text-decoration: none;
   border: 1px solid transparent;
-  transition: transform .15s ease, background .15s ease, border-color .15s ease;
+  overflow: hidden;
+  transition: transform var(--dur-micro) var(--ease-premium),
+              background var(--dur-micro) var(--ease-premium),
+              border-color var(--dur-micro) var(--ease-premium),
+              box-shadow var(--dur-micro) var(--ease-premium);
   cursor: pointer;
 }
 .btn:hover { transform: translateY(-1px); }
@@ -160,7 +251,19 @@ section[id] { scroll-margin-top: 84px; }
   background: linear-gradient(100deg, var(--accent), var(--accent-2));
   color: var(--accent-text);
 }
-.btn-primary:hover { filter: brightness(1.05); }
+.btn-primary:hover { filter: brightness(1.05); box-shadow: 0 8px 24px -8px color-mix(in srgb, var(--accent) 55%, transparent); }
+/* A single light sweep across the button on hover - one polished detail
+   on the highest-intent controls on the page, not a generic hover style,
+   so it stays a moment rather than becoming visual noise. Pure transform,
+   skipped under reduced motion by the blanket rule at the end of this file. */
+.btn-primary::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(115deg, transparent 30%, rgba(255, 255, 255, .3) 45%, transparent 60%);
+  transform: translateX(-120%);
+}
+.btn-primary:hover::after { transform: translateX(120%); transition: transform .65s var(--ease-premium); }
 .btn-ghost {
   background: transparent;
   color: var(--text);
@@ -284,7 +387,46 @@ h1 {
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--success) 20%, transparent);
 }
 
+/* -- hero entrance choreography -----------------------------------------
+   One small keyframe, reused down the column with a stepped delay - the
+   copy arrives as a sequence (brand mark, headline, sub, CTAs, status)
+   rather than as a block, which is most of what makes a hero read as
+   "directed" instead of "styled". Runs once, on load, so it costs nothing
+   after first paint; the reduced-motion rule at the end of this file
+   collapses all of it to an instant, fully-visible state. */
+@keyframes hero-rise {
+  from { opacity: 0; transform: translateY(14px); }
+  to   { opacity: 1; transform: none; }
+}
+.hero-copy > * { animation: hero-rise var(--dur-hero) var(--ease-premium) both; }
+.hero-copy > .eyebrow      { animation-delay: 0ms; }
+.hero-copy > h1            { animation-delay: 90ms; }
+.hero-copy > .hero-sub     { animation-delay: 180ms; }
+.hero-copy > .hero-ctas    { animation-delay: 270ms; }
+.hero-copy > .hero-status  { animation-delay: 350ms; }
+
 .hero-visual { position: relative; }
+/* A soft, slow-drifting glow staged behind the screenshot - the frame
+   reads as lit from within the page rather than pasted on top of it.
+   Faded in half a beat after the frame itself so the light feels like it
+   follows the product into view, not the other way round. */
+.hero-visual::before {
+  content: "";
+  position: absolute;
+  inset: -8%;
+  z-index: 0;
+  background: radial-gradient(60% 60% at 45% 40%,
+              color-mix(in srgb, var(--accent) 16%, transparent), transparent 72%);
+  filter: blur(4px);
+  opacity: 0;
+  animation: hero-glow-in 900ms var(--ease-premium) 220ms both,
+             hero-glow-drift 9s ease-in-out 1.1s infinite alternate;
+}
+@keyframes hero-glow-in { to { opacity: 1; } }
+@keyframes hero-glow-drift {
+  from { transform: translate(0, 0) scale(1); }
+  to   { transform: translate(-2%, 2%) scale(1.05); }
+}
 .hero-mascot {
   position: absolute;
   right: -18px;
@@ -292,6 +434,25 @@ h1 {
   width: 130px;
   z-index: 5;
   text-align: center;
+}
+/* A soft grounding shadow under Py's feet, breathing in the opposite
+   phase from his own idle rise (py-breathe lifts him; this settles as he
+   lifts, and deepens as he comes back down) - the one cheap trick that
+   makes a floating character read as standing on something rather than
+   pasted over the screenshot. */
+.hero-mascot::after {
+  content: "";
+  position: absolute;
+  left: 50%; bottom: 4px;
+  width: 58%; height: 10px;
+  transform: translateX(-50%);
+  background: radial-gradient(closest-side, color-mix(in srgb, var(--text) 22%, transparent), transparent 75%);
+  border-radius: 50%;
+  animation: py-shadow-breathe 4.6s ease-in-out infinite;
+}
+@keyframes py-shadow-breathe {
+  0%, 100% { opacity: .5; transform: translateX(-50%) scale(1); }
+  50%      { opacity: .3; transform: translateX(-50%) scale(.85); }
 }
 .mascot-img { width: 100%; height: auto; transform-origin: 50% 100%; will-change: transform; }
 .hero-caption {
@@ -303,7 +464,7 @@ h1 {
   margin-top: -8px;
   box-shadow: var(--shadow-sm);
   display: inline-block;
-  transition: opacity .2s ease;
+  transition: opacity var(--dur-micro) ease;
 }
 
 /* -- Py motion system --------------------------------------------------------
@@ -375,9 +536,39 @@ h1 {
   border: 1px solid var(--line);
   box-shadow: var(--shadow-lg);
   background: var(--surface);
+  transition: transform var(--dur-card) var(--ease-premium),
+              box-shadow var(--dur-card) var(--ease-premium);
 }
+/* A screenshot is the closest thing on the page to "look at the actual
+   product" - a small lift on hover is the one piece of depth that earns
+   its keep here, everywhere a shot-frame appears, not just in the hero. */
+.shot-frame:hover { transform: translateY(-4px); box-shadow: var(--shadow-lg), 0 30px 60px -30px color-mix(in srgb, var(--accent) 25%, transparent); }
 .shot-frame img { width: 100%; height: auto; display: block; }
 .shot-frame--wide { border-radius: var(--radius-md); }
+
+/* The hero shot gets the full treatment: it is the first real look at the
+   product, so it arrives deliberately (a beat after the copy starts, per
+   hero-copy's own delays) and then settles into a slow, barely-there
+   float rather than sitting dead still - "alive," not "animating." */
+.shot-frame--hero {
+  position: relative;
+  z-index: 1;
+  opacity: 0;
+  animation: hero-shot-in var(--dur-hero) var(--ease-premium) 260ms both,
+             hero-shot-float 7s ease-in-out 900ms infinite alternate;
+}
+@keyframes hero-shot-in {
+  from { opacity: 0; transform: translateY(22px) scale(.97); }
+  to   { opacity: 1; transform: none; }
+}
+@keyframes hero-shot-float {
+  from { transform: translateY(0); }
+  to   { transform: translateY(-8px); }
+}
+/* The float is a transform on the element itself; a hover also wants to
+   move it, so pause the loop while hovered rather than fighting it for
+   the same property. */
+.shot-frame--hero:hover { animation-play-state: paused; }
 
 @media (max-width: 900px) {
   .hero-inner { grid-template-columns: 1fr; }
@@ -477,12 +668,40 @@ h2 {
   color: var(--accent); margin-top: 6px;
 }
 .story-steps { display: flex; flex-direction: column; gap: var(--space-7); }
-.story-step h3 { font-size: 20px; font-weight: 700; margin-bottom: var(--space-2); }
+.story-step h3 { font-size: 20px; font-weight: 700; margin-bottom: var(--space-2); transition: color var(--dur-card) ease; }
 .story-step p { color: var(--muted); font-size: 15px; }
 .story--safety .story-step h2 { margin-top: var(--space-2); }
 .story--safety .story-step p { margin-bottom: var(--space-3); }
 
 .story-step[data-active] h3 { color: var(--accent); }
+
+/* The step Py is currently "on" reads as the live one and the rest recede
+   a little - dimmer, very slightly smaller - so the eye follows the same
+   thing Py's own state is following, instead of every step reading with
+   equal weight regardless of scroll position. Subtle on purpose: this is
+   a reading list, not a slideshow, so nothing here ever fully disappears. */
+.js-ready .story-step { opacity: .55; transform: scale(.985); transform-origin: 0 50%; transition: opacity var(--dur-section) var(--ease-premium), transform var(--dur-section) var(--ease-premium); }
+.js-ready .story-step[data-active] { opacity: 1; transform: none; }
+
+/* Once a step is active, its own supporting evidence arrives a beat after
+   the heading - the reviewed-sources list one row at a time, the open
+   question panel just after - so reading an active step feels like
+   watching Py's findings land, not like text that was already there.
+   Gated behind .js-ready (added once main.js has actually run and wired
+   up the observer that ever sets [data-active]) - without it, a step's
+   own evidence would stay invisible forever for a no-JS visitor, since
+   nothing would ever add the attribute that reveals it. */
+.js-ready .story-step .mini-list li, .js-ready .story-step .mini-panel {
+  opacity: 0;
+  transform: translateY(8px);
+  transition: opacity var(--dur-section) var(--ease-premium), transform var(--dur-section) var(--ease-premium);
+}
+.js-ready .story-step[data-active] .mini-list li, .js-ready .story-step[data-active] .mini-panel { opacity: 1; transform: none; }
+.mini-list li:nth-child(1) { transition-delay: 80ms; }
+.mini-list li:nth-child(2) { transition-delay: 180ms; }
+.mini-list li:nth-child(3) { transition-delay: 280ms; }
+.mini-list li:nth-child(4) { transition-delay: 380ms; }
+.mini-panel { transition-delay: 220ms; }
 
 .mini-list { display: flex; flex-direction: column; gap: 8px; margin-top: var(--space-3); font-size: 14px; }
 .mini-list--plain li { padding-left: 0; }
@@ -506,6 +725,18 @@ h2 {
 
 .story .wrap > .shot-frame,
 .story .wrap { margin-top: var(--space-7); }
+
+/* The one moment this story is building toward: reaching "Finished"
+   fires a single glow pulse on the result screenshot below, toggled by
+   main.js the instant that step becomes active. A finish should feel
+   like a small event - this is that event, once, not a looping shimmer
+   that would cheapen it on a second look. */
+.shot-frame--wide.just-finished { animation: finish-pulse 900ms var(--ease-premium); }
+@keyframes finish-pulse {
+  0%   { box-shadow: var(--shadow-lg), 0 0 0 0 color-mix(in srgb, var(--accent) 45%, transparent); }
+  40%  { box-shadow: var(--shadow-lg), 0 0 0 10px color-mix(in srgb, var(--accent) 0%, transparent); }
+  100% { box-shadow: var(--shadow-lg); }
+}
 
 @media (max-width: 900px) {
   .story-grid, .story-grid--reverse { grid-template-columns: 1fr; }
@@ -565,9 +796,7 @@ h2 {
   border: 1px solid var(--line);
   border-radius: var(--radius-md);
   padding: var(--space-4);
-  transition: transform .15s ease, box-shadow .15s ease;
 }
-.result-card:hover { transform: translateY(-3px); box-shadow: var(--shadow-md); }
 .result-card h3 { font-size: 16px; font-weight: 700; margin-bottom: 6px; }
 .result-card p { font-size: 14px; color: var(--muted); }
 @media (max-width: 860px) {
@@ -590,9 +819,8 @@ h2 {
   background: var(--surface);
   border: 1px solid var(--line);
   cursor: pointer;
-  transition: border-color .2s ease, box-shadow .2s ease;
 }
-.state-card:hover, .state-card:focus-visible { border-color: var(--accent); }
+.state-card:hover, .state-card:focus-visible { border-color: var(--accent); transform: translateY(-3px); box-shadow: var(--shadow-md); }
 .state-card img { width: 100%; height: auto; margin-bottom: var(--space-2); }
 .state-name { font-weight: 700; font-size: 14px; }
 .state-desc { font-size: 12px; color: var(--muted); margin-top: 2px; }
