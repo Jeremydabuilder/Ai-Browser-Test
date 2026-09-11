@@ -13,9 +13,20 @@
 
   --accent: #3d5afe;
   --accent-2: #7b3ff2;
+  --accent-3: #ff6f9c;
   --accent-hover: #2f47e0;
   --accent-soft: #eaedff;
   --accent-text: #ffffff;
+
+  /* A small rotating set for anything that wants "one of several
+     brand colours" rather than always the same blue - card accents,
+     confetti, per-card top bars. Warm-cool-warm on purpose, so nothing
+     reads as a status colour (success/error) by accident. */
+  --spectrum-1: var(--accent);
+  --spectrum-2: #16b39a;
+  --spectrum-3: var(--accent-3);
+  --spectrum-4: var(--accent-2);
+  --spectrum-5: #ffb648;
 
   --success: #1f8a4c;
   --radius-sm: 10px;
@@ -75,9 +86,16 @@
 
   --accent: #8c9cff;
   --accent-2: #b98cff;
+  --accent-3: #ff8fb3;
   --accent-hover: #a3b0ff;
   --accent-soft: #232746;
   --accent-text: #101026;
+
+  --spectrum-1: var(--accent);
+  --spectrum-2: #3ddbc0;
+  --spectrum-3: var(--accent-3);
+  --spectrum-4: var(--accent-2);
+  --spectrum-5: #ffc670;
 
   --success: #6fcf97;
   --shadow-sm: 0 1px 2px rgba(0, 0, 0, .3);
@@ -98,9 +116,16 @@
 
     --accent: #8c9cff;
     --accent-2: #b98cff;
+    --accent-3: #ff8fb3;
     --accent-hover: #a3b0ff;
     --accent-soft: #232746;
     --accent-text: #101026;
+
+    --spectrum-1: var(--accent);
+    --spectrum-2: #3ddbc0;
+    --spectrum-3: var(--accent-3);
+    --spectrum-4: var(--accent-2);
+    --spectrum-5: #ffc670;
 
     --success: #6fcf97;
     --shadow-sm: 0 1px 2px rgba(0, 0, 0, .3);
@@ -131,30 +156,30 @@ h1, h2, h3, p { margin: 0; }
 button { font: inherit; }
 
 /* -- background atmosphere ---------------------------------------------
-   Two very soft, slow-drifting washes behind the whole page - the same
-   "considered brand moment, not a poster" two-tone glow the app's own
-   new-tab page uses, at a fraction of the intensity so it reads as
-   atmosphere, not decoration. Lives on a fixed pseudo-element that is
-   `body`'s first child, so normal DOM/paint order alone puts every real
-   section on top of it (opaque sections like .section--muted simply
-   cover it in their own region) with no z-index gymnastics required.
-   transform-only animation, GPU-composited, one element, and it freezes
-   under reduced motion below. */
+   Four slow-drifting washes behind the whole page - richer and more
+   saturated than a single "considered brand moment" glow, closer to a
+   real gradient mesh, still transform-only and one element. Lives on a
+   fixed pseudo-element that is `body`'s first child, so normal DOM/paint
+   order alone puts every real section on top of it (opaque sections
+   simply cover it in their own region) with no z-index gymnastics
+   required. Freezes under reduced motion below. */
 body::before {
   content: "";
   position: fixed;
-  inset: -15%;
+  inset: -20%;
   z-index: 0;
   pointer-events: none;
   background:
-    radial-gradient(38% 30% at 16% 10%, color-mix(in srgb, var(--accent) 9%, transparent), transparent 70%),
-    radial-gradient(34% 28% at 86% 26%, color-mix(in srgb, var(--accent-2) 7%, transparent), transparent 70%);
-  animation: atmosphere-drift 60s var(--ease-premium) infinite alternate;
+    radial-gradient(36% 30% at 14% 8%, color-mix(in srgb, var(--accent) 20%, transparent), transparent 70%),
+    radial-gradient(32% 28% at 88% 20%, color-mix(in srgb, var(--accent-2) 18%, transparent), transparent 70%),
+    radial-gradient(30% 26% at 78% 82%, color-mix(in srgb, var(--accent-3) 14%, transparent), transparent 72%),
+    radial-gradient(34% 30% at 10% 86%, color-mix(in srgb, var(--spectrum-2) 12%, transparent), transparent 72%);
+  animation: atmosphere-drift 50s var(--ease-premium) infinite alternate;
   will-change: transform;
 }
 @keyframes atmosphere-drift {
   0%   { transform: translate3d(0, 0, 0) scale(1); }
-  100% { transform: translate3d(-2.5%, 2%, 0) scale(1.06); }
+  100% { transform: translate3d(-3%, 2.5%, 0) scale(1.08); }
 }
 .site-nav, main, .site-footer { position: relative; z-index: 1; }
 
@@ -207,6 +232,32 @@ section[id] { scroll-margin-top: 84px; }
   transform: translateY(-3px);
   box-shadow: var(--shadow-md);
 }
+
+/* A thin colour bar across the top of every tier/result/tech/mex card,
+   cycling through the same five-colour spectrum confetti and card
+   accents both draw from - so a whole grid reads as one deliberately
+   colourful set instead of one blue accent repeated on white cards. */
+.tier-card, .result-card, .tech-card, .mex-card {
+  position: relative;
+  overflow: hidden;
+}
+.tier-card::before, .result-card::before, .tech-card::before, .mex-card::before {
+  content: "";
+  position: absolute;
+  top: 0; left: 0; right: 0;
+  height: 3px;
+  background: var(--spectrum-1);
+}
+.tier-card:nth-of-type(2)::before, .result-card:nth-of-type(2)::before,
+.tech-card:nth-of-type(2)::before, .mex-card:nth-of-type(2)::before { background: var(--spectrum-2); }
+.tier-card:nth-of-type(3)::before, .result-card:nth-of-type(3)::before,
+.tech-card:nth-of-type(3)::before, .mex-card:nth-of-type(3)::before { background: var(--spectrum-3); }
+.tier-card:nth-of-type(4)::before, .result-card:nth-of-type(4)::before,
+.tech-card:nth-of-type(4)::before, .mex-card:nth-of-type(4)::before { background: var(--spectrum-4); }
+.tier-card:nth-of-type(5)::before, .result-card:nth-of-type(5)::before,
+.tech-card:nth-of-type(5)::before, .mex-card:nth-of-type(5)::before { background: var(--spectrum-5); }
+.tier-card:nth-of-type(6)::before, .result-card:nth-of-type(6)::before,
+.tech-card:nth-of-type(6)::before, .mex-card:nth-of-type(6)::before { background: var(--spectrum-2); }
 
 .skip-link {
   position: absolute;
@@ -490,13 +541,34 @@ h1 {
   0%, 100% { transform: translateY(0); }
   50% { transform: translateY(-2px); }
 }
-@keyframes py-active {
+/* Working used to share the same slow rock as searching/approval - it
+   read as "idling", not "doing something". A fast, small, stepped
+   wobble (steps(), not an eased curve) reads mechanically busy instead
+   of dreamy, which is what a burst of typing actually looks like on a
+   still image. Paired with .type-taps below. */
+@keyframes py-type {
   0%, 100% { transform: translateY(0) rotate(0deg); }
-  50% { transform: translateY(-3px) rotate(-1.4deg); }
+  25% { transform: translateY(-1px) rotate(-1deg); }
+  75% { transform: translateY(0) rotate(1deg); }
 }
 @keyframes py-alert-ring {
   0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 30%, transparent); }
   50% { box-shadow: 0 0 0 8px color-mix(in srgb, var(--accent) 0%, transparent); }
+}
+/* A thought-bubble trail - three dots rising and fading in sequence -
+   for "thinking", instead of the same idle-style sway every other state
+   used. */
+@keyframes bubble-rise {
+  0%, 20% { transform: translateY(0) scale(.7); opacity: 0; }
+  50% { transform: translateY(-4px) scale(1); opacity: .9; }
+  85%, 100% { transform: translateY(-10px) scale(.8); opacity: 0; }
+}
+/* A blinking key-tap pair near where Py's hands would be - "working" now
+   reads as typing at a keyboard, not just moving. */
+@keyframes tap-blink {
+  0%, 40% { opacity: 0; transform: scale(.6); }
+  50% { opacity: 1; transform: scale(1); }
+  90%, 100% { opacity: 0; transform: scale(.6); }
 }
 
 .hero-mascot .mascot-img { animation: py-breathe 4.6s ease-in-out infinite; }
@@ -511,10 +583,49 @@ h1 {
   transition: transform .35s ease;
 }
 
+/* -- per-state decorations: thought bubbles, key taps, confetti ---------
+   Small overlays injected by main.js into every Py host (.story-py,
+   .state-card, .hero-mascot) once at load - kept out of the HTML so
+   every Py instance gets the same treatment automatically. Each is
+   invisible and inert until the matching state/is-playing combination
+   turns it on; confetti pieces are created and removed by JS on demand
+   rather than living in the DOM permanently. */
+.story-py, .state-card, .hero-mascot { position: relative; }
+.think-bubbles, .type-taps {
+  position: absolute;
+  top: 8%;
+  right: 14%;
+  display: flex;
+  flex-direction: column-reverse;
+  align-items: center;
+  gap: 5px;
+  pointer-events: none;
+  z-index: 2;
+}
+.think-bubbles span {
+  width: 6px; height: 6px; border-radius: 50%;
+  background: var(--accent-2);
+  opacity: 0;
+}
+.think-bubbles span:nth-child(2) { width: 9px; height: 9px; }
+.think-bubbles span:nth-child(3) { width: 12px; height: 12px; }
+.type-taps {
+  top: auto; bottom: 18%; right: 22%;
+  flex-direction: row;
+  gap: 8px;
+}
+.type-taps span {
+  width: 6px; height: 6px; border-radius: 3px;
+  background: var(--accent);
+  opacity: 0;
+}
+
 .story-py[data-state="searching"] img { animation: py-sway 2.3s ease-in-out infinite; }
 .story-py[data-state="reading"] img { animation: py-track 2.8s ease-in-out infinite; }
 .story-py[data-state="thinking"] img { animation: py-calm 5s ease-in-out infinite; }
-.story-py[data-state="working"] img { animation: py-active 1.7s ease-in-out infinite; }
+.story-py[data-state="thinking"] .think-bubbles span { animation: bubble-rise 1.8s ease-in-out infinite; }
+.story-py[data-state="working"] img { animation: py-type .6s steps(2) infinite; }
+.story-py[data-state="working"] .type-taps span { animation: tap-blink .5s steps(1) infinite; }
 .story-py[data-state="approval"] { animation: py-alert-ring 2.2s ease-in-out infinite; }
 .story-py[data-state="finished"] img { animation: none; }
 
@@ -522,12 +633,31 @@ h1 {
 .state-card.is-playing[data-state="searching"] img { animation: py-sway 2.3s ease-in-out infinite; }
 .state-card.is-playing[data-state="reading"] img { animation: py-track 2.8s ease-in-out infinite; }
 .state-card.is-playing[data-state="thinking"] img { animation: py-calm 5s ease-in-out infinite; }
-.state-card.is-playing[data-state="working"] img { animation: py-active 1.7s ease-in-out infinite; }
+.state-card.is-playing[data-state="thinking"] .think-bubbles span { animation: bubble-rise 1.8s ease-in-out infinite; }
+.state-card.is-playing[data-state="working"] img { animation: py-type .6s steps(2) infinite; }
+.state-card.is-playing[data-state="working"] .type-taps span { animation: tap-blink .5s steps(1) infinite; }
 .state-card.is-playing[data-state="approval"] img { animation: py-sway 2.6s ease-in-out infinite; }
 .state-card.is-playing[data-state="idle"] img { animation: py-breathe 4.6s ease-in-out infinite; }
+.think-bubbles span:nth-child(1) { animation-delay: 0s; }
+.think-bubbles span:nth-child(2) { animation-delay: .3s; }
+.think-bubbles span:nth-child(3) { animation-delay: .6s; }
+.type-taps span:nth-child(2) { animation-delay: .25s; }
 .state-card[data-spotlight] {
   border-color: var(--accent);
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
+}
+
+/* Confetti pieces: created/positioned/animated by main.js
+   (spawnConfetti) via the Web Animations API directly, so this is just
+   the shared visual base for a piece - small, colourful, square or
+   round, removed from the DOM once its own animation finishes. Never
+   present unless a burst is actively playing. */
+.confetti-piece {
+  position: absolute;
+  top: 50%; left: 50%;
+  width: 7px; height: 7px;
+  pointer-events: none;
+  z-index: 3;
 }
 .shot-frame {
   margin: 0;
@@ -577,7 +707,12 @@ h1 {
 
 /* -- generic sections --------------------------------------------------------- */
 .section { padding: var(--space-8) 0; }
-.section--muted { background: var(--surface-alt); }
+.section--muted {
+  background:
+    radial-gradient(60% 140% at 100% 0%, color-mix(in srgb, var(--accent-2) 7%, transparent), transparent 70%),
+    radial-gradient(60% 140% at 0% 100%, color-mix(in srgb, var(--accent-3) 6%, transparent), transparent 70%),
+    var(--surface-alt);
+}
 .section-head { max-width: 620px; margin-bottom: var(--space-6); }
 .kicker {
   font-size: 12px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase;
@@ -907,9 +1042,12 @@ h2 {
 .final-cta {
   padding: var(--space-8) 0;
   text-align: center;
-  background: linear-gradient(180deg, var(--surface-alt), var(--bg));
+  background:
+    radial-gradient(70% 100% at 20% 0%, color-mix(in srgb, var(--accent) 10%, transparent), transparent 65%),
+    radial-gradient(70% 100% at 80% 100%, color-mix(in srgb, var(--accent-3) 9%, transparent), transparent 65%),
+    linear-gradient(180deg, var(--surface-alt), var(--bg));
 }
-.final-cta-inner { display: flex; flex-direction: column; align-items: center; }
+.final-cta-inner { position: relative; display: flex; flex-direction: column; align-items: center; }
 .final-mascot { width: 140px; height: auto; margin-bottom: var(--space-4); }
 .eyebrow--light { color: var(--accent); }
 .eyebrow-mark--light { color: var(--accent); }

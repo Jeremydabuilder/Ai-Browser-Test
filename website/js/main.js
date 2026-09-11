@@ -95,6 +95,25 @@
   // and a column of `.story-step` panels. As a step crosses the middle of
   // the viewport, Py's image and caption swap to match it. Respects
   // prefers-reduced-motion by skipping the crossfade and swapping instantly.
+  // Every Py host (the scroll-story mascot and each Meet-Py preview card)
+  // gets the same small decoration spans the CSS keyframes target - three
+  // rising dots for "thinking", two blinking taps for "working" - injected
+  // once here rather than hand-duplicated in the markup for each instance.
+  function injectDecorations(host) {
+    if (host.querySelector(".think-bubbles")) return;
+    const bubbles = document.createElement("span");
+    bubbles.className = "think-bubbles";
+    bubbles.setAttribute("aria-hidden", "true");
+    bubbles.innerHTML = "<span></span><span></span><span></span>";
+    host.appendChild(bubbles);
+    const taps = document.createElement("span");
+    taps.className = "type-taps";
+    taps.setAttribute("aria-hidden", "true");
+    taps.innerHTML = "<span></span><span></span>";
+    host.appendChild(taps);
+  }
+  document.querySelectorAll(".story-py, .state-card").forEach(injectDecorations);
+
   const MASCOT_SRC = {
     idle: "assets/mascot/py-idle.webp",
     searching: "assets/mascot/py-searching.webp",
@@ -143,6 +162,55 @@
     );
   }
 
+  // A one-time confetti burst for the same "finished" beat - small pieces in
+  // the site's own accent colors, thrown up and out then falling with a bit
+  // of gravity, cleaned up from the DOM as each piece's own animation ends.
+  function spawnConfetti(container, origin) {
+    if (!container || reducedMotion.matches) return;
+    const probe = document.createElement("span");
+    if (typeof probe.animate !== "function") return;
+    const originEl = origin || container;
+    const cRect = container.getBoundingClientRect();
+    const oRect = originEl.getBoundingClientRect();
+    const originX = oRect.left + oRect.width / 2 - cRect.left;
+    const originY = oRect.top + oRect.height / 2 - cRect.top;
+    const colors = [
+      "var(--spectrum-1)", "var(--spectrum-2)", "var(--spectrum-3)",
+      "var(--spectrum-4)", "var(--spectrum-5)",
+    ];
+    for (let i = 0; i < 14; i++) {
+      const piece = document.createElement("span");
+      piece.className = "confetti-piece";
+      piece.style.left = `${originX}px`;
+      piece.style.top = `${originY}px`;
+      piece.style.background = colors[i % colors.length];
+      piece.style.borderRadius = i % 2 === 0 ? "50%" : "2px";
+      container.appendChild(piece);
+      const angle = (Math.random() * 140 - 70) * (Math.PI / 180);
+      const distance = 40 + Math.random() * 70;
+      const dx = Math.sin(angle) * distance;
+      const dy = -Math.cos(angle) * distance;
+      const rotate = Math.random() * 520 - 260;
+      const duration = 700 + Math.random() * 500;
+      const anim = piece.animate(
+        [
+          { transform: "translate(-50%, -50%) rotate(0deg)", opacity: 1 },
+          {
+            transform: `translate(calc(-50% + ${dx}px), calc(-50% + ${(dy * 0.5).toFixed(1)}px)) rotate(${(rotate * 0.5).toFixed(0)}deg)`,
+            opacity: 1,
+            offset: 0.45,
+          },
+          {
+            transform: `translate(calc(-50% + ${(dx * 1.1).toFixed(1)}px), calc(-50% + ${(dy * 0.4 + 60).toFixed(1)}px)) rotate(${rotate.toFixed(0)}deg)`,
+            opacity: 0,
+          },
+        ],
+        { duration, easing: "cubic-bezier(.2,.6,.3,1)" }
+      );
+      anim.onfinish = () => piece.remove();
+    }
+  }
+
   function setMascot(anchor, state, caption) {
     const img = anchor.querySelector("[data-mascot-img]");
     const cap = anchor.querySelector("[data-py-caption]");
@@ -165,7 +233,10 @@
       }
     }
     if (stateLabel) stateLabel.textContent = state.charAt(0).toUpperCase() + state.slice(1);
-    if (changed && state === "finished") playFinishPop(anchor);
+    if (changed && state === "finished") {
+      playFinishPop(anchor);
+      spawnConfetti(anchor, img);
+    }
   }
 
   document.querySelectorAll("[data-story]").forEach((story) => {
@@ -237,6 +308,18 @@
     }
     function play(card) {
       card.classList.add("is-playing");
+      if (card.dataset.state === "finished" && !reducedMotion.matches) {
+        const img = card.querySelector("img");
+        if (img && img.animate) {
+          img.animate(
+            [{ transform: "scale(1) rotate(0deg)" },
+             { transform: "scale(1.1) rotate(-3deg)", offset: .5 },
+             { transform: "scale(1) rotate(0deg)" }],
+            { duration: 520, easing: "cubic-bezier(.2,.8,.3,1.2)" }
+          );
+        }
+        spawnConfetti(card, img || card);
+      }
     }
     function stop(card) {
       card.classList.remove("is-playing");
@@ -306,7 +389,10 @@
       (entries, obs) => {
         entries.forEach((entry) => {
           if (!entry.isIntersecting) return;
-          window.setTimeout(() => playFinishPop(finalMascotAnchor), 420);
+          window.setTimeout(() => {
+            playFinishPop(finalMascotAnchor);
+            spawnConfetti(finalMascotAnchor, finalMascotAnchor.querySelector("[data-mascot-img]"));
+          }, 420);
           obs.disconnect();
         });
       },
