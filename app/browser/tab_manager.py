@@ -55,6 +55,17 @@ class TabManager(QTabWidget):
     tab_added = Signal(int)      # index, just after it was inserted
     tab_closing = Signal(int)    # index, just before it is removed
     tab_updated = Signal(int)    # index - that tab's title or icon changed
+    #: A tab was pinned, unpinned, or moved as a result of either - the
+    #: index is wherever that tab ended up. A second view (VerticalTabList)
+    #: treats this the same as a structural change, since pinning can
+    #: reorder tabs.
+    pin_changed = Signal(int)
+    #: A group was created/renamed/collapsed/deleted, or a tab's membership
+    #: changed. No payload - unlike pin_changed this can affect several
+    #: tabs' rendering at once (an emptied group, a renamed header), so a
+    #: view just re-reads groups()/group_of() rather than being told what
+    #: changed.
+    groups_changed = Signal()
 
     def __init__(self, profile: BrowserProfile, home_url: str, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -75,6 +86,11 @@ class TabManager(QTabWidget):
         #: strip has run out of room. See _position_new_tab_button.
         self._button_in_corner = False
         self._install_new_tab_button()
+        #: group id -> {"name", "collapsed"}. Membership itself is a
+        #: per-tab attribute (see group_of/move_tab_to_group) - this is
+        #: only the small amount of metadata a group needs beyond "which
+        #: tabs are in it".
+        self._groups: dict[str, dict] = {}
 
         # One timer drives the loading indicator on every tab, and only while
         # something is loading - a timer ticking behind an idle browser costs
@@ -88,6 +104,13 @@ class TabManager(QTabWidget):
 
         self.tabCloseRequested.connect(self.close_tab)
         self.currentChanged.connect(self._on_current_changed)
+        self.tabBar().setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.tabBar().customContextMenuRequested.connect(self._show_tab_context_menu)
+        # setMovable(True) above lets the user drag-reorder by hand - this
+        # keeps a dragged tab from landing on the wrong side of the
+        # pinned/unpinned boundary, since dragging bypasses set_pinned()
+        # entirely.
+        self.tabBar().tabMoved.connect(self._on_tab_moved)
 
     # -- properties -----------------------------------------------------
     @property
@@ -112,8 +135,16 @@ class TabManager(QTabWidget):
         *,
         background: bool = False,
         tab: BrowserTab | None = None,
+        pinned: bool = False,
     ) -> BrowserTab:
-        """Add a tab. Pass ``tab`` to adopt a tab the engine already created."""
+        """Add a tab. Pass ``tab`` to adopt a tab the engine already created.
+
+        ``pinned=True`` is for restoring a saved pinned tab on startup - it
+        pins the tab immediately after creation rather than making the
+        caller do a second ``set_pinned`` call, and does so while nothing
+        else has been added yet, so no reordering is needed to keep it at
+        the front.
+        """
         if tab is None:
             tab = BrowserTab(self._profile)
         self._connect_tab(tab)
@@ -126,6 +157,8 @@ class TabManager(QTabWidget):
             tab.navigate(url)
         elif tab.url().isEmpty():
             tab.navigate(self._home_url)
+        if pinned:
+            self.set_pinned(index, True)
         return tab
 
     def _install_new_tab_button(self) -> None:
@@ -298,6 +331,172 @@ class TabManager(QTabWidget):
                 self._page_icon = QIcon()
         return self._page_icon
 
+    # -- pinning ----------------------------------------------------------
+    def is_pinned(self, index: int) -> bool:
+        widget = self.widget(index)
+        return bool(getattr(widget, "_pinned", False)) if widget is not None else False
+
+    def set_pinned(self, index: int, pinned: bool) -> bool:
+        """Pin or unpin the tab at ``index``. Returns whether anything
+        changed - a no-op call (already pinned/unpinned, or a bad index)
+        changes nothing and emits no signal.
+
+        Pinned state lives on the tab widget itself (see ``BrowserTab``),
+        not in a second store, so it survives reordering and closing other
+        tabs the same way the tab's title or icon does. Pinned tabs are
+        kept contiguous at the front: pinning moves the tab to just after
+        every *other* currently-pinned tab, and unpinning moves it to just
+        after every *remaining* pinned tab - the same target position
+        either way, which is what keeps this one short instead of needing
+        a special case per direction.
+        """
+        widget = self.widget(index)
+        if widget is None or bool(getattr(widget, "_pinned", False)) == pinned:
+            return False
+        target = sum(1 for i in range(self.count())
+                    if i != index and self.is_pinned(i))
+        widget._pinned = pinned
+        if index != target:
+            self.tabBar().moveTab(index, target)
+        final_index = self.indexOf(widget)
+        self._apply_pin_appearance(final_index)
+        self._reposition_soon()
+        self.pin_changed.emit(final_index)
+        return True
+
+    def _set_tab_label(self, index: int, text: str) -> None:
+        """The visible tab text - blank for a pinned tab (icon-only), the
+        real label otherwise. The tooltip is set separately by the caller
+        and always carries the full title regardless of pin state."""
+        self.setTabText(index, "" if self.is_pinned(index) else text)
+
+    def pinned_urls(self) -> list[str]:
+        """URLs of every pinned tab, front to back - what gets persisted."""
+        return [self.widget(i).url().toString() for i in range(self.count())
+               if self.is_pinned(i)]
+
+    def _on_tab_moved(self, _from: int, _to: int) -> None:
+        """Undo a manual drag that put an unpinned tab ahead of a pinned
+        one. Fixes one violation and lets the ``tabMoved`` this correction
+        itself emits re-enter and fix the next, until the front of the
+        strip is pinned tabs and only pinned tabs."""
+        pinned_count = sum(1 for i in range(self.count()) if self.is_pinned(i))
+        for i in range(pinned_count):
+            if not self.is_pinned(i):
+                for j in range(i + 1, self.count()):
+                    if self.is_pinned(j):
+                        self.tabBar().moveTab(j, i)
+                        return
+                break
+
+    def _show_tab_context_menu(self, pos) -> None:
+        index = self.tabBar().tabAt(pos)
+        if index < 0:
+            return
+        from PySide6.QtWidgets import QMenu
+
+        menu = QMenu(self)
+        pinned = self.is_pinned(index)
+        pin_action = menu.addAction("Unpin Tab" if pinned else "Pin Tab")
+        pin_action.triggered.connect(lambda: self.set_pinned(index, not pinned))
+        menu.addSeparator()
+        close_action = menu.addAction("Close Tab")
+        close_action.triggered.connect(lambda: self.close_tab(index))
+        menu.exec(self.tabBar().mapToGlobal(pos))
+
+    def _apply_pin_appearance(self, index: int) -> None:
+        """Icon-only tab text and no close button while pinned; both
+        restored on unpin. The real title stays in the tooltip either way -
+        see ``_on_tab_title`` for why the visible label itself goes blank.
+        """
+        widget = self.widget(index)
+        if widget is None:
+            return
+        pinned = self.is_pinned(index)
+        if pinned:
+            self.setTabText(index, "")
+            self.tabBar().setTabButton(index, QTabBar.ButtonPosition.RightSide, None)
+        else:
+            title = widget.title() or "New Tab"
+            self.setTabText(index, self._elide(title))
+            self._install_close_button(index, widget)
+
+    # -- grouping -----------------------------------------------------------
+    # Membership lives on the tab widget itself (``_group_id``), exactly
+    # like ``_pinned`` above - the only *new* state this needs is the small
+    # registry of group id -> {name, collapsed}, since a group is otherwise
+    # nothing but "some tabs share this id". No second tab store, no
+    # duplicated lifecycle: closing a tab that happens to be in a group is
+    # still just ``close_tab`` under the hood.
+
+    def group_of(self, index: int) -> str | None:
+        widget = self.widget(index)
+        return getattr(widget, "_group_id", None) if widget is not None else None
+
+    def create_group(self, name: str) -> str:
+        import uuid
+
+        group_id = uuid.uuid4().hex[:12]
+        self._groups[group_id] = {"name": name.strip() or "Group", "collapsed": False}
+        self.groups_changed.emit()
+        return group_id
+
+    def rename_group(self, group_id: str, name: str) -> bool:
+        if group_id not in self._groups:
+            return False
+        self._groups[group_id]["name"] = name.strip() or self._groups[group_id]["name"]
+        self.groups_changed.emit()
+        return True
+
+    def set_group_collapsed(self, group_id: str, collapsed: bool) -> bool:
+        if group_id not in self._groups:
+            return False
+        self._groups[group_id]["collapsed"] = collapsed
+        self.groups_changed.emit()
+        return True
+
+    def move_tab_to_group(self, index: int, group_id: str | None) -> bool:
+        """Put the tab at ``index`` in ``group_id``, or take it out of
+        whatever group it is in when ``group_id`` is None. A tab may belong
+        to at most one group - moving it into a new one silently leaves the
+        old one, the same way a folder move works."""
+        widget = self.widget(index)
+        if widget is None:
+            return False
+        if group_id is not None and group_id not in self._groups:
+            return False
+        widget._group_id = group_id
+        self.groups_changed.emit()
+        return True
+
+    def remove_group(self, group_id: str) -> bool:
+        """Delete a group without closing its tabs - they simply become
+        ungrouped, still exactly where they were."""
+        if group_id not in self._groups:
+            return False
+        for i in range(self.count()):
+            if self.group_of(i) == group_id:
+                self.widget(i)._group_id = None
+        del self._groups[group_id]
+        self.groups_changed.emit()
+        return True
+
+    def groups(self) -> list[dict]:
+        """Every group, each with its member tab indices in strip order -
+        the read model a view renders from, rebuilt on demand rather than
+        cached, so it can never drift from the tabs themselves."""
+        members: dict[str, list[int]] = {gid: [] for gid in self._groups}
+        for i in range(self.count()):
+            gid = self.group_of(i)
+            if gid in members:
+                members[gid].append(i)
+        return [{"id": gid, "name": info["name"], "collapsed": info["collapsed"],
+               "tab_indices": members[gid]}
+               for gid, info in self._groups.items()]
+
+    def ungrouped_indices(self) -> list[int]:
+        return [i for i in range(self.count()) if self.group_of(i) is None]
+
     def _install_close_button(self, index: int, tab: BrowserTab) -> None:
         """Put our own close glyph on the tab.
 
@@ -381,7 +580,7 @@ class TabManager(QTabWidget):
             # Other internal pages are real destinations and keep their own
             # names - a Mission Library tab labelled "New Tab" is unfindable
             # once three of them are open.
-            self.setTabText(index, "New Tab")
+            self._set_tab_label(index, "New Tab")
             self.setTabToolTip(index, "New Tab")
             self._reposition_soon()
             self.tab_updated.emit(index)
@@ -389,7 +588,7 @@ class TabManager(QTabWidget):
                 self.current_title_changed.emit("New Tab")
             return
         label = title or tab.url().host() or "New Tab"
-        self.setTabText(index, self._elide(label))
+        self._set_tab_label(index, self._elide(label))
         self._reposition_soon()
         self.tab_updated.emit(index)
         # The label is elided, so the tooltip carries both the full title and

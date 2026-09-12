@@ -117,7 +117,10 @@ class SidebarReflectsTheSharedModelTests(_VerticalTabListTestCase):
         pump()
         sidebar = VerticalTabList(self.tabs, self.settings)
         row = sidebar._rows[0]
-        self.tabs.tabBar().setTabText(0, "A New Title")
+        # The tooltip, not tabText, is the row's source of truth - a pinned
+        # tab's tabText is blank on purpose (icon-only), so the sidebar must
+        # read the real title from somewhere that stays true either way.
+        self.tabs.tabBar().setTabToolTip(0, "A New Title")
         self.tabs.tab_updated.emit(0)
         pump()
         self.assertEqual(row._title.text(), "A New Title")

@@ -1,27 +1,28 @@
 """A vertical tab sidebar - the same TabManager, a different view of it.
 
 TabManager (app/browser/tab_manager.py) is the one tab model: it owns tab
-creation/closing/navigation and the horizontal QTabBar that has always
-rendered it. This module adds a second, independent view of that same
-model - it never stores its own list of tabs, never creates or closes a
-tab except by calling back into TabManager, and rebuilds its rows from
-TabManager's own tab_added/tab_closing/tab_updated/currentChanged signals
-rather than tracking state in parallel. Switching layouts is purely which
-view is on screen; the tabs themselves, and everything that already reads
-them (Missions, history, the agent), never know or care which one it is.
+creation/closing/navigation, pinning, grouping, and the horizontal QTabBar
+that has always rendered it. This module adds a second, independent view of
+that same model - it never stores its own list of tabs, never creates,
+closes, pins or groups a tab except by calling back into TabManager, and
+rebuilds its rows from TabManager's own tab_added/tab_closing/tab_updated/
+pin_changed/groups_changed/currentChanged signals rather than tracking state
+in parallel. Switching layouts is purely which view is on screen; the tabs
+themselves, and everything that already reads them (Missions, history, the
+agent), never know or care which one it is.
 """
 
 from __future__ import annotations
 
 from PySide6.QtCore import QSize, Qt, Signal
-from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QApplication,
     QFrame,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
+    QMenu,
     QScrollArea,
-    QSizePolicy,
     QToolButton,
     QVBoxLayout,
     QWidget,
@@ -47,6 +48,9 @@ class _TabRow(QFrame):
 
     activated = Signal()
     close_requested = Signal()
+    pin_toggle_requested = Signal()
+    move_to_group_requested = Signal(object)   # group_id, or None for "new group"
+    remove_from_group_requested = Signal()
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -55,8 +59,13 @@ class _TabRow(QFrame):
         self._colours = c
         self._active = False
         self._collapsed = False
+        self._pinned = False
+        self._group_id: str | None = None
+        self._group_choices: list[tuple[str, str]] = []   # [(id, name), ...]
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setFixedHeight(m.tab)
+        self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.customContextMenuRequested.connect(self._show_context_menu)
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(m.space_2, 0, m.space_1, 0)
@@ -99,8 +108,35 @@ class _TabRow(QFrame):
 
     def set_collapsed(self, collapsed: bool) -> None:
         self._collapsed = collapsed
-        self._title.setVisible(not collapsed)
-        self._close.setVisible(not collapsed)
+        self._sync_visibility()
+
+    def set_pinned(self, pinned: bool) -> None:
+        """A pinned row stays icon-only (like collapsed) and protects its
+        tab from the ordinary close button - the same "hard to close by
+        accident" rule the horizontal tab bar enforces by hiding its own
+        close glyph for a pinned tab."""
+        self._pinned = pinned
+        self._sync_visibility()
+
+    def set_indent(self, indented: bool) -> None:
+        """Nested under a group header - a small left indent is enough to
+        read as "belongs to the section above" without a second column."""
+        m = theme.METRICS
+        left = m.space_2 + (m.space_4 if indented else 0)
+        margins = self.layout().contentsMargins()
+        self.layout().setContentsMargins(left, margins.top(), margins.right(), margins.bottom())
+
+    def set_group_choices(self, group_id: str | None, choices: list[tuple[str, str]]) -> None:
+        """What the context menu's "Move to group" submenu offers - the
+        groups that exist right now, and which one (if any) this tab is
+        already in, so its own group isn't offered as a destination."""
+        self._group_id = group_id
+        self._group_choices = choices
+
+    def _sync_visibility(self) -> None:
+        hide = self._collapsed or self._pinned
+        self._title.setVisible(not hide)
+        self._close.setVisible(not (hide or self._pinned) and not self._collapsed)
 
     def _apply_style(self) -> None:
         c = self._colours
@@ -122,11 +158,82 @@ class _TabRow(QFrame):
             self.activated.emit()
         super().mousePressEvent(event)
 
+    def _show_context_menu(self, pos) -> None:
+        menu = QMenu(self)
+        menu.addAction("Unpin Tab" if self._pinned else "Pin Tab",
+                      self.pin_toggle_requested.emit)
+        group_menu = menu.addMenu("Move to Group")
+        for group_id, name in self._group_choices:
+            if group_id == self._group_id:
+                continue
+            group_menu.addAction(name, lambda gid=group_id: self.move_to_group_requested.emit(gid))
+        if self._group_choices:
+            group_menu.addSeparator()
+        group_menu.addAction("New Group…", lambda: self.move_to_group_requested.emit(None))
+        if self._group_id is not None:
+            menu.addAction("Remove from Group", self.remove_from_group_requested.emit)
+        menu.addSeparator()
+        menu.addAction("Close Tab", self.close_requested.emit)
+        menu.exec(self.mapToGlobal(pos))
+
+
+class _GroupHeader(QFrame):
+    """One group's header row: name, tab count, collapse/expand, and a menu
+    for rename/ungroup. Clicking anywhere toggles collapse, the same "the
+    row is the target" rule _TabRow uses for activation."""
+
+    toggle_requested = Signal()
+    rename_requested = Signal(str)
+    ungroup_requested = Signal()
+
+    def __init__(self, group_id: str, name: str, collapsed: bool, count: int,
+                parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.group_id = group_id
+        c = theme.palette_for(QApplication.instance())
+        m = theme.METRICS
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setFixedHeight(m.tab)
+        self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.customContextMenuRequested.connect(self._show_context_menu)
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(m.space_2, 0, m.space_1, 0)
+        layout.setSpacing(m.space_2)
+
+        self._chevron = QLabel("▾" if not collapsed else "▸", self)
+        self._chevron.setStyleSheet(f"color:{c.muted}; font-size:{m.text_sm}px;")
+        layout.addWidget(self._chevron)
+
+        self._label = QLabel(f"{name} ({count})", self)
+        self._label.setStyleSheet(
+            f"color:{c.muted}; font-size:{m.text_xs}px; font-weight:600; "
+            "letter-spacing:0.04em; background:transparent;")
+        layout.addWidget(self._label, 1)
+        self.setToolTip(name)
+
+    def mousePressEvent(self, event) -> None:  # noqa: N802
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.toggle_requested.emit()
+        super().mousePressEvent(event)
+
+    def _show_context_menu(self, pos) -> None:
+        menu = QMenu(self)
+        menu.addAction("Rename Group…", self._prompt_rename)
+        menu.addAction("Ungroup (keep tabs open)", self.ungroup_requested.emit)
+        menu.exec(self.mapToGlobal(pos))
+
+    def _prompt_rename(self) -> None:
+        name, ok = QInputDialog.getText(self, "Rename Group", "Group name:")
+        if ok and name.strip():
+            self.rename_requested.emit(name.strip())
+
 
 class VerticalTabList(QWidget):
     """The sidebar itself: a "+ New Tab" header, the scrollable row list,
     and a collapse toggle - all driven by one TabManager, never a second
-    source of truth about which tabs exist."""
+    source of truth about which tabs exist, which are pinned, or how they
+    are grouped."""
 
     #: The user asked to leave vertical mode entirely (not just collapse
     #: it) - MainWindow listens for this from a future "Use horizontal
@@ -139,7 +246,12 @@ class VerticalTabList(QWidget):
         super().__init__(parent)
         self._tabs = tab_manager
         self._settings = settings
-        self._rows: list[_TabRow] = []
+        #: tab index -> its row. A dict, not a list, because rows are no
+        #: longer laid out in index order once pinning/grouping puts some
+        #: tabs ahead of others - lookups by index (from tab_updated,
+        #: currentChanged) still need to find the right widget regardless
+        #: of where it is drawn.
+        self._rows: dict[int, _TabRow] = {}
         self._collapsed = settings.vertical_tabs_collapsed
         c = theme.palette_for(QApplication.instance())
         m = theme.METRICS
@@ -186,6 +298,8 @@ class VerticalTabList(QWidget):
         tab_manager.tab_added.connect(self._on_structure_changed)
         tab_manager.tab_closing.connect(lambda _i: self._defer_rebuild())
         tab_manager.tab_updated.connect(self._on_tab_updated)
+        tab_manager.pin_changed.connect(lambda _i: self._rebuild())
+        tab_manager.groups_changed.connect(self._rebuild)
         tab_manager.currentChanged.connect(self._on_current_changed)
 
         self._rebuild()
@@ -212,7 +326,7 @@ class VerticalTabList(QWidget):
             self.resize(self._settings.vertical_tabs_width, self.height())
         self.new_tab_label.setVisible(not collapsed)
         self.collapse_button.setToolTip("Expand sidebar" if collapsed else "Collapse sidebar")
-        for row in self._rows:
+        for row in self._rows.values():
             row.set_collapsed(collapsed)
         if persist:
             self._settings.vertical_tabs_collapsed = collapsed
@@ -242,14 +356,16 @@ class VerticalTabList(QWidget):
         QTimer.singleShot(0, self, self._rebuild)
 
     def _on_tab_updated(self, index: int) -> None:
-        if 0 <= index < len(self._rows):
+        row = self._rows.get(index)
+        if row is not None:
             self._set_row_content(index)
 
     def _on_current_changed(self, _index: int) -> None:
         current = self._tabs.currentIndex()
-        for i, row in enumerate(self._rows):
-            row.set_active(i == current)
+        for index, row in self._rows.items():
+            row.set_active(index == current)
 
+    # -- building the row list, pinned first, then groups, then the rest ---
     def _rebuild(self) -> None:
         while self._list_layout.count() > 1:   # keep the trailing stretch
             item = self._list_layout.takeAt(0)
@@ -264,22 +380,96 @@ class VerticalTabList(QWidget):
                 widget.hide()
                 widget.setParent(None)
                 widget.deleteLater()
-        self._rows = []
+        self._rows = {}
         current = self._tabs.currentIndex()
-        for i in range(self._tabs.count()):
-            row = _TabRow(self._list_widget)
-            row.set_collapsed(self._collapsed)
-            row.activated.connect(lambda idx=i: self._tabs.setCurrentIndex(idx))
-            row.close_requested.connect(lambda idx=i: self._tabs.close_tab(idx))
-            self._list_layout.insertWidget(self._list_layout.count() - 1, row)
-            self._rows.append(row)
-            self._set_row_content(i)
-            row.set_active(i == current)
+
+        def insert(widget: QWidget) -> None:
+            self._list_layout.insertWidget(self._list_layout.count() - 1, widget)
+
+        pinned = [i for i in range(self._tabs.count()) if self._tabs.is_pinned(i)]
+        groups = self._tabs.groups()
+        group_choices = [(g["id"], g["name"]) for g in groups]
+        grouped = {i for g in groups for i in g["tab_indices"]}
+
+        for index in pinned:
+            row = self._make_row(index, current, pinned=True)
+            insert(row)
+
+        if pinned and (groups or len(pinned) < self._tabs.count()):
+            insert(self._divider())
+
+        for group in groups:
+            header = _GroupHeader(group["id"], group["name"], group["collapsed"],
+                                  len([i for i in group["tab_indices"] if i not in pinned]),
+                                  self._list_widget)
+            header.toggle_requested.connect(
+                lambda gid=group["id"], c=group["collapsed"]:
+                    self._tabs.set_group_collapsed(gid, not c))
+            header.rename_requested.connect(
+                lambda name, gid=group["id"]: self._tabs.rename_group(gid, name))
+            header.ungroup_requested.connect(
+                lambda gid=group["id"]: self._tabs.remove_group(gid))
+            insert(header)
+            if not group["collapsed"]:
+                for index in group["tab_indices"]:
+                    if index in pinned:
+                        continue   # already rendered above; pin takes visual precedence
+                    row = self._make_row(index, current, pinned=False)
+                    row.set_indent(True)
+                    insert(row)
+
+        for index in range(self._tabs.count()):
+            if index in pinned or index in grouped:
+                continue
+            row = self._make_row(index, current, pinned=False)
+            insert(row)
+
+        for index, row in self._rows.items():
+            row.set_group_choices(self._tabs.group_of(index), group_choices)
+
+    def _make_row(self, index: int, current: int, *, pinned: bool) -> _TabRow:
+        row = _TabRow(self._list_widget)
+        row.set_collapsed(self._collapsed)
+        row.set_pinned(pinned)
+        row.activated.connect(lambda idx=index: self._tabs.setCurrentIndex(idx))
+        row.close_requested.connect(lambda idx=index: self._tabs.close_tab(idx))
+        row.pin_toggle_requested.connect(
+            lambda idx=index: self._tabs.set_pinned(idx, not self._tabs.is_pinned(idx)))
+        row.move_to_group_requested.connect(
+            lambda gid, idx=index: self._move_to_group(idx, gid))
+        row.remove_from_group_requested.connect(
+            lambda idx=index: self._tabs.move_tab_to_group(idx, None))
+        self._rows[index] = row
+        self._set_row_content(index)
+        row.set_active(index == current)
+        return row
+
+    def _move_to_group(self, index: int, group_id: str | None) -> None:
+        if group_id is None:
+            name, ok = QInputDialog.getText(self, "New Group", "Group name:")
+            if not ok or not name.strip():
+                return
+            group_id = self._tabs.create_group(name.strip())
+        self._tabs.move_tab_to_group(index, group_id)
+
+    def _divider(self) -> QFrame:
+        c = theme.palette_for(QApplication.instance())
+        line = QFrame(self._list_widget)
+        line.setFrameShape(QFrame.Shape.HLine)
+        line.setFixedHeight(1)
+        line.setStyleSheet(f"background:{c.line}; border:none;")
+        return line
 
     def _set_row_content(self, index: int) -> None:
-        if not (0 <= index < len(self._rows)):
+        row = self._rows.get(index)
+        if row is None:
             return
-        title = self._tabs.tabText(index) or "New Tab"
+        # Not tabText(): a pinned tab's tabText is blank on purpose (see
+        # TabManager._apply_pin_appearance, the horizontal bar's own
+        # icon-only rendering) - the tooltip always carries the real title
+        # regardless of pin state, so it is the one source both views can
+        # read the actual name from.
+        tooltip = self._tabs.tabToolTip(index) or "New Tab"
+        title = tooltip.split("\n", 1)[0] or "New Tab"
         icon = self._tabs.tabIcon(index)
-        tooltip = self._tabs.tabToolTip(index) or title
-        self._rows[index].set_content(title, icon, tooltip)
+        row.set_content(title, icon, tooltip)

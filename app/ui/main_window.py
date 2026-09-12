@@ -10,6 +10,7 @@ from __future__ import annotations
 from PySide6.QtCore import QTimer, QUrl, Qt, Signal
 from PySide6.QtGui import QAction, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
+    QDialog,
     QFrame,
     QVBoxLayout,
     QHBoxLayout,
@@ -136,9 +137,12 @@ class MainWindow(QMainWindow):
         self._connect_signals()
         self._install_shortcuts()
 
+        self._restore_pinned_tabs()
+
         for url in start_urls or [self.settings.new_tab_url()]:
             self.tabs.new_tab(url)
 
+        self._restore_groups()
         self._apply_tab_layout()
         self._tabs_splitter.splitterMoved.connect(self._on_tabs_splitter_moved)
 
@@ -183,6 +187,7 @@ class MainWindow(QMainWindow):
         self._add_action(view_menu, "Find &Previous", "Ctrl+Shift+G", lambda: self._find_step(True))
         view_menu.addSeparator()
         self._add_action(view_menu, "&Search Tabs…", "Ctrl+Shift+K", self._open_tab_search)
+        self._add_action(view_menu, "Suggest Tab &Groups…", None, self._suggest_tab_groups)
 
         history_menu: QMenu = menubar.addMenu("&History")
         self._add_action(history_menu, "&Back", "Alt+Left", self._back)
@@ -263,6 +268,14 @@ class MainWindow(QMainWindow):
         # A download that gives no feedback looks like a dead link.
         self._profile.download_started.connect(self._on_download_started)
         self._profile.download_finished.connect(self._on_download_finished)
+        self.tabs.pin_changed.connect(lambda _i: self._save_pinned_tabs())
+        # tab_closing fires just before the tab is actually removed, so
+        # saving immediately would still count it - defer one event-loop
+        # turn, the same reason VerticalTabList defers its own rebuild.
+        self.tabs.tab_closing.connect(
+            lambda _i: QTimer.singleShot(0, self, self._save_pinned_tabs))
+        self.tabs.tab_updated.connect(self._on_tab_updated_for_persistence)
+        self.tabs.groups_changed.connect(self._save_groups)
 
 
     def _install_shortcuts(self) -> None:
@@ -918,6 +931,52 @@ class MainWindow(QMainWindow):
             if 0 <= index < self.tabs.count():
                 self.tabs.close_tab(index)
 
+    def _suggest_tab_groups(self) -> None:
+        """"Suggest Groups": build suggestions from cheap tab metadata (an
+        AI classifier if one is configured and answers sensibly, the
+        offline domain-based fallback otherwise), let the user review and
+        pick which to keep, then create only those - never applied without
+        that explicit confirmation.
+        """
+        from app.browser.tab_grouping import TabMeta, suggest_groups
+        from app.ui.tab_grouping_dialog import SuggestGroupsDialog
+
+        rows = self.controller.list_tabs()
+        tabs = [TabMeta(index=row["index"], title=row["title"], url=row["url"])
+               for row in rows]
+        transport = self._classifier_transport()
+        suggestions = suggest_groups(tabs, transport=transport)
+        titles_by_index = {row["index"]: row["title"] or "Untitled" for row in rows}
+
+        dialog = SuggestGroupsDialog(suggestions, titles_by_index, self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        for suggestion in dialog.accepted_suggestions():
+            group_id = self.tabs.create_group(suggestion.name)
+            for index in suggestion.tab_indices:
+                self.tabs.move_tab_to_group(index, group_id)
+
+    def _classifier_transport(self):
+        """A one-shot, tool-free transport for tab-group classification -
+        reusing whichever provider is already configured for Py, since
+        this is metadata classification, not a browser action, and needs
+        no tool loop or approval gate of its own. None on any failure
+        (nothing configured, a broken credential): suggest_groups() falls
+        back to the offline heuristic in that case.
+        """
+        try:
+            from app.agent.config import AgentConfig
+            from app.agent.credentials import resolve_for
+            from app.ui.agent_setup import build_transport
+
+            config = AgentConfig.from_environment(self.settings)
+            credential = resolve_for(config.provider)
+            if not credential.available:
+                return None
+            return build_transport(credential, config)
+        except Exception:  # noqa: BLE001 - no configured provider is not an error here
+            return None
+
     def _start_mission_from_tabs(self, indices: list[int]) -> None:
         """Create a Mission whose goal names the tabs the user picked, then
         ask Py to actually read them - creating the Mission is instant and
@@ -1143,6 +1202,63 @@ class MainWindow(QMainWindow):
         self.tabs.home_url = self.settings.new_tab_url()
         self._apply_tab_layout()
         self._show_status("Settings saved.")
+
+    # -- pinned tabs --------------------------------------------------------
+    def _restore_pinned_tabs(self) -> None:
+        """Recreate last session's pinned tabs, in order, before anything
+        else opens - so they land at the front for free instead of needing
+        a reorder once the ordinary start tabs exist."""
+        for url in self.settings.pinned_tab_urls:
+            self.tabs.new_tab(url, background=True, pinned=True)
+
+    def _save_pinned_tabs(self) -> None:
+        self.settings.pinned_tab_urls = self.tabs.pinned_urls()
+
+    def _on_tab_updated_for_persistence(self, index: int) -> None:
+        """A pinned tab's title/icon just changed - re-save only if the
+        URL itself is what changed (a plain title update is not worth a
+        write), and only for a pinned tab at all."""
+        if not self.tabs.is_pinned(index):
+            return
+        widget = self.tabs.widget(index)
+        if widget is None:
+            return
+        url = widget.url().toString()
+        if url and url not in self.settings.pinned_tab_urls:
+            self._save_pinned_tabs()
+
+    # -- tab groups -----------------------------------------------------------
+    def _restore_groups(self) -> None:
+        """Recreate saved groups by matching each member URL against the
+        tabs that are actually open right now. A URL with no matching open
+        tab (the page is simply not open this session) is silently
+        skipped - restoring a group never opens tabs on its own."""
+        by_url: dict[str, list[int]] = {}
+        for i in range(self.tabs.count()):
+            by_url.setdefault(self.tabs.widget(i).url().toString(), []).append(i)
+        for saved in self.settings.tab_groups:
+            urls = saved.get("urls") or []
+            indices = []
+            for url in urls:
+                candidates = by_url.get(url) or []
+                for index in candidates:
+                    if self.tabs.group_of(index) is None:
+                        indices.append(index)
+                        break
+            if len(indices) < 1:
+                continue
+            group_id = self.tabs.create_group(saved.get("name", "Group"))
+            self.tabs.set_group_collapsed(group_id, bool(saved.get("collapsed", False)))
+            for index in indices:
+                self.tabs.move_tab_to_group(index, group_id)
+
+    def _save_groups(self) -> None:
+        groups = []
+        for group in self.tabs.groups():
+            urls = [self.tabs.widget(i).url().toString() for i in group["tab_indices"]]
+            groups.append({"id": group["id"], "name": group["name"],
+                          "collapsed": group["collapsed"], "urls": urls})
+        self.settings.tab_groups = groups
 
     #: Below this window width, vertical tabs auto-collapse to icons-only so
     #: the page and the Py panel are not squeezed to nothing - a transient

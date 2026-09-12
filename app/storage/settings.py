@@ -6,6 +6,8 @@ file, which makes the profile easy to back up, inspect or delete.
 
 from __future__ import annotations
 
+import json
+
 from app.config import DEFAULT_HOME_URL, DEFAULT_SEARCH_URL, NEW_TAB_URL
 from app.storage.database import Database
 
@@ -17,6 +19,15 @@ KEY_NEW_TAB_CUSTOM = "new_tab_custom_url"
 KEY_TAB_LAYOUT = "tab_layout"
 KEY_VERTICAL_TABS_WIDTH = "vertical_tabs_width"
 KEY_VERTICAL_TABS_COLLAPSED = "vertical_tabs_collapsed"
+KEY_PINNED_TABS = "pinned_tabs"
+KEY_TAB_GROUPS = "tab_groups"
+
+#: Pinned tabs kept across a restart - past this, remembering more starts
+#: looking less like "pin what matters" and more like a second session
+#: store, which is exactly what this feature is not meant to become.
+MAX_PINNED_TABS = 20
+#: Tab groups remembered across a restart, for the same reason.
+MAX_TAB_GROUPS = 30
 
 # Horizontal is the browser's whole history so far; vertical is new and
 # opt-in - see app/ui/vertical_tabs.py.
@@ -175,3 +186,61 @@ class SettingsStore:
     @vertical_tabs_collapsed.setter
     def vertical_tabs_collapsed(self, value: bool) -> None:
         self.set_bool(KEY_VERTICAL_TABS_COLLAPSED, value)
+
+    # -- pinned tabs --------------------------------------------------------
+    @property
+    def pinned_tab_urls(self) -> list[str]:
+        """URLs of the tabs to reopen pinned on startup, front to back."""
+        raw = self.get(KEY_PINNED_TABS, "")
+        if not raw:
+            return []
+        try:
+            data = json.loads(raw)
+        except ValueError:
+            return []
+        if not isinstance(data, list):
+            return []
+        return [url for url in data if isinstance(url, str) and url][:MAX_PINNED_TABS]
+
+    @pinned_tab_urls.setter
+    def pinned_tab_urls(self, urls: list[str]) -> None:
+        clean = [url for url in urls if isinstance(url, str) and url][:MAX_PINNED_TABS]
+        self.set(KEY_PINNED_TABS, json.dumps(clean))
+
+    # -- tab groups -----------------------------------------------------------
+    @property
+    def tab_groups(self) -> list[dict]:
+        """Saved groups to recreate on startup: each ``{"id", "name",
+        "collapsed", "urls"}``. Malformed or foreign JSON degrades to no
+        groups rather than raising - a corrupted preference must never stop
+        the browser from opening."""
+        raw = self.get(KEY_TAB_GROUPS, "")
+        if not raw:
+            return []
+        try:
+            data = json.loads(raw)
+        except ValueError:
+            return []
+        if not isinstance(data, list):
+            return []
+        groups = []
+        for entry in data[:MAX_TAB_GROUPS]:
+            if not isinstance(entry, dict):
+                continue
+            group_id = entry.get("id")
+            name = entry.get("name")
+            urls = entry.get("urls")
+            if not isinstance(group_id, str) or not isinstance(name, str):
+                continue
+            if not isinstance(urls, list):
+                continue
+            groups.append({
+                "id": group_id, "name": name,
+                "collapsed": bool(entry.get("collapsed", False)),
+                "urls": [u for u in urls if isinstance(u, str) and u],
+            })
+        return groups
+
+    @tab_groups.setter
+    def tab_groups(self, groups: list[dict]) -> None:
+        self.set(KEY_TAB_GROUPS, json.dumps(groups[:MAX_TAB_GROUPS]))
