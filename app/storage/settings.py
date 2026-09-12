@@ -14,6 +14,22 @@ KEY_SEARCH_URL = "search_url"
 KEY_RESTORE_TABS = "restore_tabs"
 KEY_NEW_TAB_MODE = "new_tab_mode"
 KEY_NEW_TAB_CUSTOM = "new_tab_custom_url"
+KEY_TAB_LAYOUT = "tab_layout"
+KEY_VERTICAL_TABS_WIDTH = "vertical_tabs_width"
+KEY_VERTICAL_TABS_COLLAPSED = "vertical_tabs_collapsed"
+
+# Horizontal is the browser's whole history so far; vertical is new and
+# opt-in - see app/ui/vertical_tabs.py.
+TAB_LAYOUT_HORIZONTAL = "horizontal"
+TAB_LAYOUT_VERTICAL = "vertical"
+
+#: Sidebar width bounds, in pixels - keeps a saved width from a differently
+#: sized display leaving the sidebar unusably narrow or absurdly wide.
+VERTICAL_TABS_MIN_WIDTH = 180
+VERTICAL_TABS_MAX_WIDTH = 360
+VERTICAL_TABS_DEFAULT_WIDTH = 240
+#: Fixed width while collapsed - icons only, no dragging to resize it.
+VERTICAL_TABS_COLLAPSED_WIDTH = 48
 
 # What a new tab (and Home) opens. PyBrowser's own page is the default, but
 # nobody is locked into it.
@@ -35,6 +51,9 @@ _DEFAULTS = {
     KEY_RESTORE_TABS: "0",
     KEY_NEW_TAB_MODE: NEW_TAB_PYBROWSER,
     KEY_NEW_TAB_CUSTOM: "",
+    KEY_TAB_LAYOUT: TAB_LAYOUT_HORIZONTAL,
+    KEY_VERTICAL_TABS_WIDTH: str(VERTICAL_TABS_DEFAULT_WIDTH),
+    KEY_VERTICAL_TABS_COLLAPSED: "0",
 }
 
 
@@ -123,3 +142,36 @@ class SettingsStore:
         if not parts.scheme or not parts.netloc:
             return ""
         return f"{parts.scheme}://{parts.netloc}/"
+
+    # -- tab layout -------------------------------------------------------
+    @property
+    def tab_layout(self) -> str:
+        value = self.get(KEY_TAB_LAYOUT)
+        return value if value in (TAB_LAYOUT_HORIZONTAL, TAB_LAYOUT_VERTICAL) \
+            else TAB_LAYOUT_HORIZONTAL
+
+    @tab_layout.setter
+    def tab_layout(self, value: str) -> None:
+        self.set(KEY_TAB_LAYOUT, value if value in (TAB_LAYOUT_HORIZONTAL, TAB_LAYOUT_VERTICAL)
+                 else TAB_LAYOUT_HORIZONTAL)
+
+    @property
+    def vertical_tabs_width(self) -> int:
+        try:
+            width = int(self.get(KEY_VERTICAL_TABS_WIDTH))
+        except ValueError:
+            width = VERTICAL_TABS_DEFAULT_WIDTH
+        return min(max(width, VERTICAL_TABS_MIN_WIDTH), VERTICAL_TABS_MAX_WIDTH)
+
+    @vertical_tabs_width.setter
+    def vertical_tabs_width(self, value: int) -> None:
+        clamped = min(max(int(value), VERTICAL_TABS_MIN_WIDTH), VERTICAL_TABS_MAX_WIDTH)
+        self.set(KEY_VERTICAL_TABS_WIDTH, str(clamped))
+
+    @property
+    def vertical_tabs_collapsed(self) -> bool:
+        return self.get_bool(KEY_VERTICAL_TABS_COLLAPSED)
+
+    @vertical_tabs_collapsed.setter
+    def vertical_tabs_collapsed(self, value: bool) -> None:
+        self.set_bool(KEY_VERTICAL_TABS_COLLAPSED, value)

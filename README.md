@@ -157,7 +157,8 @@ without leaving the browser.
 | `Ctrl+1`…`9` | Jump to tab (9 = last) | | `Ctrl+D` | Bookmark this page |
 | `Ctrl+H` | History | | `Ctrl+Shift+O` | Bookmarks |
 | `Ctrl+F` | Find in page | | `Ctrl+G` / `Ctrl+Shift+G` | Find next / previous |
-| `Ctrl+Shift+A` | Show AI agent | | `Ctrl+J` | Downloads |
+| `Ctrl+Shift+K` | Search tabs | | `Ctrl+Shift+A` | Show AI agent |
+| `Ctrl+J` | Downloads | | | |
 | `Ctrl+,` | Settings | | | |
 | `Ctrl+±` / `Ctrl+0` | Zoom | | `F11` | Full screen |
 

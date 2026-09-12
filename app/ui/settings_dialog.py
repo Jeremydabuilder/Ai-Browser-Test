@@ -30,6 +30,8 @@ from PySide6.QtWidgets import (
 from app.storage.settings import (
     NEW_TAB_CUSTOM,
     NEW_TAB_MODES,
+    TAB_LAYOUT_HORIZONTAL,
+    TAB_LAYOUT_VERTICAL,
     SettingsStore,
 )
 from app.ui import theme
@@ -140,6 +142,28 @@ class SettingsDialog(QDialog):
         layout.addSpacing(m.space_2)
         layout.addWidget(divider())
         layout.addSpacing(m.space_2)
+        layout.addWidget(section_heading("Tabs"))
+
+        tabs_layout = QVBoxLayout()
+        tabs_layout.setContentsMargins(m.space_3, m.space_1, 0, 0)
+        tabs_layout.setSpacing(0)
+        self._tab_layouts = QButtonGroup(self)
+        horizontal_button = QRadioButton("Horizontal (across the top)", self)
+        vertical_button = QRadioButton("Vertical (a sidebar on the left)", self)
+        horizontal_button.setChecked(settings.tab_layout != TAB_LAYOUT_VERTICAL)
+        vertical_button.setChecked(settings.tab_layout == TAB_LAYOUT_VERTICAL)
+        self._tab_layouts.addButton(horizontal_button, 0)
+        self._tab_layouts.addButton(vertical_button, 1)
+        tabs_layout.addWidget(horizontal_button)
+        tabs_layout.addWidget(vertical_button)
+        layout.addLayout(tabs_layout)
+        # Applies at once - this is presentation, not a document you're
+        # composing, so there is nothing to "save" versus "cancel" about it.
+        self._tab_layouts.idToggled.connect(self._tab_layout_changed)
+
+        layout.addSpacing(m.space_2)
+        layout.addWidget(divider())
+        layout.addSpacing(m.space_2)
         layout.addWidget(section_heading("Search with"))
 
         self.search = QLineEdit(settings.search_url, self)
@@ -198,6 +222,12 @@ class SettingsDialog(QDialog):
 
     def _sync_custom(self) -> None:
         self.custom.setEnabled(self._selected_mode() == NEW_TAB_CUSTOM)
+
+    def _tab_layout_changed(self, button_id: int, checked: bool) -> None:
+        if not checked:
+            return
+        self._settings.tab_layout = TAB_LAYOUT_VERTICAL if button_id == 1 else TAB_LAYOUT_HORIZONTAL
+        self.saved.emit()
 
     def _clear_problem(self) -> None:
         # A stale "The search address must contain {query}" left on screen

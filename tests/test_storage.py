@@ -80,6 +80,48 @@ class StoreTests(unittest.TestCase):
         self.assertTrue(BookmarkStore(reopened).contains("https://a.example/"))
         reopened.close()
 
+    # -- tab layout ---------------------------------------------------
+    def test_tab_layout_defaults_to_horizontal(self):
+        from app.storage.settings import TAB_LAYOUT_HORIZONTAL
+        self.assertEqual(self.settings.tab_layout, TAB_LAYOUT_HORIZONTAL)
+
+    def test_tab_layout_round_trips(self):
+        from app.storage.settings import TAB_LAYOUT_VERTICAL
+        self.settings.tab_layout = TAB_LAYOUT_VERTICAL
+        self.assertEqual(self.settings.tab_layout, TAB_LAYOUT_VERTICAL)
+
+    def test_tab_layout_rejects_a_bad_value(self):
+        from app.storage.settings import TAB_LAYOUT_HORIZONTAL
+        self.settings.tab_layout = "diagonal"
+        self.assertEqual(self.settings.tab_layout, TAB_LAYOUT_HORIZONTAL)
+
+    def test_tab_layout_persists_across_reopening(self):
+        from app.storage.settings import TAB_LAYOUT_VERTICAL
+        path = self.db.path
+        self.settings.tab_layout = TAB_LAYOUT_VERTICAL
+        self.db.close()
+        reopened = Database(path)
+        self.assertEqual(SettingsStore(reopened).tab_layout, TAB_LAYOUT_VERTICAL)
+        reopened.close()
+
+    def test_vertical_tabs_width_defaults_and_round_trips(self):
+        from app.storage.settings import VERTICAL_TABS_DEFAULT_WIDTH
+        self.assertEqual(self.settings.vertical_tabs_width, VERTICAL_TABS_DEFAULT_WIDTH)
+        self.settings.vertical_tabs_width = 300
+        self.assertEqual(self.settings.vertical_tabs_width, 300)
+
+    def test_vertical_tabs_width_is_clamped_to_bounds(self):
+        from app.storage.settings import VERTICAL_TABS_MAX_WIDTH, VERTICAL_TABS_MIN_WIDTH
+        self.settings.vertical_tabs_width = 10
+        self.assertEqual(self.settings.vertical_tabs_width, VERTICAL_TABS_MIN_WIDTH)
+        self.settings.vertical_tabs_width = 10000
+        self.assertEqual(self.settings.vertical_tabs_width, VERTICAL_TABS_MAX_WIDTH)
+
+    def test_vertical_tabs_collapsed_defaults_false_and_round_trips(self):
+        self.assertFalse(self.settings.vertical_tabs_collapsed)
+        self.settings.vertical_tabs_collapsed = True
+        self.assertTrue(self.settings.vertical_tabs_collapsed)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -105,9 +105,21 @@ class MainWindow(QMainWindow):
         self.find_bar = FindBar(self)
         content_layout.addWidget(self.find_bar)
 
+        # An inner splitter for [ vertical tabs (optional) | tabs+notice ],
+        # itself the first widget of the outer one below - so the outer
+        # splitter's own assumption (exactly two children: content, side
+        # panel) never has to change just because a vertical tab sidebar
+        # can now sit to the left of "content" too. Empty (no vertical
+        # tabs widget) is the common case and behaves exactly as if this
+        # extra splitter were not here at all.
+        self._tabs_splitter = QSplitter(Qt.Orientation.Horizontal, self)
+        self._tabs_splitter.setChildrenCollapsible(False)
+        self._tabs_splitter.addWidget(content)
+        self._vertical_tabs: QWidget | None = None
+
         # Splitter: [ tabs | side panel ]. The side panel is empty in Phase 1.
         self.splitter = QSplitter(Qt.Orientation.Horizontal, self)
-        self.splitter.addWidget(content)
+        self.splitter.addWidget(self._tabs_splitter)
         self.splitter.setChildrenCollapsible(False)
         self.setCentralWidget(self.splitter)
         self._side_panel: QWidget | None = None
@@ -126,6 +138,9 @@ class MainWindow(QMainWindow):
 
         for url in start_urls or [self.settings.new_tab_url()]:
             self.tabs.new_tab(url)
+
+        self._apply_tab_layout()
+        self._tabs_splitter.splitterMoved.connect(self._on_tabs_splitter_moved)
 
     # ------------------------------------------------------------------
     # construction helpers
@@ -166,6 +181,8 @@ class MainWindow(QMainWindow):
         self._add_action(view_menu, "&Find in Page…", "Ctrl+F", self._open_find)
         self._add_action(view_menu, "Find &Next", "Ctrl+G", lambda: self._find_step(False))
         self._add_action(view_menu, "Find &Previous", "Ctrl+Shift+G", lambda: self._find_step(True))
+        view_menu.addSeparator()
+        self._add_action(view_menu, "&Search Tabs…", "Ctrl+Shift+K", self._open_tab_search)
 
         history_menu: QMenu = menubar.addMenu("&History")
         self._add_action(history_menu, "&Back", "Alt+Left", self._back)
@@ -862,6 +879,11 @@ class MainWindow(QMainWindow):
     def _open_find(self) -> None:
         self.find_bar.open_bar()
 
+    def _open_tab_search(self) -> None:
+        from app.ui.tab_search import TabSearchDialog
+
+        TabSearchDialog(self.tabs, self).exec()
+
     def _run_find(self, text: str, backward: bool) -> None:
         """Search the current tab, ignoring results from superseded searches.
 
@@ -1060,7 +1082,67 @@ class MainWindow(QMainWindow):
         the whole of it - everything else reads the store when it needs to.
         """
         self.tabs.home_url = self.settings.new_tab_url()
+        self._apply_tab_layout()
         self._show_status("Settings saved.")
+
+    #: Below this window width, vertical tabs auto-collapse to icons-only so
+    #: the page and the Py panel are not squeezed to nothing - a transient
+    #: state, never written to the user's saved preference (expanding the
+    #: window again restores whatever they actually chose).
+    _NARROW_WINDOW_WIDTH = 760
+
+    def _apply_tab_layout(self) -> None:
+        """Show vertical tabs, or don't - reflecting self.settings.tab_layout.
+
+        Safe to call anytime (constructor, after Settings closes): it is
+        idempotent, and does nothing when the layout has not actually
+        changed since the last call.
+        """
+        from app.storage.settings import TAB_LAYOUT_VERTICAL
+        from app.ui.vertical_tabs import VerticalTabList
+
+        wants_vertical = self.settings.tab_layout == TAB_LAYOUT_VERTICAL
+        has_vertical = self._vertical_tabs is not None
+        if wants_vertical == has_vertical:
+            return
+        self.tabs.tabBar().setVisible(not wants_vertical)
+        if wants_vertical:
+            self._vertical_tabs = VerticalTabList(self.tabs, self.settings)
+            self._tabs_splitter.insertWidget(0, self._vertical_tabs)
+            self._tabs_splitter.setSizes(
+                [self._vertical_tabs.width(), self.width() - self._vertical_tabs.width()])
+            self._sync_vertical_tabs_to_window_width()
+        else:
+            self._vertical_tabs.setParent(None)
+            self._vertical_tabs.deleteLater()
+            self._vertical_tabs = None
+
+    def _on_tabs_splitter_moved(self, _pos: int, _index: int) -> None:
+        if self._vertical_tabs is not None and not self._vertical_tabs.collapsed:
+            self._vertical_tabs.set_expanded_width(self._tabs_splitter.sizes()[0])
+
+    def _sync_vertical_tabs_to_window_width(self) -> None:
+        """Auto-collapse the sidebar in a narrow window rather than letting
+        it squeeze the page (and the Py panel, if open) to nothing - see
+        the request's own "measure this rather than guessing" note. Only
+        ever forces a collapse or lifts one it forced itself: a collapse
+        the user chose deliberately (in Settings, or by clicking the
+        toggle) is never overridden by widening the window back out.
+        """
+        if self._vertical_tabs is None:
+            return
+        narrow = self.width() < self._NARROW_WINDOW_WIDTH
+        if narrow and not self._vertical_tabs.collapsed:
+            self._auto_collapsed_tabs = True
+            self._vertical_tabs._apply_collapsed(True, persist=False)
+        elif not narrow and getattr(self, "_auto_collapsed_tabs", False):
+            self._auto_collapsed_tabs = False
+            self._vertical_tabs._apply_collapsed(self.settings.vertical_tabs_collapsed,
+                                                 persist=False)
+
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        self._sync_vertical_tabs_to_window_width()
 
     #: Kept in step with the table in README.md's "Keyboard shortcuts"
     #: section by hand - there being two copies is the tradeoff for this one
@@ -1081,6 +1163,7 @@ class MainWindow(QMainWindow):
             ("Ctrl+D", "Bookmark this page"),
             ("Ctrl+F", "Find in page"),
             ("Ctrl+G / Ctrl+Shift+G", "Find next / previous"),
+            ("Ctrl+Shift+K", "Search tabs"),
         )),
         ("Py & the browser", (
             ("Ctrl+Shift+A", "Show AI agent"), ("Ctrl+Shift+M", "Mission library"),

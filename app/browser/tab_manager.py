@@ -47,6 +47,15 @@ class TabManager(QTabWidget):
     # Emitted when the user switches tab; payload is that tab's loading state.
     current_tab_switched = Signal(bool)
 
+    # -- the three signals a second view (VerticalTabList) needs to mirror
+    # this widget's tabs without duplicating any tab-lifecycle logic. Kept
+    # separate from the "current tab" signals above, which only ever
+    # describe the one tab in focus - a sidebar showing every open tab
+    # needs to know about all of them, not just the current one.
+    tab_added = Signal(int)      # index, just after it was inserted
+    tab_closing = Signal(int)    # index, just before it is removed
+    tab_updated = Signal(int)    # index - that tab's title or icon changed
+
     def __init__(self, profile: BrowserProfile, home_url: str, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._profile = profile
@@ -210,6 +219,7 @@ class TabManager(QTabWidget):
     def tabInserted(self, index: int) -> None:  # noqa: N802
         super().tabInserted(index)
         self._reposition_soon()
+        self.tab_added.emit(index)
 
     def tabRemoved(self, index: int) -> None:  # noqa: N802
         super().tabRemoved(index)
@@ -374,12 +384,14 @@ class TabManager(QTabWidget):
             self.setTabText(index, "New Tab")
             self.setTabToolTip(index, "New Tab")
             self._reposition_soon()
+            self.tab_updated.emit(index)
             if tab is self.current_tab():
                 self.current_title_changed.emit("New Tab")
             return
         label = title or tab.url().host() or "New Tab"
         self.setTabText(index, self._elide(label))
         self._reposition_soon()
+        self.tab_updated.emit(index)
         # The label is elided, so the tooltip carries both the full title and
         # where it actually goes - which is the question a tooltip on a tab is
         # usually being asked.
@@ -402,6 +414,7 @@ class TabManager(QTabWidget):
             return                       # the spinner owns the slot while loading
         self.setTabIcon(index, icon if icon and not icon.isNull()
                         else self._fallback_icon())
+        self.tab_updated.emit(index)
 
     def _on_tab_url(self, tab: BrowserTab, url: QUrl) -> None:
         if tab is self.current_tab():
@@ -419,6 +432,7 @@ class TabManager(QTabWidget):
             icon = tab.icon()
             self.setTabIcon(index, icon if icon and not icon.isNull()
                             else self._fallback_icon())
+            self.tab_updated.emit(index)
         self._forward_if_current(tab, self.current_load_finished, ok)
 
     def _on_current_changed(self, index: int) -> None:
@@ -439,6 +453,7 @@ class TabManager(QTabWidget):
         widget = self.widget(index)
         if not isinstance(widget, BrowserTab):
             return
+        self.tab_closing.emit(index)
         self.removeTab(index)
         # Deleting the page tears down the render process for that tab.
         widget.page.deleteLater()
