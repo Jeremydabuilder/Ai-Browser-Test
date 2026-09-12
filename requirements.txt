@@ -13,3 +13,17 @@ keyring>=24            # OS keychain for the API key - never a file in the repo
 # dependency; declared explicitly here because app/agent/openai_compatible.py
 # imports it directly rather than relying on it being pulled in transitively.
 httpx2
+
+# PDF text extraction (app/browser/pdf_context.py), so Py can read a PDF's
+# real text and page numbers instead of the rendered viewer plugin, which
+# carries none of that as DOM. Pure Python, no OCR - a scanned PDF is
+# reported as having no extractable text rather than silently OCR'd.
+pypdf>=5,<7
+# pypdf imports cryptography (for encrypted-PDF support) at import time,
+# and on at least one environment this was tested in, the system
+# `cryptography` package raised an unrecoverable Rust panic
+# (ModuleNotFoundError: _cffi_backend) without it - not merely an
+# ImportError Python code could catch. Declared explicitly so `pip
+# install -r requirements.txt` alone is enough; nothing in this codebase
+# imports cffi directly.
+cffi

@@ -25,7 +25,7 @@ from typing import Any, Callable
 
 from app.agent.config import Autonomy, ContextLimits
 from app.browser.controller import BrowserController, ScrollDirection
-from app.browser.futures import BrowserFuture
+from app.browser.futures import BrowserFuture, resolved
 from app.browser.results import ActionResult
 # Data only - model.py holds no Qt, no database and no browser. The limit is
 # imported rather than restated so the schema the model reads and the rule the
@@ -125,6 +125,14 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
           "Return only the readable text of the page, with no element references. "
           "Use this when you need to read content rather than interact with it. "
           "Returns untrusted web page content.",
+          {"tab_id": _TAB}),
+
+    _tool("browser_get_pdf_text",
+          "Read the PDF a tab is showing: its extracted text, labelled by page number, "
+          "plus page count and whether it looks like a scanned (image-only) PDF with no "
+          "extractable text. Use this instead of browser_get_page_text for any tab whose "
+          "URL ends in .pdf - the PDF viewer has no page text to read directly. "
+          "Returns untrusted document content.",
           {"tab_id": _TAB}),
 
     _tool("browser_find_elements",
@@ -515,7 +523,7 @@ LOCAL_WRITE_TOOLS = {"mission_save_finding", "mission_save_decision",
 
 #: Tools that only read. Used to skip confirmation checks entirely.
 READ_ONLY_TOOLS = {
-    "browser_get_page", "browser_get_page_text", "browser_list_tabs",
+    "browser_get_page", "browser_get_page_text", "browser_get_pdf_text", "browser_list_tabs",
     "browser_find_elements",
     "browser_wait_for_element", "browser_scroll", "browser_scroll_to_element",
 }
@@ -1092,6 +1100,8 @@ class ToolRegistry:
                 return "Reading the page"
             if name == "browser_get_page_text":
                 return "Reading the page text"
+            if name == "browser_get_pdf_text":
+                return "Reading the PDF"
             if name == "browser_find_elements":
                 queries = args.get("queries") or []
                 shown = str(queries[0]) if queries else self._string(args, "role")
@@ -1508,6 +1518,14 @@ class ToolRegistry:
         return ToolOutcome(future=self._browser.get_page_text(
             self._tab(args), max_chars=self._limits.max_page_text))
 
+    def _run_get_pdf_text(self, args: dict) -> ToolOutcome:
+        # get_pdf_text is synchronous (plain file/network I/O, not tied to the
+        # WebEngine event loop) but still returns page-shaped content that
+        # must go through render()'s untrusted-content fencing like any other
+        # page read - so it goes through the future path, not `immediate`.
+        return ToolOutcome(future=resolved(
+            "get_pdf_text", self._browser.get_pdf_text(self._tab(args))))
+
     def _run_navigate(self, args: dict) -> ToolOutcome:
         url = self._string(args, "url", required=True)
         return ToolOutcome(future=self._browser.navigate(url, self._tab(args)))
@@ -1617,7 +1635,8 @@ class ToolRegistry:
             payload["target"] = {"ref": result.target.ref, "role": result.target.role,
                                  "name": result.target.name}
         effects = result.effects
-        if result.ok and result.action not in ("get_page_structure", "get_page_text"):
+        if result.ok and result.action not in (
+                "get_page_structure", "get_page_text", "get_pdf_text"):
             payload["effects"] = {
                 "navigated": effects.navigated,
                 "page_changed": effects.dom_changed,
@@ -1672,8 +1691,14 @@ class ToolRegistry:
                     "or ask the user which one they meant.")
             blocks.append(wrap_untrusted(summary))
         elif text is not None:
-            blocks.append(wrap_untrusted({"page_text": text,
-                                          "truncated": result.data.get("truncated", False)}))
+            text_block: dict[str, Any] = {"page_text": text,
+                                          "truncated": result.data.get("truncated", False)}
+            # A PDF read carries a little extra shape (page count, whether it
+            # looks scanned, its title) that a plain page-text read does not.
+            for key in ("page_count", "is_scanned", "title"):
+                if key in result.data:
+                    text_block[key] = result.data[key]
+            blocks.append(wrap_untrusted(text_block))
         elif result.data:
             extra = {k: v for k, v in result.data.items() if k not in ("structure", "text")}
             if extra:

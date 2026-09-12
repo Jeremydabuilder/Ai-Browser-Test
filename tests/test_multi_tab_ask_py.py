@@ -114,6 +114,58 @@ class MultiTabAskPyTests(unittest.TestCase):
         self.assertIn("browser_get_page_text", self._asked[0])
 
 
+class PdfAwareTabPromptTests(unittest.TestCase):
+    """A tab showing a PDF has no DOM text - the prompt must point Py at
+    browser_get_pdf_text for that tab specifically, not the ordinary
+    page-text tool, while leaving ordinary tabs unaffected."""
+
+    def setUp(self) -> None:
+        from tests.test_pdf_context import _make_pdf_bytes
+
+        self._dir = tempfile.TemporaryDirectory()
+        self.db = Database(os.path.join(self._dir.name, "t.sqlite3"))
+        self.profile = _profile
+        self.window = MainWindow(self.profile, self.db, start_urls=["about:blank"])
+        self.window.resize(1000, 700)
+        html_tab = self.window.tabs.current_tab()
+        html_tab.navigate("data:text/html,<title>An Ordinary Page</title>")
+        wait(lambda: html_tab.title() == "An Ordinary Page")
+
+        fd, self._pdf_path = tempfile.mkstemp(suffix=".pdf", dir=self._dir.name)
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(_make_pdf_bytes("A test PDF"))
+        pdf_tab = self.window.tabs.new_tab(f"file://{self._pdf_path}")
+        wait(lambda: not pdf_tab.is_loading)
+        pump()
+
+        self._asked: list[str] = []
+        self.window._ask_py = self._asked.append
+
+    def tearDown(self) -> None:
+        self.window.close()
+        self.db.close()
+        self._dir.cleanup()
+        pump(3)
+
+    def test_ask_py_uses_the_pdf_tool_only_for_the_pdf_tab(self) -> None:
+        self.window._ask_py_about_tabs([0, 1])
+        prompt = self._asked[0]
+        rows = self.window.controller.list_tabs()
+        html_line = next(line for line in prompt.splitlines()
+                         if f"tab_id={rows[0]['tab_id']}" in line)
+        pdf_line = next(line for line in prompt.splitlines()
+                        if f"tab_id={rows[1]['tab_id']}" in line)
+        self.assertIn("browser_get_page_text", html_line)
+        self.assertNotIn("browser_get_pdf_text", html_line)
+        self.assertIn("browser_get_pdf_text", pdf_line)
+
+    def test_start_mission_from_tabs_is_also_pdf_aware(self) -> None:
+        self.window._start_mission_from_tabs([0, 1])
+        self.assertEqual(len(self._asked), 1)
+        self.assertIn("browser_get_page_text", self._asked[0])
+        self.assertIn("browser_get_pdf_text", self._asked[0])
+
+
 class CloseTabsAtTests(unittest.TestCase):
     """Index math for `_close_tabs_at` - no real page loads needed, so tab
     labels are set directly rather than waiting on WebEngine title events."""

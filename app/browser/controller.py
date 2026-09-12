@@ -38,6 +38,7 @@ from PySide6.QtCore import QObject, QTimer, QUrl, Signal
 
 from app.browser import safety
 from app.browser.futures import BrowserFuture, resolved
+from app.browser.pdf_context import PdfExtractionError, extract_pdf, is_pdf_url
 from app.browser.results import (
     ActionError,
     ActionResult,
@@ -559,6 +560,37 @@ class BrowserController(QObject):
         future.set_timeout(DEFAULT_TIMEOUT_MS, lambda: self._failure(
             "get_page_text", tab, started, ErrorCode.TIMEOUT, "Reading the page took too long."))
         return future
+
+    def get_pdf_text(self, tab_id: int | None = None, *,
+                     max_pages: int | None = None) -> ActionResult:
+        """The PDF a tab is showing, extracted with real page numbers.
+
+        Synchronous: extraction is plain file/network I/O and pypdf parsing,
+        none of it tied to the WebEngine event loop the way a DOM read is -
+        see app/browser/pdf_context.py for why this can't come from the page
+        itself. Fails with NOT_A_PDF for a tab whose address isn't a .pdf, and
+        PDF_EXTRACTION_FAILED for anything pdf_context could not read or parse.
+        """
+        started = time.monotonic()
+        tab = self._tab_for(tab_id)
+        if tab is None:
+            return self._no_tab("get_pdf_text", started)
+        url = tab.url().toString()
+        if not is_pdf_url(url):
+            return self._failure("get_pdf_text", tab, started, ErrorCode.NOT_A_PDF,
+                                 "This tab is not showing a PDF.")
+        kwargs = {} if max_pages is None else {"max_pages": max_pages}
+        try:
+            document = extract_pdf(url, **kwargs)
+        except PdfExtractionError as exc:
+            return self._failure("get_pdf_text", tab, started, ErrorCode.PDF_EXTRACTION_FAILED,
+                                 str(exc))
+        return self._success("get_pdf_text", tab, started, data={
+            "title": document.title,
+            "page_count": document.page_count,
+            "is_scanned": document.is_scanned,
+            "text": document.full_text,
+        })
 
     def find_elements(
         self,

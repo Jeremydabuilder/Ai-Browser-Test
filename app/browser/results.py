@@ -51,6 +51,10 @@ class ErrorCode:
     SCRIPT_FAILED = "SCRIPT_FAILED"          # page script unavailable
     UNSUPPORTED = "UNSUPPORTED"
 
+    # PDF context.
+    NOT_A_PDF = "NOT_A_PDF"                  # tab is not showing a .pdf address
+    PDF_EXTRACTION_FAILED = "PDF_EXTRACTION_FAILED"
+
 
 # Statuses the injected page script can report, mapped to an error code and a
 # sentence. Keeping the mapping here (not in JS) means the wording is testable

@@ -902,10 +902,19 @@ class MainWindow(QMainWindow):
             on_start_mission=self._start_mission_from_tabs,
         ).exec()
 
+    def _tab_read_tool(self, url: str) -> str:
+        """Which tool reads a tab's content: PDFs have no DOM text, so a tab
+        showing one needs browser_get_pdf_text instead of the ordinary
+        browser_get_page_text - see app/browser/pdf_context.py."""
+        from app.browser.pdf_context import is_pdf_url
+
+        return "browser_get_pdf_text" if is_pdf_url(url) else "browser_get_page_text"
+
     def _ask_py_about_tabs(self, indices: list[int]) -> None:
         """Hand a set of open tabs the user picked to Py, to summarize or
         compare - composing tools Py already has (browser_list_tabs,
-        browser_get_page_text(tab_id=...)) rather than adding a new one.
+        browser_get_page_text/browser_get_pdf_text(tab_id=...)) rather than
+        adding a new one.
 
         The prompt names each tab's stable controller tab_id explicitly so
         Py does not have to guess which open tab a title refers to.
@@ -915,12 +924,13 @@ class MainWindow(QMainWindow):
         if not picked:
             return
         lines = "\n".join(
-            f"- tab_id={row['tab_id']}: \"{row['title']}\" ({row['url']})"
+            f"- tab_id={row['tab_id']}: \"{row['title']}\" ({row['url']}) - read with "
+            f"{self._tab_read_tool(row['url'])}"
             for row in picked)
         verb = "Summarize" if len(picked) == 1 else "Summarize and compare"
         prompt = (
             f"{verb} the following open tab{'s' if len(picked) != 1 else ''}. "
-            "For each, call browser_get_page_text with the given tab_id "
+            "For each, call the tool named next to it with the given tab_id "
             f"first:\n{lines}")
         self._ask_py(prompt)
 
@@ -994,11 +1004,12 @@ class MainWindow(QMainWindow):
             return
         self._open_mission(mission.id)
         lines = "\n".join(
-            f"- tab_id={row['tab_id']}: \"{row['title']}\" ({row['url']})"
+            f"- tab_id={row['tab_id']}: \"{row['title']}\" ({row['url']}) - read with "
+            f"{self._tab_read_tool(row['url'])}"
             for row in picked)
         self._ask_py(
             "I started this Mission from these open tabs. For each, call "
-            "browser_get_page_text with the given tab_id, note anything "
+            "the tool named next to it with the given tab_id, note anything "
             "useful with mission_note_source/mission_save_finding, then "
             f"summarize what you found:\n{lines}")
 
