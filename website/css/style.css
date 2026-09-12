@@ -517,9 +517,19 @@ h1 {
 .hero-copy > * { animation: hero-rise var(--dur-hero) var(--ease-premium) both; }
 .hero-copy > .eyebrow      { animation-delay: 0ms; }
 .hero-copy > h1            { animation-delay: 90ms; }
-.hero-copy > .hero-sub     { animation-delay: 180ms; }
-.hero-copy > .hero-ctas    { animation-delay: 270ms; }
-.hero-copy > .hero-status  { animation-delay: 350ms; }
+.hero-copy > .hero-tagline { animation-delay: 150ms; }
+.hero-copy > .hero-sub     { animation-delay: 210ms; }
+.hero-copy > .hero-ctas    { animation-delay: 290ms; }
+.hero-copy > .hero-status  { animation-delay: 360ms; }
+
+/* The broader supporting idea, one step down from h1 - present, but
+   never competing with "the browser that finishes things" for primacy. */
+.hero-tagline {
+  font-size: 20px;
+  font-weight: 700;
+  color: var(--accent);
+  margin-bottom: var(--space-3);
+}
 
 /* A small mouse-driven parallax on the whole visual cluster (screenshot +
    Py together, moving as one plane) against the static background motif
@@ -908,6 +918,9 @@ h2 {
   line-height: 1;
 }
 .tier-row--accent .tier-num { color: var(--accent); }
+/* A tier-list with no numerals (see "Ways Py works") - one column, since
+   there's no 100px numeral column to reserve. */
+.tier-list--plain .tier-row { grid-template-columns: 1fr; }
 .tier-row h3 { font-size: 24px; font-weight: 700; margin-bottom: var(--space-2); letter-spacing: -.01em; }
 .tier-row p { color: var(--muted); font-size: 16px; max-width: 62ch; }
 
@@ -1384,6 +1397,132 @@ h2 {
 @media (max-width: 700px) {
   .footer-inner { flex-direction: column; align-items: flex-start; text-align: left; }
   .footer-meta { text-align: left; }
+}
+
+/* -- "coming soon" tag --------------------------------------------------------- */
+.soon-tag {
+  display: inline-block;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+  color: var(--faint);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 2px 8px;
+  margin-left: 8px;
+  vertical-align: middle;
+}
+.soon-tag--kicker { text-transform: none; font-weight: 700; letter-spacing: 0; margin-left: 10px; }
+
+/* -- bring anything in --------------------------------------------------------- */
+.bring-in-flow {
+  display: flex;
+  align-items: center;
+  gap: var(--space-5);
+  flex-wrap: wrap;
+}
+.bring-in-inputs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  flex: 1 1 420px;
+}
+.bring-in-inputs li {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 8px 16px;
+}
+.bring-in-inputs li.bring-in-soon {
+  font-weight: 500;
+  color: var(--faint);
+  background: transparent;
+  border-style: dashed;
+}
+.bring-in-arrow { color: var(--faint); flex-shrink: 0; }
+.bring-in-py { text-align: center; flex-shrink: 0; }
+.bring-in-py img { width: 64px; height: auto; margin: 0 auto; }
+.bring-in-py p { font-size: 13px; font-weight: 700; color: var(--muted); margin-top: 4px; }
+@media (max-width: 760px) {
+  .bring-in-flow { flex-direction: column; }
+  .bring-in-arrow { transform: rotate(90deg); }
+}
+
+/* -- connect tools (MCP) --------------------------------------------------------- */
+.mcp-flow {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+  margin-top: var(--space-5);
+}
+.mcp-flow-inputs { display: flex; gap: var(--space-3); flex-wrap: wrap; }
+.mcp-chip {
+  font-size: 14px;
+  font-weight: 600;
+  padding: 10px 18px;
+  border-radius: 999px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  color: var(--text);
+}
+.mcp-chip--accent { background: var(--accent); color: var(--accent-text); border-color: transparent; }
+.mcp-flow-arrow { color: var(--faint); flex-shrink: 0; }
+.mcp-examples {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 10px;
+  margin-top: var(--space-6);
+}
+.mcp-examples li {
+  font-size: 13px;
+  color: var(--faint);
+  border: 1px dashed var(--line);
+  border-radius: 999px;
+  padding: 6px 14px;
+}
+.mcp-tech-note { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 12px; }
+@media (max-width: 700px) {
+  .mcp-flow { flex-direction: column; }
+  .mcp-flow-arrow { transform: rotate(90deg); }
+}
+
+/* -- context / memory --------------------------------------------------------- */
+.context-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: var(--space-5);
+}
+.context-list li {
+  font-size: 14px;
+  font-weight: 600;
+  padding: 8px 16px;
+  border-radius: 999px;
+  background: var(--surface-alt);
+  color: var(--text);
+}
+
+/* -- why it feels different --------------------------------------------------------- */
+.compare-cols {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-6);
+  margin-top: var(--space-5);
+}
+.compare-col { padding: var(--space-5); border-radius: var(--radius-md); border: 1px solid var(--line); }
+.compare-col--accent { border-color: color-mix(in srgb, var(--accent) 35%, var(--line)); background: color-mix(in srgb, var(--accent) 5%, transparent); }
+.compare-label { font-size: 13px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; color: var(--faint); margin-bottom: var(--space-3); }
+.compare-col--accent .compare-label { color: var(--accent); }
+.compare-col .mini-list li { padding: 4px 0; }
+@media (max-width: 760px) {
+  .compare-cols { grid-template-columns: 1fr; }
 }
 
 /* -- reduced motion --------------------------------------------------------- */

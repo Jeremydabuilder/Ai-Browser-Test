@@ -43,9 +43,10 @@
     </a>
 
     <nav class="nav-links" aria-label="Primary">
-      <a href="#product">Product</a>
+      <a href="#bring-in">Bring In</a>
       <a href="#research">Research</a>
       <a href="#missions">Missions</a>
+      <a href="#tools">Tools</a>
       <a href="#technology">Technology</a>
       <a href="#about">About</a>
     </nav>
@@ -65,9 +66,10 @@
   </div>
 
   <div class="mobile-nav" id="mobile-nav" hidden>
-    <a href="#product">Product</a>
+    <a href="#bring-in">Bring In</a>
     <a href="#research">Research</a>
     <a href="#missions">Missions</a>
+    <a href="#tools">Tools</a>
     <a href="#technology">Technology</a>
     <a href="#about">About</a>
     <a href="https://github.com/Jeremydabuilder/Ai-Browser-Test" target="_blank" rel="noopener">GitHub</a>
@@ -87,8 +89,10 @@
     <div class="hero-copy">
       <p class="eyebrow"><img src="assets/brand/pi-mark.svg" class="eyebrow-mark" alt="" width="16" height="16"> PyBrowser</p>
       <h1>The browser that finishes things.</h1>
-      <p class="hero-sub">Browse normally. Ask Py anything. Give it research and
-        multi-step jobs when you don't want to do them yourself.</p>
+      <p class="hero-tagline">Bring anything in. Tell Py what to do.</p>
+      <p class="hero-sub">Bring in the page, your open tabs, or text you've
+        selected. Ask Py to compare, explain, research, or turn it into a
+        Mission.</p>
       <div class="hero-ctas">
         <a class="btn btn-primary btn-lg" href="#download">Download</a>
         <a class="btn btn-ghost btn-lg" href="#product">See how it works</a>
@@ -151,20 +155,53 @@
   </div>
 </section>
 
+<!-- ============================= BRING ANYTHING IN ============================= -->
+<section class="section" id="bring-in">
+  <div class="wrap">
+    <div class="section-head" data-reveal>
+      <p class="kicker">Bring anything in</p>
+      <h2>Anything you're looking at can become context.</h2>
+      <p class="section-sub">Py doesn't wait for you to describe what you're
+        working on — hand it what you're already looking at, and it takes it
+        from there.</p>
+    </div>
+
+    <div class="bring-in-flow" data-reveal>
+      <ul class="bring-in-inputs">
+        <li>The current page</li>
+        <li>Your open tabs</li>
+        <li>Text you've selected</li>
+        <li>Mission findings &amp; sources</li>
+        <li class="bring-in-soon">Screenshots <span class="soon-tag">Coming soon</span></li>
+        <li class="bring-in-soon">PDFs &amp; local files <span class="soon-tag">Coming soon</span></li>
+      </ul>
+      <div class="bring-in-arrow" aria-hidden="true">
+        <svg viewBox="0 0 48 16" width="48" height="16"><path d="M0 8h44M36 2l8 6-8 6" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </div>
+      <div class="bring-in-py">
+        <img src="assets/mascot/py-idle.webp" alt="Py, ready to take what you bring it" width="90" height="225">
+        <p>Py</p>
+      </div>
+    </div>
+  </div>
+</section>
+
 <!-- ============================= ASK PY ============================= -->
 <section class="section section--split" id="ask-py">
   <div class="wrap split-inner">
     <div class="split-copy" data-reveal>
       <p class="kicker">Ask Py</p>
-      <h2>Available anywhere you're browsing.</h2>
+      <h2>Don't just collect information. Do something with it.</h2>
       <p class="section-sub">Py sits in a panel next to the page, not in a
-        separate app. Ask it things like:</p>
+        separate app, and works on whatever you select or have open. Ask it
+        things like:</p>
       <ul class="quote-list">
-        <li>&ldquo;Summarize this page.&rdquo;</li>
-        <li>&ldquo;Explain this paragraph.&rdquo;</li>
-        <li>&ldquo;Compare my open tabs.&rdquo;</li>
-        <li>&ldquo;Research this topic deeper.&rdquo;</li>
-        <li>&ldquo;Which option is best?&rdquo;</li>
+        <li>&ldquo;Explain this.&rdquo;</li>
+        <li>&ldquo;Summarize this.&rdquo;</li>
+        <li>&ldquo;Compare these tabs.&rdquo;</li>
+        <li>&ldquo;Research this and give me a few good sources.&rdquo;</li>
+        <li>&ldquo;Verify this claim.&rdquo;</li>
+        <li>&ldquo;Turn this into a Mission.&rdquo;</li>
       </ul>
       <p class="section-note">A quick question stays quick. A bigger one becomes a Mission.</p>
     </div>
@@ -260,8 +297,8 @@
       <p class="kicker">Missions</p>
       <h2>Give Py a goal.</h2>
       <p class="section-sub">A Mission is a persistent workspace for one goal —
-        it keeps its own goal, constraints, findings, sources, and result
-        together, and you can leave and come back to it.</p>
+        it keeps its own goal, constraints, findings, sources, open questions,
+        result, and activity together, and you can leave and come back to it.</p>
     </div>
 
     <div class="mission-example" data-reveal>
@@ -334,6 +371,147 @@
   </div>
 </section>
 
+<!-- ============================= CONNECT TOOLS (MCP, coming soon) ============================= -->
+<section class="section section--muted" id="tools">
+  <div class="wrap">
+    <div class="section-head" data-reveal>
+      <p class="kicker">Connect your tools <span class="soon-tag soon-tag--kicker">Coming soon</span></p>
+      <h2>Connect Py to your tools.</h2>
+      <p class="section-sub">Connect Py to the tools you already use, so a
+        Mission can combine the web with your files, code, documents, and
+        apps. Not available yet — this is the direction PyBrowser is built
+        toward next.</p>
+    </div>
+
+    <div class="mcp-flow" data-reveal>
+      <div class="mcp-flow-inputs">
+        <span class="mcp-chip">Web</span>
+        <span class="mcp-chip">Your tools</span>
+      </div>
+      <div class="mcp-flow-arrow" aria-hidden="true">
+        <svg viewBox="0 0 48 16" width="48" height="16"><path d="M0 8h44M36 2l8 6-8 6" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </div>
+      <span class="mcp-chip mcp-chip--accent">Mission</span>
+      <div class="mcp-flow-arrow" aria-hidden="true">
+        <svg viewBox="0 0 48 16" width="48" height="16"><path d="M0 8h44M36 2l8 6-8 6" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </div>
+      <span class="mcp-chip">Result</span>
+    </div>
+
+    <ul class="mcp-examples" data-reveal>
+      <li>GitHub</li>
+      <li>Google Drive</li>
+      <li>Notion</li>
+      <li>Local files</li>
+      <li>Databases</li>
+      <li>Custom MCP servers</li>
+    </ul>
+    <p class="section-note section-note--center mcp-tech-note">Powered by the
+      Model Context Protocol (MCP) — an open standard for connecting an AI
+      assistant to external tools.</p>
+  </div>
+</section>
+
+<!-- ============================= WAYS PY WORKS ============================= -->
+<section class="section" id="ways-py-works">
+  <div class="wrap">
+    <div class="section-head" data-reveal>
+      <p class="kicker">Ways Py works</p>
+      <h2>The workflows Py actually runs today.</h2>
+      <p class="section-sub">Not a marketplace of add-ons — the real ways
+        people already ask Py to work.</p>
+    </div>
+    <div class="tier-list tier-list--plain" data-reveal-group>
+      <div class="tier-row" data-reveal>
+        <div>
+          <h3>Ask</h3>
+          <p>A quick, page-aware question — about the page, a selection, or your open tabs.</p>
+        </div>
+      </div>
+      <div class="tier-row" data-reveal>
+        <div>
+          <h3>Research</h3>
+          <p>Search across pages, review sources, and keep findings organized under one goal.</p>
+        </div>
+      </div>
+      <div class="tier-row" data-reveal>
+        <div>
+          <h3>Compare</h3>
+          <p>Weigh options — or your open tabs — against each other and against your constraints.</p>
+        </div>
+      </div>
+      <div class="tier-row" data-reveal>
+        <div>
+          <h3>Verify</h3>
+          <p>Challenge a claim you select: look for evidence against it, context it leaves out, or reasons to doubt it.</p>
+        </div>
+      </div>
+      <div class="tier-row" data-reveal>
+        <div>
+          <h3>Missions</h3>
+          <p>Turn any of the above into a persistent, resumable piece of work with its own goal and result.</p>
+        </div>
+      </div>
+    </div>
+    <p class="section-note section-note--center">Later: built-in skills, skills you define yourself, and skills a connected MCP server provides.</p>
+  </div>
+</section>
+
+<!-- ============================= MULTI-MODEL ============================= -->
+<section class="section section--muted" id="providers">
+  <div class="wrap">
+    <div class="section-head" data-reveal>
+      <p class="kicker">Multi-model</p>
+      <h2>Use the model you want.</h2>
+      <p class="section-sub">PyBrowser is built to work across multiple AI
+        providers, so you can choose the model that fits the task and your
+        budget — not locked to one company's API.</p>
+    </div>
+    <div class="tech-list" data-reveal-group>
+      <div class="tech-row" data-reveal>
+        <p class="tech-name">Anthropic</p>
+        <p class="tech-desc">Claude — the default.</p>
+      </div>
+      <div class="tech-row" data-reveal>
+        <p class="tech-name">Google Gemini</p>
+        <p class="tech-desc">A generous free tier, good for trying PyBrowser out.</p>
+      </div>
+      <div class="tech-row" data-reveal>
+        <p class="tech-name">Groq</p>
+        <p class="tech-desc">Fast inference, free tier available.</p>
+      </div>
+      <div class="tech-row" data-reveal>
+        <p class="tech-name">OpenRouter</p>
+        <p class="tech-desc">Access to several models through one key.</p>
+      </div>
+    </div>
+    <p class="section-note section-note--center">You choose the model and effort level yourself — PyBrowser doesn't yet pick one for you automatically.</p>
+  </div>
+</section>
+
+<!-- ============================= CONTEXT / MEMORY ============================= -->
+<section class="section" id="context">
+  <div class="wrap">
+    <div class="section-head" data-reveal>
+      <p class="kicker">Context</p>
+      <h2>Py keeps the thread.</h2>
+      <p class="section-sub">Inside a Mission, Py doesn't forget what it was
+        doing. A Mission holds its own:</p>
+    </div>
+    <ul class="mini-list mini-list--plain context-list" data-reveal-group>
+      <li data-reveal>Goal</li>
+      <li data-reveal>Constraints</li>
+      <li data-reveal>Findings</li>
+      <li data-reveal>Sources</li>
+      <li data-reveal>Progress</li>
+      <li data-reveal>Result</li>
+    </ul>
+    <p class="section-note section-note--center">This is per-Mission memory, not a
+      general personal memory that follows you across every unrelated task —
+      close a Mission and reopen it days later, and it still knows where it left off.</p>
+  </div>
+</section>
+
 <!-- ============================= SAFETY (scroll story) ============================= -->
 <section class="story story--safety" id="safety" data-story>
   <div class="motif" aria-hidden="true">
@@ -372,6 +550,36 @@
         <img src="assets/screenshots/approval.webp" alt="PyBrowser pausing before submitting a form and asking the user to approve or decline the action" loading="lazy" width="1440" height="900">
       </picture>
     </figure>
+  </div>
+</section>
+
+<!-- ============================= PRIVACY ============================= -->
+<section class="section" id="privacy">
+  <div class="wrap">
+    <div class="section-head" data-reveal>
+      <p class="kicker">Privacy</p>
+      <h2>Your data, your control.</h2>
+      <p class="section-sub">Nothing is sent anywhere unless you ask Py to do
+        something. Browsing normally — tabs, history, bookmarks — stays on
+        your machine the whole time.</p>
+    </div>
+    <ul class="eng-list" data-reveal-group>
+      <li data-reveal>Browsing history, bookmarks, downloads, and Missions are
+        stored locally, in a database file on your own machine.</li>
+      <li data-reveal>API keys are stored in your operating system's own
+        secure keyring — never written to a plain settings file.</li>
+      <li data-reveal>When you ask Py something, the page content and your
+        request are sent to whichever AI provider you've configured
+        (Anthropic, Google, Groq, or OpenRouter) — subject to that
+        provider's own data-handling terms.</li>
+      <li data-reveal>PyBrowser itself has no analytics, telemetry, or
+        tracking built in, and no server of its own that your browsing is
+        sent to.</li>
+      <li data-reveal>Connected tools (see "Connect Py to your tools" above)
+        are not available yet — once they are, a connected tool only sees
+        what a Mission actually sends it, and every write still goes through
+        the same approval step described above.</li>
+    </ul>
   </div>
 </section>
 
@@ -451,6 +659,34 @@
   </div>
 </section>
 
+<!-- ============================= WHY IT FEELS DIFFERENT ============================= -->
+<section class="section section--muted" id="different">
+  <div class="wrap">
+    <div class="section-head" data-reveal>
+      <p class="kicker">Why it feels different</p>
+      <h2>From browsing to doing.</h2>
+    </div>
+    <div class="compare-cols" data-reveal>
+      <div class="compare-col">
+        <p class="compare-label">Traditional browsers</p>
+        <ul class="mini-list mini-list--plain">
+          <li>Show you pages, one at a time</li>
+          <li>Leave organizing what you found up to you</li>
+          <li>Treat every tab as its own separate world</li>
+        </ul>
+      </div>
+      <div class="compare-col compare-col--accent">
+        <p class="compare-label">PyBrowser</p>
+        <ul class="mini-list mini-list--plain">
+          <li>Understands the context of what you're looking at</li>
+          <li>Keeps findings, sources, and progress organized in one place</li>
+          <li>Acts across pages and tabs toward one goal</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</section>
+
 <!-- ============================= ENGINEERING ============================= -->
 <section class="section" id="engineering">
   <div class="wrap">
@@ -523,7 +759,7 @@
     </div>
     <p class="eyebrow eyebrow--light"><img src="assets/brand/pi-mark.svg" class="eyebrow-mark eyebrow-mark--light" alt="" width="16" height="16"> PyBrowser</p>
     <h2>So — what should I do?</h2>
-    <p class="final-sub">Browse normally. Give Py the rest.</p>
+    <p class="final-sub">Bring in what you're working on. Give Py the rest.</p>
     <div class="final-prompt" aria-hidden="true">
       <svg viewBox="0 0 24 24" width="16" height="16"><circle cx="11" cy="11" r="7" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M16.2 16.2L21 21" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
       <span>What should Py do?</span>
@@ -542,9 +778,10 @@
       <span>PyBrowser</span>
     </div>
     <nav class="footer-links" aria-label="Footer">
-      <a href="#product">Product</a>
+      <a href="#bring-in">Bring In</a>
       <a href="#research">Research</a>
       <a href="#missions">Missions</a>
+      <a href="#tools">Tools</a>
       <a href="#technology">Technology</a>
       <a href="#about">About</a>
       <a href="https://github.com/Jeremydabuilder/Ai-Browser-Test" target="_blank" rel="noopener">GitHub</a>
