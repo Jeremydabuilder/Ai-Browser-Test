@@ -36,7 +36,14 @@ from app.browser.tab_manager import TabManager  # noqa: E402
 from app.mcp import adapter  # noqa: E402
 from app.mcp.config import McpServerStore  # noqa: E402
 from app.mcp.connection_manager import McpConnectionManager  # noqa: E402
-from app.mcp.types import ConnectionState, McpServerConfig, Sensitivity, Transport  # noqa: E402
+from app.mcp.types import (  # noqa: E402
+    ConnectionState,
+    McpServerConfig,
+    Permission,
+    Scope,
+    Sensitivity,
+    Transport,
+)
 from app.missions import MissionService, MissionStore  # noqa: E402
 from app.storage.database import Database  # noqa: E402
 from app.storage.settings import SettingsStore  # noqa: E402
@@ -135,35 +142,43 @@ class ConnectionErrorTests(McpTestCase):
 
 
 class DiscoveryAndClassificationTests(McpTestCase):
-    def test_read_only_tools_are_exposed_write_tool_is_not(self):
+    def test_all_discovered_tools_are_now_exposed(self):
+        # Phase 1 only ever advertised READ_ONLY tools; Phase 2 offers every
+        # discovered tool - a write tool is now proposable by the model, but
+        # assess_call() (see ToolRegistryMcpTests below) is what actually
+        # stands between that proposal and it running.
         self.add_server()
         self.connect_and_wait()
         names = {s["name"] for s in self.manager.schemas()}
-        self.assertEqual(names, {"mcp.fake.echo", "mcp.fake.list_items", "mcp.fake.get_item"})
-        self.assertNotIn("mcp.fake.create_item", names)
+        self.assertEqual(names, {"mcp.fake.echo", "mcp.fake.list_items",
+                                 "mcp.fake.get_item", "mcp.fake.create_item"})
 
-    def test_write_tool_is_discovered_but_not_agent_visible(self):
+    def test_write_tool_is_classified_write_and_never_auto_runs(self):
         self.add_server()
         self.connect_and_wait()
         tool = self.manager.find_tool("fake", "create_item")
         self.assertIsNotNone(tool, "the write tool must still be discovered")
         self.assertEqual(tool.sensitivity, Sensitivity.WRITE)
-        self.assertFalse(tool.agent_visible)
+        self.assertFalse(tool.never_confirmed)
+        # No permission has been set yet - the default for anything but
+        # READ_ONLY is always Ask, never a silent Allow.
+        self.assertEqual(self.manager.permission_for("fake", "create_item"), Permission.ASK)
 
-    def test_misleading_description_does_not_unblock_the_write_tool(self):
+    def test_misleading_description_does_not_change_the_classification(self):
         self.add_server(env_overrides={"FAKE_MCP_MISLEADING_DESCRIPTIONS": "1"})
         self.connect_and_wait()
         tool = self.manager.find_tool("fake", "create_item")
         self.assertIn("safe", tool.description.lower())  # the server really did lie
         self.assertEqual(tool.sensitivity, Sensitivity.WRITE)  # classifier ignored it anyway
-        self.assertFalse(tool.agent_visible)
-        self.assertNotIn("mcp.fake.create_item", {s["name"] for s in self.manager.schemas()})
+        self.assertEqual(self.manager.permission_for("fake", "create_item"), Permission.ASK)
+        # Still offered to the model - Phase 2 gates execution, not discovery.
+        self.assertIn("mcp.fake.create_item", {s["name"] for s in self.manager.schemas()})
 
-    def test_knows_is_false_for_the_write_tool(self):
+    def test_knows_is_true_for_any_discovered_tool(self):
         self.add_server()
         self.connect_and_wait()
         self.assertTrue(self.manager.knows("mcp.fake.echo"))
-        self.assertFalse(self.manager.knows("mcp.fake.create_item"))
+        self.assertTrue(self.manager.knows("mcp.fake.create_item"))  # exists, even if gated
         self.assertFalse(self.manager.knows("mcp.fake.nonexistent"))
         self.assertFalse(self.manager.knows("mcp.other_server.echo"))
 
@@ -174,12 +189,30 @@ class DiscoveryAndClassificationTests(McpTestCase):
 
 
 class ToolRegistryMcpTests(McpTestCase):
-    def test_run_blocks_the_write_tool_even_if_named_directly(self):
+    def test_assess_requires_confirmation_for_an_undecided_write_tool(self):
+        # run() itself no longer blocks a write tool - assess() is where
+        # Phase 2's gate lives, exactly like a browser_click's own
+        # sensitivity check. Calling run() directly (as the model's chosen
+        # tool would only ever do *after* assess()+confirmation) really
+        # does execute it - that is what ToolRegistry.run's docstring means
+        # by "getting here already means it was permitted".
         self.add_server()
         self.connect_and_wait()
         registry = ToolRegistry(self.browser, mcp=self.manager)
-        with self.assertRaises(ToolError):
-            registry.run("mcp.fake.create_item", {"item_id": "9", "text": "hacked"})
+        assessment = registry.assess("mcp.fake.create_item", {"item_id": "9", "text": "hi"})
+        self.assertTrue(assessment["requires_confirmation"])
+        self.assertNotIn("refused", assessment)
+
+    def test_run_still_executes_a_write_tool_once_dispatched(self):
+        # The flip side of the above: run() trusts its caller, the same as
+        # every native tool handler does - it is AgentSession's job to only
+        # call it after assess()+confirmation said yes.
+        self.add_server()
+        self.connect_and_wait()
+        registry = ToolRegistry(self.browser, mcp=self.manager)
+        outcome = registry.run("mcp.fake.create_item", {"item_id": "9", "text": "hi"})
+        result = outcome.mcp_future.wait(5000)
+        self.assertTrue(result["ok"])
 
     def test_run_calls_the_real_read_only_tool(self):
         self.add_server()

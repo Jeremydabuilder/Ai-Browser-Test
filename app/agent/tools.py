@@ -886,6 +886,36 @@ class ToolRegistry:
             return True
         return bool(self._mcp is not None and name.startswith("mcp.") and self._mcp.knows(name))
 
+    def active_mission_id(self) -> int | None:
+        """The active Mission's id, or None - MCP permission decisions
+        scoped to "this Mission" are checked against this. Reads ``.active``
+        off whatever was passed as ``missions`` rather than importing
+        MissionService: this class already only ever asks that object for
+        the handful of things it needs (see __init__), and this is one
+        more of them, not a new dependency."""
+        mission = getattr(self._missions, "active", None) if self._missions is not None else None
+        return getattr(mission, "id", None) if mission is not None else None
+
+    def mcp_editable_field(self, name: str, args: dict[str, Any]) -> tuple[str, str]:
+        """Which argument of an mcp.* call, if any, is worth letting the
+        user hand-edit before approving - see
+        McpConnectionManager.editable_field for the actual rule."""
+        if self._mcp is None or not name.startswith("mcp."):
+            return "", ""
+        return self._mcp.editable_field(name, args)
+
+    def remember_mcp_permission(self, name: str, permission: str, scope: str) -> None:
+        """Persist an Allow/Deny decision for an mcp.* tool, scoped to
+        "this Mission" or "always" - called from AgentSession.
+        resolve_confirmation after the user answers an approval prompt with
+        a "remember" scope selected. A no-op for anything else, including
+        Scope.ONCE, which McpPermissionStore never persists in the first
+        place."""
+        if self._mcp is None or not name.startswith("mcp."):
+            return
+        self._mcp.remember_permission_for(name, permission, scope,
+                                          mission_id=self.active_mission_id())
+
     def assess(self, name: str, args: dict[str, Any]) -> dict[str, Any]:
         """What would this tool call do, and does it need the user's blessing?
 
@@ -901,17 +931,16 @@ class ToolRegistry:
         if name in READ_ONLY_TOOLS:
             return {"level": "normal", "reasons": [], "requires_confirmation": False}
         if name.startswith("mcp."):
-            # Phase 1 only ever advertises (schemas()) and runs (run_tool())
-            # a READ_ONLY-classified MCP tool in the first place - see
-            # app.mcp.safety.classify - so by the time a call reaches this
-            # point it has already been judged read-only, independent of
-            # whatever the server itself claims. A tool that somehow is not
-            # actually known (should be unreachable) fails closed as elevated,
-            # the same as any other unclassified write.
-            if self._mcp is not None and self._mcp.knows(name):
-                return {"level": "normal", "reasons": [], "requires_confirmation": False}
-            return {"level": "elevated", "reasons": ["unrecognised MCP tool"],
-                    "requires_confirmation": False}
+            # McpConnectionManager.assess_call is where the actual decision
+            # is made: PyBrowser's own classification (never the server's
+            # description) plus any remembered per-tool permission. This
+            # registry only supplies what it alone knows - which Mission, if
+            # any, is active, since app.mcp must never import app.agent (and
+            # so cannot ask MissionService that itself).
+            if self._mcp is None:
+                return {"level": "elevated", "reasons": ["unrecognised MCP tool"],
+                        "requires_confirmation": False}
+            return self._mcp.assess_call(name, args, mission_id=self.active_mission_id())
         if name in LOCAL_WRITE_TOOLS:
             # A local, reversible write to the user's own mission board. It
             # never reaches the browser's safety layer because there is no
@@ -1102,7 +1131,16 @@ class ToolRegistry:
 
     # -- running ---------------------------------------------------------
     def run(self, name: str, args: dict[str, Any]) -> ToolOutcome:
-        """Validate and dispatch. Raises ToolError for bad arguments."""
+        """Validate and dispatch. Raises ToolError for bad arguments.
+
+        No permission check happens here, for MCP or anything else: by the
+        time AgentSession calls run(), assess() has already decided whether
+        this call was allowed to reach this point at all (refused outright,
+        or approved via the confirmation prompt) - exactly the same
+        division of responsibility a browser_click already has between
+        assess() and _run_click. A write-classified MCP tool executes here
+        precisely because getting here already means it was permitted.
+        """
         if name.startswith("mcp."):
             if self._mcp is None or not self._mcp.knows(name):
                 raise ToolError(f"Unknown tool '{name}'.")

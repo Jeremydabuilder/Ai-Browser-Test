@@ -24,7 +24,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from app.mcp.types import Sensitivity
+from app.mcp.types import Permission, Sensitivity
 
 # Ordered so a more specific/dangerous pattern is checked before a more
 # general safe-looking one - "delete_search_history" must not be caught by
@@ -73,7 +73,7 @@ _WRITE_SHAPED_FIELD_NAMES = (
     "confirm", "content", "body", "message", "data", "payload", "value",
     "text", "html",
 )
-_SENSITIVE_SHAPED_FIELD_NAMES = (
+SENSITIVE_SHAPED_FIELD_NAMES = (
     "password", "token", "secret", "credential", "amount", "card",
     "account_number", "ssn", "ein",
 )
@@ -115,7 +115,7 @@ def classify(name: str, schema: dict[str, Any] | None = None) -> str:
 
     if _matches_any(words, _SENSITIVE_VERBS):
         return Sensitivity.SENSITIVE
-    if any(f in _SENSITIVE_SHAPED_FIELD_NAMES for f in fields):
+    if any(f in SENSITIVE_SHAPED_FIELD_NAMES for f in fields):
         return Sensitivity.SENSITIVE
 
     if _matches_any(words, _DESTRUCTIVE_VERBS):
@@ -137,9 +137,53 @@ def classify(name: str, schema: dict[str, Any] | None = None) -> str:
 def describe_sensitivity(level: str) -> str:
     """One line for the Settings UI - what this classification means."""
     return {
-        Sensitivity.READ_ONLY: "Read-only - available to Py.",
-        Sensitivity.WRITE: "Writes something - not yet available (Phase 2).",
-        Sensitivity.SENSITIVE: "Sensitive (money, credentials) - not yet available.",
-        Sensitivity.DESTRUCTIVE: "Destructive - not yet available.",
-        Sensitivity.UNKNOWN: "Could not be classified - blocked until it can be.",
-    }.get(level, "Blocked.")
+        Sensitivity.READ_ONLY: "Read-only - always available to Py.",
+        Sensitivity.WRITE: "Writes something - Py must ask before using it.",
+        Sensitivity.SENSITIVE: "Sensitive (money, credentials) - Py must ask before using it.",
+        Sensitivity.DESTRUCTIVE: "Destructive - Py must ask before using it.",
+        Sensitivity.UNKNOWN: "Could not be classified - Py must ask before using it.",
+    }.get(level, "Py must ask before using it.")
+
+
+def default_permission(sensitivity: str) -> str:
+    """What Phase 2 assumes about a tool with no remembered decision yet.
+
+    Only READ_ONLY defaults to ALLOW - and even that is really moot, since
+    READ_ONLY tools never consult a permission at all (see
+    McpToolDescriptor.never_confirmed). Every other classification,
+    UNKNOWN included, defaults to ASK: an unclassified tool must never
+    silently run just because nobody has looked at it yet, and it is never
+    silently ALLOW either - the same fail-closed rule classify() itself
+    already applies to a name/schema it cannot place.
+    """
+    if sensitivity == Sensitivity.READ_ONLY:
+        return Permission.ALLOW
+    return Permission.ASK
+
+
+def reason_fragment(sensitivity: str) -> str:
+    """A short fragment for the "This {reasons}." sentence
+    ConfirmationRequest.prompt already builds for browser tools - reused
+    as-is for MCP tools rather than inventing a second prompt template."""
+    return {
+        Sensitivity.WRITE: "writes or changes data",
+        Sensitivity.SENSITIVE: "involves money, credentials, or another sensitive action",
+        Sensitivity.DESTRUCTIVE: "cannot be undone",
+        Sensitivity.UNKNOWN: "could not be classified as safe",
+    }.get(sensitivity, "changes something outside the browser")
+
+
+def describe_effect(sensitivity: str, server_name: str) -> str:
+    """The "expected effect" line an approval prompt shows - plain language,
+    not the internal classification word, and naming the server so a person
+    approving several servers' tools never has to guess which one this is
+    about."""
+    return {
+        Sensitivity.WRITE: f"This will create, change, or send something on {server_name}.",
+        Sensitivity.SENSITIVE: (
+            f"This involves money, credentials, or another sensitive action on {server_name}."),
+        Sensitivity.DESTRUCTIVE: f"This cannot be undone on {server_name}.",
+        Sensitivity.UNKNOWN: (
+            f"PyBrowser could not determine what this does on {server_name}. "
+            "Review it carefully before allowing it."),
+    }.get(sensitivity, f"This will affect {server_name}.")

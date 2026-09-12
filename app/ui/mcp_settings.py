@@ -19,14 +19,13 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QApplication,
     QButtonGroup,
+    QComboBox,
     QDialog,
     QDialogButtonBox,
     QHBoxLayout,
     QHeaderView,
     QLabel,
     QLineEdit,
-    QListWidget,
-    QListWidgetItem,
     QMessageBox,
     QPushButton,
     QRadioButton,
@@ -39,7 +38,7 @@ from PySide6.QtWidgets import (
 from app.mcp import config as mcp_config
 from app.mcp.connection_manager import McpConnectionManager
 from app.mcp.safety import describe_sensitivity
-from app.mcp.types import ConnectionState, McpServerConfig, Transport
+from app.mcp.types import ConnectionState, McpServerConfig, Permission, Transport
 from app.ui import theme
 
 _STATUS_LABELS = {
@@ -140,13 +139,13 @@ class ConnectedToolsPanel(QWidget):
         for config in self._manager.configured_servers():
             state = self._manager.state(config.id)
             connection = self._manager.connection(config.id)
-            tool_count = connection.tool_count if connection else 0
-            visible_count = len(connection.agent_visible_tools()) if connection else 0
+            tools = connection.tools if connection else []
+            auto = sum(1 for t in tools if t.never_confirmed)
+            asks = len(tools) - auto
             item = QTreeWidgetItem([
                 config.name,
                 _STATUS_LABELS.get(state, state),
-                (f"{visible_count} available, {tool_count - visible_count} blocked"
-                 if tool_count else "—"),
+                (f"{auto} always allowed, {asks} need approval" if tools else "—"),
             ])
             item.setData(0, Qt.ItemDataRole.UserRole, config.id)
             from PySide6.QtGui import QColor
@@ -231,7 +230,7 @@ class ConnectedToolsPanel(QWidget):
         connection = self._manager.connection(server_id)
         if connection is None:
             return
-        ToolListDialog(connection.config.name, connection.tools, self).exec()
+        ToolListDialog(self._manager, server_id, connection.config.name, self).exec()
 
     def _add_server(self) -> None:
         dialog = AddServerDialog(self._manager, self)
@@ -239,13 +238,33 @@ class ConnectedToolsPanel(QWidget):
             self._refresh()
 
 
-class ToolListDialog(QDialog):
-    """Read-only: every tool a server offers, and why it is or isn't usable."""
+_PERMISSION_LABELS = {
+    Permission.ALLOW: "Allow",
+    Permission.ASK: "Ask every time",
+    Permission.DENY: "Deny",
+}
 
-    def __init__(self, server_name: str, tools, parent: QWidget | None = None) -> None:
+
+class ToolListDialog(QDialog):
+    """Every tool a server offers, its classification, and - for anything
+    that isn't read-only - a per-tool Allow/Ask/Deny control.
+
+    A read-only tool has no control at all: it always runs without asking,
+    the same as it did in Phase 1, and showing a dropdown that can only
+    ever say "Allow" would just be decoration. Everything else shows the
+    *current effective* permission (a remembered decision if one exists,
+    otherwise safety.default_permission's fallback - always Ask, never a
+    silent Allow) and lets it be changed here, which stores it as Scope.
+    ALWAYS - Settings has no Mission to scope a decision to.
+    """
+
+    def __init__(self, manager: McpConnectionManager, server_id: str, server_name: str,
+                parent: QWidget | None = None) -> None:
         super().__init__(parent)
+        self._manager = manager
+        self._server_id = server_id
         self.setWindowTitle(f"Tools from {server_name}")
-        self.resize(480, 360)
+        self.resize(560, 380)
         c = theme.palette_for(QApplication.instance())
         m = theme.METRICS
 
@@ -253,28 +272,46 @@ class ToolListDialog(QDialog):
         layout.setContentsMargins(m.space_4, m.space_4, m.space_4, m.space_3)
         layout.setSpacing(m.space_2)
 
+        tools = manager.all_tools(server_id)
         if not tools:
             empty = QLabel("This server has not reported any tools yet.", self)
             empty.setStyleSheet(f"color:{c.muted};")
             layout.addWidget(empty)
         else:
-            from PySide6.QtGui import QColor
-
-            listw = QListWidget(self)
+            self.tree = QTreeWidget(self)
+            self.tree.setHeaderLabels(["Tool", "Classification", "Permission"])
+            self.tree.setRootIsDecorated(False)
+            self.tree.header().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+            self.tree.header().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
             for tool in sorted(tools, key=lambda t: t.name):
-                available = tool.agent_visible
-                row = QListWidgetItem(
-                    f"{'✓' if available else '✗'}  {tool.name} — "
-                    f"{describe_sensitivity(tool.sensitivity)}")
-                row.setForeground(QColor(c.success if available else c.muted))
-                listw.addItem(row)
-            layout.addWidget(listw, 1)
+                item = QTreeWidgetItem([tool.name, describe_sensitivity(tool.sensitivity), ""])
+                self.tree.addTopLevelItem(item)
+                if tool.never_confirmed:
+                    always = QLabel("Always allowed", self.tree)
+                    always.setStyleSheet(f"color:{c.success}; padding-left:4px;")
+                    self.tree.setItemWidget(item, 2, always)
+                else:
+                    self.tree.setItemWidget(
+                        item, 2, self._permission_combo(tool.name))
+            layout.addWidget(self.tree, 1)
 
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close, self)
         buttons.rejected.connect(self.reject)
         buttons.accepted.connect(self.accept)
         buttons.button(QDialogButtonBox.StandardButton.Close).clicked.connect(self.accept)
         layout.addWidget(buttons)
+
+    def _permission_combo(self, tool_name: str) -> QComboBox:
+        combo = QComboBox(self.tree)
+        for value in (Permission.ALLOW, Permission.ASK, Permission.DENY):
+            combo.addItem(_PERMISSION_LABELS[value], value)
+        current = self._manager.permission_for(self._server_id, tool_name)
+        index = combo.findData(current)
+        combo.setCurrentIndex(index if index >= 0 else 1)
+        combo.currentIndexChanged.connect(
+            lambda _i, name=tool_name, box=combo: self._manager.set_tool_permission(
+                self._server_id, name, box.currentData()))
+        return combo
 
 
 class AddServerDialog(QDialog):

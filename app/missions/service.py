@@ -801,15 +801,20 @@ class MissionService(QObject):
         Meant to be connected to AgentSession.step_changed by whoever owns
         both objects (see main_window.py) - this module stays free of any
         import from app.agent, the same way it stays free of Qt WebEngine.
-        Only a step's terminal states are worth a row: "done" or "failed" is
-        history, "running"/"waiting" is the panel's own live checklist and
-        would just double up once the terminal state re-emits moments later.
+        Only a step's terminal states are worth a row: "running"/"waiting"
+        is the panel's own live checklist and would just double up once the
+        terminal state re-emits moments later. "done", "failed" and
+        "skipped" are all terminal and all worth one - "skipped" covers a
+        declined confirmation (a user declining an MCP write tool is
+        exactly the audit trail an approval system needs) as well as a
+        stopped task, and neither re-emits a second terminal state
+        afterward, so there is no double-counting risk to guard against.
         """
         mission = self._active
         if mission is None:
             return
         state = getattr(step, "state", "")
-        if state not in ("done", "failed"):
+        if state not in ("done", "failed", "skipped"):
             return
         description = getattr(step, "description", "")
         if not description:

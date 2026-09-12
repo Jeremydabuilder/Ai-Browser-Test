@@ -7,6 +7,8 @@ asyncio, subprocess, or Qt at all.
 
 from __future__ import annotations
 
+import hashlib
+import json
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -55,10 +57,39 @@ class Sensitivity:
     DESTRUCTIVE = "destructive"
     UNKNOWN = "unknown"
 
-    #: Phase 1 exposes only this to the agent loop. Everything else is
-    #: discovered, shown in Settings, and refused before it ever reaches
-    #: ToolRegistry.
-    AGENT_VISIBLE = frozenset({READ_ONLY})
+    #: Phase 1 ran only these without ever asking. Phase 2 keeps that
+    #: meaning unchanged - everything else is now *offered* to the agent
+    #: too (see connection_manager.schemas()), but only ever executes after
+    #: going through the same confirmation/permission gate a sensitive
+    #: browser action does. This set is what lets a read-only tool keep
+    #: working exactly as it did in Phase 1: no permission lookup, no
+    #: confirmation, ever.
+    NEVER_CONFIRMED = frozenset({READ_ONLY})
+    #: Old name, kept as an alias - nothing outside this module should add a
+    #: new reference to it, but existing ones are not worth breaking.
+    AGENT_VISIBLE = NEVER_CONFIRMED
+
+
+class Permission:
+    """A per-tool decision, remembered or freshly asked. Never the same
+    thing as Sensitivity: sensitivity is what PyBrowser thinks a tool does;
+    permission is what the user has decided about it."""
+
+    ALLOW = "allow"
+    DENY = "deny"
+    #: Not a value that is ever persisted - it means "no decision is cached,
+    #: ask" - see McpPermissionStore.decision_for and safety.default_permission.
+    ASK = "ask"
+
+
+class Scope:
+    """How long a permission decision (Allow or Deny) should be remembered."""
+
+    ONCE = "once"        #: this call only - never persisted
+    MISSION = "mission"  #: persisted, but only honoured while this Mission is active
+    ALWAYS = "always"    #: persisted indefinitely, independent of any Mission
+
+    ALL = (ONCE, MISSION, ALWAYS)
 
 
 @dataclass(frozen=True)
@@ -78,7 +109,37 @@ class McpToolDescriptor:
 
     @property
     def agent_visible(self) -> bool:
-        return self.sensitivity in Sensitivity.AGENT_VISIBLE
+        """Discoverable and offerable to the model at all.
+
+        True for every classification in Phase 2 - a write tool is now
+        offered the same way a browser's own sensitive actions are: the
+        model can propose it, and PyBrowser's confirmation/permission gate
+        (never the model, never the server) decides whether it actually
+        runs. What Phase 1 called "agent_visible" (read-only only, nothing
+        else ever reachable) is ``never_confirmed`` below.
+        """
+        return True
+
+    @property
+    def never_confirmed(self) -> bool:
+        """Runs immediately, with no permission lookup and no confirmation -
+        exactly Phase 1's whole and only agent-visible set."""
+        return self.sensitivity in Sensitivity.NEVER_CONFIRMED
+
+    @property
+    def schema_fingerprint(self) -> str:
+        """A short, stable hash of this tool's current input schema.
+
+        The one thing that invalidates a remembered permission: if a server
+        changes what a tool's arguments look like between one connection and
+        the next, a decision made against the *old* shape must not silently
+        cover the new one - a fingerprint mismatch is what makes
+        McpPermissionStore.decision_for treat that as "no cached decision",
+        not a schema comparison scattered across callers.
+        """
+        schema = self.input_schema if isinstance(self.input_schema, dict) else {}
+        payload = json.dumps(schema, sort_keys=True, default=str)
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
 
 
 @dataclass(frozen=True)

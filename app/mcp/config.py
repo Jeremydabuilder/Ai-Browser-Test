@@ -74,6 +74,14 @@ class McpServerStore:
     def __init__(self, settings: SettingsStore | None) -> None:
         self._settings = settings
 
+    @property
+    def settings(self) -> SettingsStore | None:
+        """The underlying store, so a sibling module (permissions.py, via
+        McpConnectionManager) can keep its own JSON blob in the same
+        database without main_window.py having to construct and pass a
+        second object around."""
+        return self._settings
+
     def list_servers(self) -> list[McpServerConfig]:
         if self._settings is None:
             return []

@@ -267,7 +267,7 @@ class ConfirmationBarTests(unittest.TestCase):
         self.bar.ask(request)
         self.bar._edit.setText("running shoes")
         answers = []
-        self.bar.answered.connect(lambda allowed, text: answers.append((allowed, text)))
+        self.bar.answered.connect(lambda allowed, text, scope: answers.append((allowed, text)))
         self.bar.allow_button.click()
         self.assertEqual(answers, [(True, "running shoes")])
 
@@ -279,7 +279,7 @@ class ConfirmationBarTests(unittest.TestCase):
         self.bar.ask(request)
         self.bar._edit.setText("running shoes")
         answers = []
-        self.bar.answered.connect(lambda allowed, text: answers.append((allowed, text)))
+        self.bar.answered.connect(lambda allowed, text, scope: answers.append((allowed, text)))
         self.bar.deny_button.click()
         self.assertEqual(answers, [(False, "")])
 

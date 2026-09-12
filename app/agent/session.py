@@ -45,6 +45,7 @@ from app.agent import trace as tracing
 from app.agent.tools import ToolError, ToolRegistry
 from app.agent.usage import Usage
 from app.browser.controller import BrowserController
+from app.mcp.types import Permission, Scope
 
 
 class AgentState:
@@ -114,6 +115,22 @@ class ConfirmationRequest:
     #: with their correction rather than declining and re-explaining.
     editable_field: str = ""
     editable_value: str = ""
+
+    #: Set only for an MCP tool call - the server's display name. Its mere
+    #: presence is what tells the UI (and resolve_confirmation) this is an
+    #: MCP confirmation rather than a browser one; see is_mcp below.
+    mcp_server: str = ""
+    #: The call's arguments, redacted (see connection_manager._redact_arguments)
+    #: rather than reduced to field names the way ``submits`` is - an MCP
+    #: argument is not a web form field a page defines, it is exactly what
+    #: the model chose to send, already visible in the transcript above it.
+    mcp_data: dict[str, Any] | None = None
+    #: Plain-language "expected effect" line (see safety.describe_effect).
+    mcp_effect: str = ""
+
+    @property
+    def is_mcp(self) -> bool:
+        return bool(self.mcp_server)
 
     @property
     def site(self) -> str:
@@ -473,7 +490,8 @@ class AgentSession(QObject):
         self.activity.emit("Stopped.")
         self._finish()
 
-    def resolve_confirmation(self, allowed: bool, edited_value: str | None = None) -> None:
+    def resolve_confirmation(self, allowed: bool, edited_value: str | None = None,
+                             remember_scope: str = Scope.ONCE) -> None:
         """Answer the outstanding confirmation. Called by the UI.
 
         ``edited_value`` is the handoff path: when the request named an
@@ -481,12 +499,23 @@ class AgentSession(QObject):
         agent continues with their correction instead of the value it
         originally proposed. Ignored when there is nothing editable, or the
         value is unchanged.
+
+        ``remember_scope`` (Scope.ONCE/MISSION/ALWAYS) only has an effect on
+        an MCP request (``request.is_mcp``) - a plain browser confirmation
+        has nothing to remember a decision *about*: its sensitivity is
+        judged fresh from the page each time, not looked up. For MCP it is
+        persisted through the registry before the call runs, so even
+        ``allowed=False`` with Scope.ALWAYS/MISSION means something: "stop
+        asking me, the answer is no."
         """
         if self._state != AgentState.AWAITING_CONFIRMATION or self._confirming_call is None:
             return
         call, request = self._confirming_call, self._confirmation
         self._confirming_call = None
         self._confirmation = None
+        if request.is_mcp and remember_scope != Scope.ONCE:
+            self._tools.remember_mcp_permission(
+                call.name, Permission.ALLOW if allowed else Permission.DENY, remember_scope)
         if allowed:
             edited = bool(
                 edited_value is not None and request.editable_field
@@ -748,34 +777,47 @@ class AgentSession(QObject):
             self._advance()
             return
 
-        # 5. Read-only autonomy refuses outright rather than asking - there is
+        # 5. Read-only autonomy - or, for an MCP tool, a permission the user
+        #    has set to Deny - refuses outright rather than asking; there is
         #    nothing to confirm into. A clean tool error, the same shape as
         #    any other refusal, so the model can explain why to the user
-        #    rather than the task just going quiet.
+        #    rather than the task just going quiet. refusal_code/message let
+        #    a refusal say something more specific than the read-only-
+        #    autonomy default below; anything that does not set them (the
+        #    autonomy tier itself, the browser's own safety layer) keeps
+        #    exactly the wording this always had.
         if assessment.get("refused"):
-            self.trace.record(tracing.TOOL_REJECTED, tool=call.name, reason="read_only")
-            self._record_result(call.id, self._tool_error(
-                "READ_ONLY", "Py is set to read-only and cannot perform this action. "
-                "Ask the user to change the autonomy setting if this task needs it."),
-                is_error=True)
+            code = assessment.get("refusal_code", "READ_ONLY")
+            message = assessment.get("refusal_message") or (
+                "Py is set to read-only and cannot perform this action. "
+                "Ask the user to change the autonomy setting if this task needs it.")
+            self.trace.record(tracing.TOOL_REJECTED, tool=call.name,
+                              reason=assessment.get("refusal_reason", "read_only"))
+            self._record_result(call.id, self._tool_error(code, message), is_error=True)
             self._advance()
             return
 
-        # 6. The browser's safety layer decides - not the model.
+        # 6. The browser's safety layer decides - not the model. (For an MCP
+        #    tool, this is McpConnectionManager.assess_call instead - same
+        #    shape, same confirmation prompt, an additive "mcp" key.)
         if assessment.get("requires_confirmation"):
             self._confirming_call = call
             submits, sensitive = self._describe_submission(call)
             editable_field, editable_value = self._editable_field(call, assessment)
+            mcp_info = assessment.get("mcp")
             self._confirmation = ConfirmationRequest(
                 tool_call_id=call.id,
                 tool_name=call.name,
                 description=self._tools.describe_call_as_request(call.name, call.arguments),
                 reasons=list(assessment.get("reasons", [])),
-                url=self._browser.get_current_page().page.url,
+                url="" if mcp_info else self._browser.get_current_page().page.url,
                 submits=submits,
                 sensitive_fields=sensitive,
                 editable_field=editable_field,
                 editable_value=editable_value,
+                mcp_server=(mcp_info or {}).get("server", ""),
+                mcp_data=(mcp_info or {}).get("data") if mcp_info else None,
+                mcp_effect=(mcp_info or {}).get("effect", ""),
             )
             self._set_state(AgentState.AWAITING_CONFIRMATION)
             self.trace.record(tracing.APPROVAL_REQUESTED, tool=call.name,
@@ -973,6 +1015,8 @@ class AgentSession(QObject):
         a choice of *what*, not a value worth editing in place; declining and
         re-asking is the right tool there.
         """
+        if call.name.startswith("mcp."):
+            return self._tools.mcp_editable_field(call.name, call.arguments)
         if call.name != "browser_type":
             return "", ""
         text = call.arguments.get("text")

@@ -11,6 +11,7 @@ from PySide6.QtCore import QEasingCurve, QPropertyAnimation, Qt, Signal
 from PySide6.QtGui import QFont, QFontMetrics, QKeyEvent, QTextCursor
 from PySide6.QtWidgets import (
     QApplication,
+    QComboBox,
     QFrame,
     QGraphicsOpacityEffect,
     QHBoxLayout,
@@ -37,6 +38,7 @@ from app.agent.session import (
     Step,
     StepState,
 )
+from app.mcp.types import Scope
 
 #: How each step state reads: a mark, and which palette colour names it. A step
 #: is a thing the agent did to the browser, never a thing it thought - the panel
@@ -129,10 +131,14 @@ class ConfirmationBar(QFrame):
     pressing Enter without reading carefully.
     """
 
-    #: (allowed, edited_value). edited_value is "" unless the request had an
-    #: editable field and the user changed it - resolve_confirmation ignores
-    #: it otherwise, so it is always safe to pass the field's current text.
-    answered = Signal(bool, str)
+    #: (allowed, edited_value, remember_scope). edited_value is "" unless the
+    #: request had an editable field and the user changed it -
+    #: resolve_confirmation ignores it otherwise, so it is always safe to
+    #: pass the field's current text. remember_scope is Scope.ONCE unless
+    #: this is an MCP request and the user picked something else in the
+    #: "Remember" control below - resolve_confirmation ignores it for a
+    #: plain browser confirmation, which has no permission to remember.
+    answered = Signal(bool, str, str)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -186,19 +192,54 @@ class ConfirmationBar(QFrame):
         self._edit_label.hide()
         self._edit.hide()
 
+        # MCP-only: server/tool/data/effect, shown instead of the plain
+        # action-and-site line above for a request that came from an MCP
+        # tool rather than a browser action - built once and toggled with
+        # setVisible, not created fresh each time, since ask() runs on every
+        # confirmation and a fresh QLabel per call would leak.
+        self._mcp_block = QLabel("", self)
+        self._mcp_block.setWordWrap(True)
+        self._mcp_block.setTextFormat(Qt.TextFormat.RichText)
+        layout.addWidget(self._mcp_block)
+        self._mcp_block.hide()
+
+        # "Remember" - MCP only. Defaults to "Just this time" on every
+        # confirmation; nothing is ever pre-selected onto something that
+        # skips asking next time.
+        remember_row = QHBoxLayout()
+        remember_row.setSpacing(m.space_2)
+        self._remember_label = QLabel("Remember:", self)
+        self._remember_label.setStyleSheet(f"font-size:{m.text_xs}px; opacity:.8;")
+        self._remember = QComboBox(self)
+        self._remember.addItem("Just this time", Scope.ONCE)
+        self._remember.addItem("For this Mission", Scope.MISSION)
+        self._remember.addItem("Always", Scope.ALWAYS)
+        remember_row.addWidget(self._remember_label)
+        remember_row.addWidget(self._remember, 1)
+        layout.addLayout(remember_row)
+        self._remember_label.hide()
+        self._remember.hide()
+
         buttons = QHBoxLayout()
         buttons.setSpacing(m.space_2)
         self.deny_button = QPushButton("Deny", self)
         self.deny_button.setDefault(True)      # the safe answer is the default
         self.allow_button = QPushButton("Allow", self)
         self.allow_button.setProperty("kind", "primary")
-        self.allow_button.clicked.connect(lambda: self.answered.emit(True, self._edit.text()))
-        self.deny_button.clicked.connect(lambda: self.answered.emit(False, ""))
+        self.allow_button.clicked.connect(
+            lambda: self.answered.emit(True, self._edit.text(), self._remember_scope()))
+        self.deny_button.clicked.connect(
+            lambda: self.answered.emit(False, "", self._remember_scope()))
         buttons.addStretch(1)
         buttons.addWidget(self.deny_button)
         buttons.addWidget(self.allow_button)
         layout.addLayout(buttons)
         self.hide()
+
+    def _remember_scope(self) -> str:
+        if not self._remember.isVisible():
+            return Scope.ONCE
+        return self._remember.currentData()
 
     def ask(self, request: ConfirmationRequest) -> None:
         """Show what would happen, where, and what would be sent.
@@ -232,7 +273,8 @@ class ConfirmationBar(QFrame):
         self._detail.setVisible(bool(lines))
 
         if request.editable_field:
-            self._edit_label.setText(f"Text to type ({escape(request.editable_field)}):")
+            label = ("Text to type" if not request.is_mcp else "Argument to change")
+            self._edit_label.setText(f"{label} ({escape(request.editable_field)}):")
             self._edit.setText(request.editable_value)
             self._edit_label.show()
             self._edit.show()
@@ -240,6 +282,30 @@ class ConfirmationBar(QFrame):
             self._edit_label.hide()
             self._edit.hide()
             self._edit.clear()
+
+        if request.is_mcp:
+            mcp_lines = [f"<b>Server:</b> {escape(request.mcp_server)}"]
+            tool_name = request.tool_name.split(".")[-1] if request.tool_name else ""
+            if tool_name:
+                mcp_lines.append(f"<b>Tool:</b> {escape(tool_name)}")
+            if request.mcp_data:
+                shown = ", ".join(
+                    f"{escape(str(k))}: {escape(str(v))}"
+                    for k, v in list(request.mcp_data.items())[:6])
+                if shown:
+                    mcp_lines.append(f"<b>Data sent:</b> {shown}")
+            if request.mcp_effect:
+                mcp_lines.append(f"<b>Expected effect:</b> {escape(request.mcp_effect)}")
+            self._mcp_block.setText("<br>".join(mcp_lines))
+            self._mcp_block.show()
+            self._remember.setCurrentIndex(0)   # always defaults to "Just this time"
+            self._remember_label.show()
+            self._remember.show()
+        else:
+            self._mcp_block.hide()
+            self._mcp_block.clear()
+            self._remember_label.hide()
+            self._remember.hide()
 
         self.show()
         self.deny_button.setFocus()
@@ -741,10 +807,10 @@ class AgentPanel(QWidget):
             self.transcript.clear()
             self._empty = False
 
-    def _answer_confirmation(self, allowed: bool, edited_value: str) -> None:
+    def _answer_confirmation(self, allowed: bool, edited_value: str, remember_scope: str) -> None:
         self.confirmation.hide()
         if self._session is not None:
-            self._session.resolve_confirmation(allowed, edited_value or None)
+            self._session.resolve_confirmation(allowed, edited_value or None, remember_scope)
 
     # -- missions --------------------------------------------------------
     #
