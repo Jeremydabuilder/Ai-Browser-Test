@@ -135,6 +135,7 @@ def describe_model(model_id: str) -> ModelChoice:
 
 
 PROVIDER_ANTHROPIC = "anthropic"
+PROVIDER_OPENAI = "openai"
 PROVIDER_GROQ = "groq"
 PROVIDER_OPENROUTER = "openrouter"
 PROVIDER_GEMINI = "gemini"
@@ -170,6 +171,12 @@ PROVIDERS: tuple[ProviderInfo, ...] = (
         "ANTHROPIC_API_KEY",
         "Paid; see Tools → Configure AI Agent for every way to authenticate.",
         is_anthropic=True,
+    ),
+    ProviderInfo(
+        PROVIDER_OPENAI, "OpenAI (GPT)",
+        "OPENAI_API_KEY",
+        "Paid; see platform.openai.com/api-keys. Model list is fetched live "
+        "from your account.",
     ),
     ProviderInfo(
         PROVIDER_GEMINI, "Google Gemini (recommended for testing)",

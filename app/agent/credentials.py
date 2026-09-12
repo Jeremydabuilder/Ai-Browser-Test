@@ -272,6 +272,7 @@ def options_summary(has_keyring_key: bool | None = None) -> list[tuple[str, bool
 
 #: provider id -> (label, env var, keyring account name)
 PROVIDER_KEY_INFO: dict[str, tuple[str, str, str]] = {
+    "openai": ("OpenAI", "OPENAI_API_KEY", "openai-api-key"),
     "groq": ("Groq", "GROQ_API_KEY", "groq-api-key"),
     "openrouter": ("OpenRouter", "OPENROUTER_API_KEY", "openrouter-api-key"),
     "gemini": ("Gemini", "GEMINI_API_KEY", "gemini-api-key"),

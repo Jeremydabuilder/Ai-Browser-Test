@@ -419,10 +419,12 @@ class ApiKeyDialog(QDialog):
         return self.provider_box.currentData()
 
     def _other_client_class(self, provider_id: str | None = None):
-        from app.agent.openai_compatible import GeminiClient, GroqClient, OpenRouterClient
+        from app.agent.openai_compatible import (
+            GeminiClient, GroqClient, OpenAIClient, OpenRouterClient,
+        )
 
         provider_id = provider_id or self._current_other_provider()
-        return {"groq": GroqClient, "openrouter": OpenRouterClient,
+        return {"openai": OpenAIClient, "groq": GroqClient, "openrouter": OpenRouterClient,
                "gemini": GeminiClient}[provider_id]
 
     def _remembered_other_model(self, provider_id: str) -> str:
@@ -1082,9 +1084,15 @@ def build_transport(credential, config):
     Missions, safety.py) branches on provider at all.
     """
     from app.agent.claude_client import ClaudeClient
-    from app.agent.config import PROVIDER_GEMINI, PROVIDER_GROQ, PROVIDER_OPENROUTER
-    from app.agent.openai_compatible import GeminiClient, GroqClient, OpenRouterClient
+    from app.agent.config import (
+        PROVIDER_GEMINI, PROVIDER_GROQ, PROVIDER_OPENAI, PROVIDER_OPENROUTER,
+    )
+    from app.agent.openai_compatible import (
+        GeminiClient, GroqClient, OpenAIClient, OpenRouterClient,
+    )
 
+    if credential.provider == PROVIDER_OPENAI:
+        return OpenAIClient(credential.secret or "", config)
     if credential.provider == PROVIDER_GROQ:
         return GroqClient(credential.secret or "", config)
     if credential.provider == PROVIDER_OPENROUTER:

@@ -38,6 +38,7 @@ from app.agent.config import AgentConfig, ContextLimits  # noqa: E402
 from app.agent.openai_compatible import (  # noqa: E402
     GeminiClient,
     GroqClient,
+    OpenAIClient,
     OpenRouterClient,
     messages_param,
     normalise,
@@ -53,7 +54,7 @@ _app: QApplication | None = None
 _server: FixtureServer | None = None
 _profile = None
 
-_VARS = ("GROQ_API_KEY", "OPENROUTER_API_KEY", "GEMINI_API_KEY",
+_VARS = ("GROQ_API_KEY", "OPENROUTER_API_KEY", "GEMINI_API_KEY", "OPENAI_API_KEY",
         "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN")
 
 
@@ -394,6 +395,226 @@ class GeminiClientTests(unittest.TestCase):
         self.assertIn("generativelanguage.googleapis.com", GeminiClient.base_url)
 
 
+class OpenAIClientTests(unittest.TestCase):
+    """OpenAI follows the same OpenAICompatibleClient contract as Groq,
+    OpenRouter and Gemini - these are the OpenAI-specific parts of it."""
+
+    def test_seed_models_are_never_empty(self):
+        self.assertTrue(OpenAIClient.seed_models())
+
+    def test_the_seed_list_is_not_empty_and_contains_no_denylisted_model(self):
+        for entry in OpenAIClient.seed_models():
+            self.assertFalse(OpenAIClient.is_denylisted(entry["id"]))
+
+    def test_an_ordinary_model_reports_unconfirmed_tool_support(self):
+        supported, note = OpenAIClient.capability_of({"id": "gpt-4o"})
+        self.assertTrue(supported)
+        self.assertIn("unconfirmed", note)
+
+    def test_an_embedding_model_is_flagged_as_not_a_chat_model(self):
+        supported, note = OpenAIClient.capability_of({"id": "text-embedding-3-small"})
+        self.assertFalse(supported)
+        self.assertIn("not a chat model", note)
+
+    def test_a_whisper_model_is_flagged_as_not_a_chat_model(self):
+        supported, _note = OpenAIClient.capability_of({"id": "whisper-1"})
+        self.assertFalse(supported)
+
+    def test_a_moderation_model_is_flagged_as_not_a_chat_model(self):
+        supported, _note = OpenAIClient.capability_of({"id": "text-moderation-latest"})
+        self.assertFalse(supported)
+
+    def test_label_and_base_url_are_set(self):
+        self.assertEqual(OpenAIClient.label, "OpenAI")
+        self.assertIn("api.openai.com", OpenAIClient.base_url)
+
+    # -- error handling, exercised directly against OpenAIClient itself,
+    # not only the shared base class other tests in this file already
+    # cover through Groq --------------------------------------------------
+
+    def test_an_empty_key_is_refused_before_any_request(self):
+        with self.assertRaises(ClaudeError):
+            OpenAIClient("", AgentConfig())
+
+    def test_a_401_is_translated_clearly(self):
+        def handler(request):
+            return httpx.Response(401, json={"error": {"message": "Incorrect API key"}})
+
+        client = OpenAIClient("sk-bad", AgentConfig(model="gpt-4o"),
+                              transport=httpx.MockTransport(handler))
+        with self.assertRaises(ClaudeError) as ctx:
+            client.send(system="s", messages=[], tools=[])
+        self.assertIn("Configure AI Agent", str(ctx.exception))
+
+    def test_a_429_is_retryable_rate_limiting(self):
+        def handler(request):
+            return httpx.Response(429, json={"error": {"message": "Rate limit reached"}})
+
+        client = OpenAIClient("sk-x", AgentConfig(model="gpt-4o"),
+                              transport=httpx.MockTransport(handler))
+        with self.assertRaises(ClaudeError) as ctx:
+            client.send(system="s", messages=[], tools=[])
+        self.assertTrue(ctx.exception.retryable)
+
+    def test_an_unavailable_model_404_is_translated_clearly(self):
+        def handler(request):
+            return httpx.Response(404, json={"error": {"message": "model not found"}})
+
+        client = OpenAIClient("sk-x", AgentConfig(model="not-a-real-model"),
+                              transport=httpx.MockTransport(handler))
+        with self.assertRaises(ClaudeError) as ctx:
+            client.send(system="s", messages=[], tools=[])
+        self.assertIn("not-a-real-model", str(ctx.exception))
+
+    def test_the_api_key_never_appears_in_a_raised_error(self):
+        def handler(request):
+            return httpx.Response(401, json={"error": {"message": "bad key"}})
+
+        client = OpenAIClient("sk-super-secret-value", AgentConfig(model="gpt-4o"),
+                              transport=httpx.MockTransport(handler))
+        try:
+            client.send(system="s", messages=[], tools=[])
+        except ClaudeError as exc:
+            self.assertNotIn("sk-super-secret-value", str(exc))
+            self.assertNotIn("sk-super-secret-value", exc.detail)
+
+
+def _sse(*chunks: dict) -> bytes:
+    """Several genuinely separate SSE chunks, for tests that care about
+    incremental delivery rather than ``_as_sse``'s one-chunk shortcut."""
+    lines = [f"data: {json.dumps(chunk)}\n\n" for chunk in chunks]
+    lines.append("data: [DONE]\n\n")
+    return "".join(lines).encode()
+
+
+class StreamingParsingTests(unittest.TestCase):
+    """Real multi-chunk SSE, parsed the way OpenAI (and Groq/Gemini/
+    OpenRouter, which share this same client) actually sends it: text and
+    tool-call arguments trickle in over many small deltas, not one."""
+
+    def test_text_fragments_are_delivered_incrementally_and_in_order(self):
+        def handler(request):
+            body = json.loads(request.content)
+            self.assertTrue(body.get("stream"))
+            return httpx.Response(200, content=_sse(
+                {"choices": [{"delta": {"content": "Hello"}, "finish_reason": None}]},
+                {"choices": [{"delta": {"content": ", "}, "finish_reason": None}]},
+                {"choices": [{"delta": {"content": "world."}, "finish_reason": "stop"}]},
+            ), headers={"content-type": "text/event-stream"})
+
+        client = OpenAIClient("sk-x", AgentConfig(model="gpt-4o"),
+                              transport=httpx.MockTransport(handler))
+        fragments = []
+        response = client.send(system="s", messages=[], tools=[], on_text=fragments.append)
+        self.assertEqual(fragments, ["Hello", ", ", "world."])
+        self.assertEqual(response.text, "Hello, world.")
+        self.assertEqual(response.stop_reason, "end_turn")
+
+    def test_tool_call_arguments_accumulate_across_chunks(self):
+        """A real streamed tool call's ``arguments`` string arrives as
+        fragments too - "{\"q" then "uery\": \"cats\"}" - keyed by the
+        call's position, not its id (the id itself may only appear once,
+        on the first fragment)."""
+        def handler(request):
+            return httpx.Response(200, content=_sse(
+                {"choices": [{"delta": {"tool_calls": [
+                    {"index": 0, "id": "call_1", "type": "function",
+                     "function": {"name": "browser_navigate", "arguments": ""}},
+                ]}, "finish_reason": None}]},
+                {"choices": [{"delta": {"tool_calls": [
+                    {"index": 0, "function": {"arguments": '{"url": '}},
+                ]}, "finish_reason": None}]},
+                {"choices": [{"delta": {"tool_calls": [
+                    {"index": 0, "function": {"arguments": '"https://x.test"}'}},
+                ]}, "finish_reason": "tool_calls"}]},
+            ), headers={"content-type": "text/event-stream"})
+
+        client = OpenAIClient("sk-x", AgentConfig(model="gpt-4o"),
+                              transport=httpx.MockTransport(handler))
+        response = client.send(system="s", messages=[], tools=[], on_text=lambda _f: None)
+        self.assertEqual(len(response.tool_calls), 1)
+        call = response.tool_calls[0]
+        self.assertEqual(call.id, "call_1")
+        self.assertEqual(call.name, "browser_navigate")
+        self.assertEqual(call.arguments, {"url": "https://x.test"})
+        self.assertEqual(response.stop_reason, "tool_use")
+
+    def test_usage_from_the_final_chunk_is_captured(self):
+        def handler(request):
+            return httpx.Response(200, content=_sse(
+                {"choices": [{"delta": {"content": "hi"}, "finish_reason": "stop"}],
+                 "usage": {"prompt_tokens": 12, "completion_tokens": 3}},
+            ), headers={"content-type": "text/event-stream"})
+
+        client = OpenAIClient("sk-x", AgentConfig(model="gpt-4o"),
+                              transport=httpx.MockTransport(handler))
+        response = client.send(system="s", messages=[], tools=[], on_text=lambda _f: None)
+        self.assertEqual(response.input_tokens, 12)
+        self.assertEqual(response.output_tokens, 3)
+
+    def test_a_streaming_error_response_is_translated_the_same_as_non_streaming(self):
+        def handler(request):
+            return httpx.Response(401, json={"error": {"message": "bad key"}})
+
+        client = OpenAIClient("sk-bad", AgentConfig(model="gpt-4o"),
+                              transport=httpx.MockTransport(handler))
+        with self.assertRaises(ClaudeError) as ctx:
+            client.send(system="s", messages=[], tools=[], on_text=lambda _f: None)
+        self.assertIn("Configure AI Agent", str(ctx.exception))
+
+    def test_streaming_falls_back_to_max_completion_tokens_too(self):
+        calls = []
+
+        def handler(request):
+            body = json.loads(request.content)
+            calls.append(body)
+            if "max_tokens" in body:
+                return httpx.Response(400, json={"error": {"message":
+                    "Unrecognized request argument supplied: max_tokens"}})
+            return httpx.Response(200, content=_sse(
+                {"choices": [{"delta": {"content": "hi"}, "finish_reason": "stop"}]},
+            ), headers={"content-type": "text/event-stream"})
+
+        client = OpenAIClient("sk-x", AgentConfig(model="o3-mini"),
+                              transport=httpx.MockTransport(handler))
+        response = client.send(system="s", messages=[], tools=[], on_text=lambda _f: None)
+        self.assertEqual(response.text, "hi")
+        self.assertEqual(len(calls), 2)
+        self.assertIn("max_completion_tokens", calls[1])
+
+
+class CancellationTests(unittest.TestCase):
+    """A task cancelled mid-flight must leave the session idle and never
+    crash, the same guarantee every provider offers - checked here against
+    OpenAIClient specifically since it is the newest transport."""
+
+    def setUp(self) -> None:
+        self.tabs = TabManager(_profile, _server.base)
+        self.tabs.resize(1000, 700)
+        self.tabs.show()
+        self.browser = BrowserController(self.tabs)
+        self.browser.open_tab().wait()
+        self.browser.navigate(_server.base).wait()
+        self.session: AgentSession | None = None
+
+    def tearDown(self) -> None:
+        if self.session is not None:
+            self.session.shutdown()
+        for tab in self.tabs.tabs():
+            tab.page.deleteLater()
+        self.tabs.deleteLater()
+        _app.processEvents()
+
+    def test_cancelling_a_running_task_returns_to_idle(self):
+        http = ScriptedHTTP([_openai_text("This should never be read.")])
+        client = OpenAIClient("sk-x", AgentConfig(model="gpt-4o", limits=ContextLimits()),
+                              transport=httpx.MockTransport(http))
+        self.session = AgentSession(self.browser, client, client.config)
+        self.session.send("Do something.")
+        self.session.cancel()
+        self.assertTrue(pump(lambda: self.session.state == AgentState.IDLE, 20000))
+
+
 class CapabilityTests(unittest.TestCase):
     def test_list_models_returns_the_providers_own_data(self):
         def handler(request):
@@ -503,6 +724,24 @@ class CredentialIsolationTests(unittest.TestCase):
         self.assertEqual(gemini.secret, "AIza_only_for_gemini")
         self.assertFalse(groq.available)
 
+    def test_openai_has_its_own_keyring_account(self):
+        _label, env, account = creds.PROVIDER_KEY_INFO["openai"]
+        groq_account = creds.PROVIDER_KEY_INFO["groq"][2]
+        self.assertNotEqual(account, groq_account)
+        self.assertEqual(env, "OPENAI_API_KEY")
+
+    def test_an_openai_key_is_invisible_to_groq_resolution(self):
+        os.environ["OPENAI_API_KEY"] = "sk-only-for-openai"
+        openai = creds.resolve_for("openai")
+        groq = creds.resolve_for("groq")
+        self.assertEqual(openai.secret, "sk-only-for-openai")
+        self.assertFalse(groq.available)
+
+    def test_an_anthropic_env_key_is_invisible_to_openai_resolution(self):
+        os.environ["ANTHROPIC_API_KEY"] = "sk-ant-only-for-anthropic"
+        openai = creds.resolve_for("openai")
+        self.assertFalse(openai.available)
+
 
 # ---------------------------------------------------------------------------
 # Building the right client for the configured provider
@@ -541,6 +780,24 @@ class TransportSelectionTests(unittest.TestCase):
         credential = creds.Credential(creds.Mode.ENV_KEY, "k", secret="AIza_x", provider="gemini")
         transport = build_transport(credential, AgentConfig())
         self.assertIsInstance(transport, GeminiClient)
+
+    def test_openai_builds_an_openai_client(self):
+        from app.ui.agent_setup import build_transport
+
+        credential = creds.Credential(creds.Mode.ENV_KEY, "k", secret="sk-x", provider="openai")
+        transport = build_transport(credential, AgentConfig(model="gpt-4o"))
+        self.assertIsInstance(transport, OpenAIClient)
+        self.assertEqual(transport._model, "gpt-4o")
+
+    def test_build_session_reports_a_clean_error_with_no_openai_key(self):
+        from app.ui.agent_setup import build_session
+
+        os.environ.pop("OPENAI_API_KEY", None)
+        settings = _FakeSettings({"agent_provider": "openai"})
+        session, reason = build_session(mock.Mock(), settings=settings)
+        self.assertIsNone(session)
+        self.assertIn("openai", reason.lower())
+        self.assertIn("Configure AI Agent", reason)
 
     def test_build_session_reports_a_clean_error_with_no_groq_key(self):
         from app.ui.agent_setup import build_session
@@ -584,9 +841,54 @@ def _openai_text(text: str) -> dict:
     return {"choices": [{"message": {"content": text}, "finish_reason": "stop"}]}
 
 
+def _as_sse(payload: dict) -> bytes:
+    """One scripted chat-completion body -> the single-chunk SSE stream a
+    real ``stream: true`` request would receive for it. Not a claim that a
+    real API sends its whole answer in one chunk - it never does - only
+    that a script written as one complete message is enough to prove the
+    parsing round-trips; incremental delivery is exercised in
+    ``StreamingParsingTests`` below with genuinely multi-chunk scripts.
+    """
+    message = (payload.get("choices") or [{}])[0].get("message") or {}
+    finish_reason = (payload.get("choices") or [{}])[0].get("finish_reason", "stop")
+    delta: dict = {}
+    if message.get("content"):
+        delta["content"] = message["content"]
+    tool_calls = message.get("tool_calls") or []
+    if tool_calls:
+        delta["tool_calls"] = [
+            {"index": i, "id": call.get("id"), "type": "function",
+             "function": call.get("function")}
+            for i, call in enumerate(tool_calls)
+        ]
+    chunk = {"choices": [{"delta": delta, "finish_reason": finish_reason}]}
+    if payload.get("usage"):
+        chunk["usage"] = payload["usage"]
+    lines = [f"data: {json.dumps(chunk)}\n\n", "data: [DONE]\n\n"]
+    return "".join(lines).encode()
+
+
+def _respond(request_body: dict, payload: dict) -> "httpx.Response":
+    """One scripted chat-completion payload, encoded to match whatever the
+    request itself asked for - plain JSON, or SSE if ``stream`` was set.
+    Shared by every hand-written handler in this file that ScriptedHTTP
+    does not already cover, so each one supports both request shapes
+    without duplicating the encoding logic."""
+    if request_body.get("stream"):
+        return httpx.Response(200, content=_as_sse(payload),
+                              headers={"content-type": "text/event-stream"})
+    return httpx.Response(200, json=payload)
+
+
 class ScriptedHTTP:
     """Replays a list of JSON response bodies for successive HTTP calls,
-    the OpenAI-adapter equivalent of tests.fake_claude.ScriptedClaude."""
+    the OpenAI-adapter equivalent of tests.fake_claude.ScriptedClaude.
+
+    A scripted body is written as one ordinary (non-streaming) chat
+    completion - the shape every test in this file already uses - and
+    re-encoded as SSE automatically when the request itself asked for
+    ``stream: true``, so the exact same script exercises both paths.
+    """
 
     def __init__(self, script: list[dict]) -> None:
         self._script = list(script)
@@ -597,7 +899,12 @@ class ScriptedHTTP:
         self.requests.append(body)
         if not self._script:
             return httpx.Response(500, json={"error": {"message": "script ran out"}})
-        return httpx.Response(200, json=self._script.pop(0))
+        payload = self._script.pop(0)
+        if body.get("stream"):
+            return httpx.Response(
+                200, content=_as_sse(payload),
+                headers={"content-type": "text/event-stream"})
+        return httpx.Response(200, json=payload)
 
     def last_tool_message(self) -> str:
         for body in reversed(self.requests):
@@ -674,13 +981,11 @@ class GroqIntegrationTests(unittest.TestCase):
             body = json.loads(request.content)
             http.requests.append(body)
             if len(http.requests) == 1:
-                return httpx.Response(200, json=_openai_tool_call(
-                    "call_1", "browser_get_page", {}))
+                return _respond(body, _openai_tool_call("call_1", "browser_get_page", {}))
             if len(http.requests) == 2:
                 ref = _ref_from(http.last_tool_message(), "button", "Buy now")
-                return httpx.Response(200, json=_openai_tool_call(
-                    "call_2", "browser_click", {"ref": ref}))
-            return httpx.Response(200, json=_openai_text("Bought it."))
+                return _respond(body, _openai_tool_call("call_2", "browser_click", {"ref": ref}))
+            return _respond(body, _openai_text("Bought it."))
 
         client = GroqClient("gsk_test", AgentConfig(model="llama-test", limits=ContextLimits()),
                             transport=httpx.MockTransport(handler))
@@ -703,12 +1008,11 @@ class GroqIntegrationTests(unittest.TestCase):
             body = json.loads(request.content)
             count = sum(1 for m in body["messages"] if m.get("role") == "user")
             if not any(m.get("role") == "tool" for m in body["messages"]):
-                return httpx.Response(200, json=_openai_tool_call(
-                    "call_1", "browser_get_page", {}))
+                return _respond(body, _openai_tool_call("call_1", "browser_get_page", {}))
             ref = _ref_from(
                 next(m["content"] for m in reversed(body["messages"]) if m.get("role") == "tool"),
                 "button", "Buy now")
-            return httpx.Response(200, json=_openai_tool_call("call_2", "browser_click", {"ref": ref}))
+            return _respond(body, _openai_tool_call("call_2", "browser_click", {"ref": ref}))
 
         client = GroqClient("gsk_test", AgentConfig(model="llama-test", limits=ContextLimits()),
                             transport=httpx.MockTransport(handler))
@@ -890,6 +1194,29 @@ class ModelSelectionTests(unittest.TestCase):
               for i in range(dialog._other_model_box.count())}
         self.assertIn("llama-3.3-70b-versatile", ids)
         self.assertGreater(dialog._other_model_box.count(), 1)
+
+    def test_openai_is_offered_in_the_provider_dropdown(self):
+        dialog = self._dialog()
+        self.assertGreaterEqual(dialog.provider_box.findData("openai"), 0)
+
+    def test_switching_to_openai_populates_the_dropdown_from_the_seed_list(self):
+        dialog = self._dialog()
+        self._switch_to(dialog, "openai")
+        ids = {dialog._other_model_box.itemData(i)
+              for i in range(dialog._other_model_box.count())}
+        self.assertIn("gpt-4o", ids)
+        self.assertGreater(dialog._other_model_box.count(), 1)
+
+    def test_openai_model_choice_is_remembered_separately_from_groq(self):
+        dialog = self._dialog()
+        self._switch_to(dialog, "openai")
+        index = dialog._other_model_box.findData("gpt-4o-mini")
+        dialog._other_model_box.setCurrentIndex(index)
+        dialog._save_other_model()
+
+        from app.agent.config import model_settings_key
+        self.assertEqual(self.settings.get(model_settings_key("openai")), "gpt-4o-mini")
+        self.assertEqual(self.settings.get(model_settings_key("groq"), ""), "")
 
     def test_openrouter_with_no_key_shows_a_clear_placeholder_not_an_empty_box(self):
         """OpenRouter has no seed list (unlike Groq's six), so with no key

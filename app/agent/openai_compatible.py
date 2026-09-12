@@ -312,10 +312,12 @@ class OpenAICompatibleClient:
 
     def send(self, *, system: str, messages: list[dict[str, Any]], tools: list[dict[str, Any]],
              on_text=None) -> AgentResponse:
-        """One round-trip. ``on_text`` is accepted for protocol compatibility
-        but unused - streaming is a fast-follow, not required for the agent
-        loop to work; AgentSession already falls back to blocking calls for
-        any transport that doesn't stream (see ``_accepts_streaming``).
+        """One round-trip. With ``on_text`` given, the answer streams over
+        Server-Sent Events and each text fragment is handed to it as it
+        arrives - the same contract ``ClaudeClient.send`` offers, so
+        ``AgentSession`` cannot tell which provider it is talking to (see
+        ``_accepts_streaming`` in session.py, which only checks that ``send``
+        accepts the parameter at all).
 
         Retries exactly once, on exactly one thing: some models behind these
         gateways only accept the newer ``max_completion_tokens`` name and
@@ -334,6 +336,8 @@ class OpenAICompatibleClient:
         }
         if tools:
             body["tools"] = tools_param(tools)
+        if on_text is not None:
+            return self._send_streaming(body, on_text)
         response = self._post(body)
         if (response.status_code == 400 and self._max_tokens_param == "max_tokens"
                 and _looks_like_unrecognized_param(error_message(response), "max_tokens")):
@@ -342,6 +346,117 @@ class OpenAICompatibleClient:
             body["max_completion_tokens"] = self.config.max_tokens
             response = self._post(body)
         return self._handle_response(response)
+
+    def _send_streaming(self, body: dict[str, Any], on_text) -> AgentResponse:
+        """``send()``'s streaming path: ``stream: true`` over SSE, with the
+        same one-shot ``max_tokens`` -> ``max_completion_tokens`` fallback as
+        the non-streaming path, applied locally so a streaming-capable model
+        that rejects the classic name self-heals exactly like a
+        non-streaming one does.
+        """
+        body = dict(body, stream=True, stream_options={"include_usage": True})
+        result = self._stream_once(body, on_text)
+        if result is not None:
+            return result
+        # The first chunk never arrived because the request itself was
+        # rejected for the classic max_tokens name - retry once, same as the
+        # non-streaming path.
+        self._max_tokens_param = "max_completion_tokens"
+        body.pop("max_tokens", None)
+        body["max_completion_tokens"] = self.config.max_tokens
+        result = self._stream_once(body, on_text)
+        if result is None:
+            raise ClaudeError(f"{self.label} rejected the streaming request.")
+        return result
+
+    def _stream_once(self, body: dict[str, Any], on_text) -> AgentResponse | None:
+        """One streaming attempt. Returns None only when the request failed
+        specifically because of the classic ``max_tokens`` name, so the
+        caller can retry with the renamed parameter - every other failure
+        raises directly, same as the non-streaming path.
+        """
+        text_parts: list[str] = []
+        # OpenAI's streamed tool calls arrive as argument-string fragments,
+        # indexed by position in the (eventual) tool_calls array - a call's
+        # name and id can each arrive whole in one chunk while its arguments
+        # trickle in over many, so each slot accumulates independently and
+        # nothing is parsed until the stream ends.
+        calls_by_index: dict[int, dict[str, str]] = {}
+        finish_reason = ""
+        usage: dict[str, Any] = {}
+        try:
+            with self._client.stream("POST", "/chat/completions", json=body) as response:
+                if response.status_code != 200:
+                    response.read()
+                    if (response.status_code == 400
+                            and self._max_tokens_param == "max_tokens"
+                            and _looks_like_unrecognized_param(
+                                error_message(response), "max_tokens")):
+                        return None
+                    return self._handle_response(response)
+                for line in response.iter_lines():
+                    if not line or not line.startswith("data:"):
+                        continue
+                    payload = line[len("data:"):].strip()
+                    if payload == "[DONE]":
+                        break
+                    try:
+                        chunk = json.loads(payload)
+                    except ValueError:
+                        continue
+                    choice = (chunk.get("choices") or [{}])[0]
+                    delta = choice.get("delta") or {}
+                    fragment = delta.get("content")
+                    if fragment:
+                        text_parts.append(fragment)
+                        on_text(fragment)
+                    for tool_delta in delta.get("tool_calls") or []:
+                        index = tool_delta.get("index", 0)
+                        slot = calls_by_index.setdefault(
+                            index, {"id": "", "name": "", "arguments": ""})
+                        if tool_delta.get("id"):
+                            slot["id"] = tool_delta["id"]
+                        function = tool_delta.get("function") or {}
+                        if function.get("name"):
+                            slot["name"] += function["name"]
+                        if function.get("arguments"):
+                            slot["arguments"] += function["arguments"]
+                    if choice.get("finish_reason"):
+                        finish_reason = choice["finish_reason"]
+                    if chunk.get("usage"):
+                        usage = chunk["usage"]
+        except httpx.TimeoutException as exc:
+            raise ClaudeError(f"{self.label} took too long to respond.",
+                              retryable=True, detail=str(exc)) from exc
+        except httpx.HTTPError as exc:
+            raise ClaudeError(f"Could not reach {self.label}. Check the network connection.",
+                              retryable=True, detail=str(exc)) from exc
+
+        text = "".join(text_parts)
+        raw_blocks: list[dict[str, Any]] = []
+        calls: list[ToolCall] = []
+        if text:
+            raw_blocks.append({"type": "text", "text": text})
+        for index in sorted(calls_by_index):
+            slot = calls_by_index[index]
+            try:
+                arguments = json.loads(slot["arguments"] or "{}")
+            except (TypeError, ValueError):
+                arguments = {}
+            if not isinstance(arguments, dict):
+                arguments = {}
+            call_id = slot["id"] or f"call_{index}"
+            name = slot["name"]
+            raw_blocks.append({"type": "tool_use", "id": call_id, "name": name, "input": arguments})
+            calls.append(ToolCall(id=call_id, name=name, arguments=arguments))
+        return AgentResponse(
+            text=text.strip(),
+            tool_calls=calls,
+            stop_reason=_STOP_REASONS.get(finish_reason, finish_reason or "end_turn"),
+            raw_content=raw_blocks,
+            input_tokens=usage.get("prompt_tokens", 0) or 0,
+            output_tokens=usage.get("completion_tokens", 0) or 0,
+        )
 
     def _handle_response(self, response: "httpx.Response") -> AgentResponse:
         status = response.status_code
@@ -474,6 +589,52 @@ class OpenAICompatibleClient:
         keeps the dropdown non-empty for a key that has not been tested yet.
         """
         return []
+
+
+class OpenAIClient(OpenAICompatibleClient):
+    """https://platform.openai.com - the OpenAI API itself, not merely
+    something that speaks its wire format. Subclassing the same adapter the
+    OpenAI-compatible gateways use is deliberate: OpenAI's own
+    ``/v1/chat/completions`` endpoint is the format those gateways imitate,
+    so there is no separate execution path to build or maintain here."""
+
+    base_url = "https://api.openai.com/v1"
+    label = "OpenAI"
+
+    #: Not chat-completion models at all - present in /v1/models but unable
+    #: to run the agent loop (audio transcription/synthesis, moderation,
+    #: image generation, embeddings, and the legacy text-completion-only
+    #: models that predate function calling).
+    _NOT_CHAT_MODELS = (
+        "whisper", "tts", "moderation", "dall-e", "embedding",
+        "davinci", "babbage", "curie", "ada",
+    )
+
+    #: A small, curated starting point so the dropdown is never empty before
+    #: a key is entered or a live refresh completes - see GroqClient's own
+    #: seed list for why this is deliberately not treated as authoritative;
+    #: "Refresh model list" replaces this with the account's own live
+    #: /v1/models listing, which is always preferred.
+    _SEED_MODEL_IDS = (
+        "gpt-4o",
+        "gpt-4o-mini",
+        "gpt-4.1",
+        "gpt-4.1-mini",
+        "o3-mini",
+    )
+
+    @classmethod
+    def capability_of(cls, entry: dict[str, Any]) -> tuple[bool, str]:
+        model_id = (entry.get("id") or "").lower()
+        if cls.is_denylisted(model_id):
+            return False, cls.DENYLIST_REASON
+        if any(marker in model_id for marker in cls._NOT_CHAT_MODELS):
+            return False, "not a chat model - cannot run the agent loop"
+        return True, "tool support unconfirmed - use Test Connection to check"
+
+    @classmethod
+    def seed_models(cls) -> list[dict[str, str]]:
+        return [{"id": model_id} for model_id in cls._SEED_MODEL_IDS]
 
 
 class GroqClient(OpenAICompatibleClient):
