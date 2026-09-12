@@ -86,26 +86,45 @@ def _is_user_content_turn(blocks: list[Any]) -> bool:
     return any(_block_get(block, "type") in ("text", "image") for block in blocks)
 
 
-def _user_content_turn(blocks: list[Any]) -> dict[str, Any]:
+def _user_content_turn(blocks: list[Any], *, supports_images: bool) -> dict[str, Any]:
     """A user-composed text(+image) turn -> an OpenAI-shaped user message.
 
-    This provider path has no image support wired up (see
-    app.agent.config.provider_supports_images - only Anthropic is marked
-    True today), so an image block here is never silently dropped: it is
-    replaced with a plain-text note saying so, and the request still goes
-    out with whatever text there was.
+    When ``supports_images`` is True (OpenAI itself - see
+    OpenAICompatibleClient.SUPPORTS_IMAGES), an image block becomes a real
+    ``image_url`` data-URI part, in OpenAI's own multi-part content shape.
+    Otherwise it is never silently dropped either: it is replaced with a
+    plain-text note saying so, and the request still goes out with whatever
+    text there was. Either way nothing here decides *whether* to send an
+    image - that gate is app.agent.config.provider_supports_images, checked
+    before AgentSession.send() is ever called with one.
     """
-    parts: list[str] = []
+    if supports_images and any(_block_get(b, "type") == "image" for b in blocks):
+        parts: list[dict[str, Any]] = []
+        for block in blocks:
+            kind = _block_get(block, "type")
+            if kind == "text":
+                text = _block_get(block, "text")
+                if text:
+                    parts.append({"type": "text", "text": text})
+            elif kind == "image":
+                source = _block_get(block, "source") or {}
+                media_type = _block_get(source, "media_type", "image/png")
+                data = _block_get(source, "data", "")
+                parts.append({"type": "image_url",
+                             "image_url": {"url": f"data:{media_type};base64,{data}"}})
+        return {"role": "user", "content": parts}
+
+    parts_text: list[str] = []
     for block in blocks:
         kind = _block_get(block, "type")
         if kind == "text":
             text = _block_get(block, "text")
             if text:
-                parts.append(text)
+                parts_text.append(text)
         elif kind == "image":
-            parts.append("[An image was attached here, but this provider "
-                         "is not configured to receive images - it was not sent.]")
-    return {"role": "user", "content": "\n".join(parts)}
+            parts_text.append("[An image was attached here, but this provider "
+                              "is not configured to receive images - it was not sent.]")
+    return {"role": "user", "content": "\n".join(parts_text)}
 
 
 def _tool_result_turns(blocks: list[Any]) -> list[dict[str, Any]]:
@@ -127,7 +146,8 @@ def _tool_result_turns(blocks: list[Any]) -> list[dict[str, Any]]:
     return turns
 
 
-def messages_param(system: str, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def messages_param(system: str, messages: list[dict[str, Any]], *,
+                   supports_images: bool = False) -> list[dict[str, Any]]:
     """PyBrowser's Anthropic-shaped conversation -> an OpenAI-shaped one."""
     out: list[dict[str, Any]] = [{"role": "system", "content": system}] if system else []
     for message in messages:
@@ -141,7 +161,7 @@ def messages_param(system: str, messages: list[dict[str, Any]]) -> list[dict[str
         if role == "assistant":
             out.append(_assistant_turn(content))
         elif role == "user" and _is_user_content_turn(content):
-            out.append(_user_content_turn(content))
+            out.append(_user_content_turn(content, supports_images=supports_images))
         else:
             out.extend(_tool_result_turns(content))
     return out
@@ -304,6 +324,17 @@ class OpenAICompatibleClient:
     DENYLIST: frozenset[str] = frozenset()
     DENYLIST_REASON = "does not support the custom tool interface PyBrowser requires"
 
+    #: Whether this provider's wire format is actually translated to carry
+    #: an image block (see _user_content_turn) - not a claim that every
+    #: model this provider offers can see images, the same way tool support
+    #: is "unconfirmed - use Test Connection" rather than verified per
+    #: model. False by default; OpenAI is the only override today because
+    #: its endpoint takes the same image_url data-URI shape this class
+    #: already knows how to build. See app.agent.config.provider_supports_images,
+    #: which is the actual gate checked before AgentSession.send() is ever
+    #: called with an image - this flag only controls what happens if it is.
+    SUPPORTS_IMAGES: bool = False
+
     @classmethod
     def is_denylisted(cls, model_id: str) -> bool:
         return (model_id or "").strip().lower() in cls.DENYLIST
@@ -361,7 +392,7 @@ class OpenAICompatibleClient:
         """
         body: dict[str, Any] = {
             "model": self._model,
-            "messages": messages_param(system, messages),
+            "messages": messages_param(system, messages, supports_images=self.SUPPORTS_IMAGES),
             self._max_tokens_param: self.config.max_tokens,
         }
         if tools:
@@ -652,6 +683,13 @@ class OpenAIClient(OpenAICompatibleClient):
         "gpt-4.1-mini",
         "o3-mini",
     )
+
+    #: OpenAI's endpoint accepts the image_url data-URI shape this adapter
+    #: builds - see _user_content_turn. Not every OpenAI model can see
+    #: images (o3-mini, for instance), the same "unconfirmed per model" gap
+    #: as tool support; a non-vision model simply rejects the request, which
+    #: surfaces as an ordinary API error rather than a silent drop.
+    SUPPORTS_IMAGES = True
 
     @classmethod
     def capability_of(cls, entry: dict[str, Any]) -> tuple[bool, str]:

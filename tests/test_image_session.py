@@ -24,7 +24,8 @@ os.environ.setdefault("PYBROWSER_DATA_DIR", tempfile.mkdtemp(prefix="pybrowser-i
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
 from app.agent.config import (  # noqa: E402
-    PROVIDER_ANTHROPIC, PROVIDER_GROQ, AgentConfig, ContextLimits, provider_supports_images,
+    PROVIDER_ANTHROPIC, PROVIDER_GROQ, PROVIDER_OPENAI, AgentConfig, ContextLimits,
+    provider_supports_images,
 )
 from app.agent.openai_compatible import messages_param  # noqa: E402
 from app.agent.session import AgentSession  # noqa: E402
@@ -60,6 +61,9 @@ def pump(predicate, timeout_ms: int = 15000) -> bool:
 class ProviderCapabilityTests(unittest.TestCase):
     def test_anthropic_supports_images(self) -> None:
         self.assertTrue(provider_supports_images(PROVIDER_ANTHROPIC))
+
+    def test_openai_supports_images(self) -> None:
+        self.assertTrue(provider_supports_images(PROVIDER_OPENAI))
 
     def test_groq_does_not_yet(self) -> None:
         self.assertFalse(provider_supports_images(PROVIDER_GROQ))
@@ -143,6 +147,34 @@ class OpenAICompatibleImageFallbackTests(unittest.TestCase):
         messages = [{"role": "user", "content": "Hello"}]
         out = messages_param("system", messages)
         self.assertEqual(out[-1], {"role": "user", "content": "Hello"})
+
+    def test_supports_images_true_builds_an_image_url_data_uri(self) -> None:
+        messages = [{"role": "user", "content": [
+            {"type": "text", "text": "Look at this."},
+            {"type": "image", "source": {"type": "base64", "media_type": "image/png",
+                                         "data": "Zm9v"}},
+        ]}]
+        out = messages_param("system", messages, supports_images=True)
+        user_turn = out[-1]
+        self.assertEqual(user_turn["role"], "user")
+        self.assertIsInstance(user_turn["content"], list)
+        kinds = [part["type"] for part in user_turn["content"]]
+        self.assertEqual(kinds, ["text", "image_url"])
+        self.assertEqual(user_turn["content"][0]["text"], "Look at this.")
+        self.assertEqual(user_turn["content"][1]["image_url"]["url"],
+                         "data:image/png;base64,Zm9v")
+
+    def test_openai_client_declares_image_support(self) -> None:
+        from app.agent.openai_compatible import OpenAIClient
+
+        self.assertTrue(OpenAIClient.SUPPORTS_IMAGES)
+
+    def test_groq_and_gemini_and_openrouter_do_not(self) -> None:
+        from app.agent.openai_compatible import GeminiClient, GroqClient, OpenRouterClient
+
+        self.assertFalse(GroqClient.SUPPORTS_IMAGES)
+        self.assertFalse(GeminiClient.SUPPORTS_IMAGES)
+        self.assertFalse(OpenRouterClient.SUPPORTS_IMAGES)
 
 
 if __name__ == "__main__":

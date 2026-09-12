@@ -185,6 +185,7 @@ PROVIDERS: tuple[ProviderInfo, ...] = (
         "OPENAI_API_KEY",
         "Paid; see platform.openai.com/api-keys. Model list is fetched live "
         "from your account.",
+        supports_images=True,
     ),
     ProviderInfo(
         PROVIDER_GEMINI, "Google Gemini (recommended for testing)",

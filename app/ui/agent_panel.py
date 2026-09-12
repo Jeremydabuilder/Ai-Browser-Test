@@ -19,6 +19,8 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QListWidget,
+    QListWidgetItem,
     QPlainTextEdit,
     QPushButton,
     QSizePolicy,
@@ -26,6 +28,8 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+
+from app.agent.context_items import ACTION_FILE, ACTION_IMAGE, ContextComposer, context_icon
 
 from app.ui import icons, theme
 from app.ui.flow_layout import FlowLayout
@@ -99,6 +103,14 @@ class _MessageBox(QPlainTextEdit):
     """
 
     submitted = Signal()
+    #: Emitted while the @-mention popup is open (see AgentPanel's
+    #: _mention_popup) - Up/Down/Enter/Escape are redirected to it instead
+    #: of their normal effect (newline, submit) so the popup can be driven
+    #: from the keyboard without the input ever losing focus.
+    mention_up = Signal()
+    mention_down = Signal()
+    mention_accept = Signal()
+    mention_cancel = Signal()
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -110,17 +122,63 @@ class _MessageBox(QPlainTextEdit):
         self._max_height = 132
         self.setFixedHeight(self._min_height)
         self.document().contentsChanged.connect(self._fit_to_content)
+        #: Set by AgentPanel while its @-mention popup is visible.
+        self.mention_active = False
 
     def _fit_to_content(self) -> None:
         wanted = int(self.document().size().height()) + 16
         self.setFixedHeight(max(self._min_height, min(self._max_height, wanted)))
 
     def keyPressEvent(self, event: QKeyEvent) -> None:  # noqa: N802
+        if self.mention_active:
+            key = event.key()
+            if key == Qt.Key.Key_Up:
+                self.mention_up.emit()
+                return
+            if key == Qt.Key.Key_Down:
+                self.mention_down.emit()
+                return
+            if key in (Qt.Key.Key_Return, Qt.Key.Key_Enter, Qt.Key.Key_Tab):
+                self.mention_accept.emit()
+                return
+            if key == Qt.Key.Key_Escape:
+                self.mention_cancel.emit()
+                return
         enter = event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter)
         if enter and not (event.modifiers() & Qt.KeyboardModifier.ShiftModifier):
             self.submitted.emit()
             return
         super().keyPressEvent(event)
+
+    def mention_query(self) -> str | None:
+        """The text after the last unspaced "@" before the cursor, or None
+        if the cursor is not currently inside a mention (no "@" on this
+        line, or whitespace/newline between it and the cursor)."""
+        cursor = self.textCursor()
+        line_start = cursor.block().position()
+        before_cursor = self.toPlainText()[line_start:cursor.position()]
+        at_index = before_cursor.rfind("@")
+        if at_index == -1:
+            return None
+        token = before_cursor[at_index + 1:]
+        if any(ch.isspace() for ch in token):
+            return None
+        return token
+
+    def remove_current_mention(self) -> None:
+        """Delete the "@token" just accepted, so picking an item replaces
+        the typed text rather than leaving it alongside the new chip."""
+        cursor = self.textCursor()
+        line_start = cursor.block().position()
+        text = self.toPlainText()
+        before_cursor = text[line_start:cursor.position()]
+        at_index = before_cursor.rfind("@")
+        if at_index == -1:
+            return
+        cursor.setPosition(line_start + at_index)
+        cursor.setPosition(line_start + len(before_cursor), QTextCursor.MoveMode.KeepAnchor)
+        cursor.removeSelectedText()
+        self.setTextCursor(cursor)
 
 
 class ConfirmationBar(QFrame):
@@ -542,7 +600,7 @@ class AgentPanel(QWidget):
     """The right-hand panel. Install it with MainWindow.set_side_panel()."""
 
     def __init__(self, session: AgentSession | None, parent: QWidget | None = None,
-                 missions=None, mcp=None) -> None:
+                 missions=None, mcp=None, browser=None) -> None:
         super().__init__(parent)
         m = theme.METRICS
         self._colours = theme.palette_for(QApplication.instance())
@@ -558,6 +616,14 @@ class AgentPanel(QWidget):
         #: to receive its connection_dropped signal. None when MCP is
         #: unavailable, in which case the bar simply never appears.
         self._mcp = mcp
+        #: The universal @-context selection (see app/agent/context_items.py).
+        #: Built once here, from the same collaborators MainWindow already
+        #: owns, rather than looked up per keystroke.
+        self._composer = ContextComposer(browser=browser, missions=missions, mcp=mcp)
+        #: Candidates currently shown in the @-mention popup, in the same
+        #: order as the popup's rows - so an arrow-key move or Enter can
+        #: index straight into it without re-querying the composer.
+        self._mention_candidates: list = []
         #: True while an answer is being written into the transcript piece by
         #: piece, so the finished message is not appended a second time.
         self._streaming = False
@@ -784,8 +850,49 @@ class AgentPanel(QWidget):
         if self._mcp is not None:
             self._mcp.connection_dropped.connect(self.mcp_disconnect_bar.show_dropped)
 
+        # Selected @-context, as a wrapping row of removable chips - hidden
+        # entirely while nothing is selected, the same "don't clutter an
+        # idle panel" rule as usage/recovery above.
+        self.context_chips = QWidget(self)
+        self._context_chip_flow = FlowLayout(self.context_chips, spacing=m.space_1)
+        self.context_chips.hide()
+        layout.addWidget(self.context_chips)
+
+        # Shown only when a selected item needs a vision-capable provider
+        # the configured one is not (see ContextComposer.vision_conflicts) -
+        # the item stays selected and chipped; only sending it is refused,
+        # exactly as MainWindow's screenshot/image flows already refuse a
+        # provider mismatch rather than silently dropping the image.
+        self.vision_warning = QLabel("", self)
+        self.vision_warning.setWordWrap(True)
+        self.vision_warning.setStyleSheet(
+            f"color:{c.warning_text}; background:{c.warning_soft};"
+            f" border-radius:{m.radius_sm}px; padding:{m.space_2}px;"
+            f" font-size:{m.text_xs}px;")
+        self.vision_warning.hide()
+        layout.addWidget(self.vision_warning)
+
+        # The @-mention candidate popup. A plain QListWidget rather than a
+        # QCompleter: it needs to show a mixed catalogue (tabs, PDFs,
+        # Missions, MCP tools, the two attach actions) with a subtitle per
+        # row, not a flat string list. An ordinary row in the panel's own
+        # layout - not a floating top-level window - so it stays inside the
+        # docked panel's bounds and needs no separate positioning logic;
+        # hidden until "@" is typed (see _update_mentions).
+        self._mention_popup = QListWidget(self)
+        self._mention_popup.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self._mention_popup.setMaximumHeight(140)
+        self._mention_popup.itemClicked.connect(self._accept_mention_item)
+        self._mention_popup.hide()
+        layout.addWidget(self._mention_popup)
+
         self.input = _MessageBox(self)
         layout.addWidget(self.input)
+        self.input.textChanged.connect(self._update_mentions)
+        self.input.mention_up.connect(lambda: self._move_mention_selection(-1))
+        self.input.mention_down.connect(lambda: self._move_mention_selection(1))
+        self.input.mention_accept.connect(self._accept_current_mention)
+        self.input.mention_cancel.connect(self._hide_mention_popup)
 
         buttons = QHBoxLayout()
         buttons.setSpacing(m.space_2)
@@ -914,6 +1021,7 @@ class AgentPanel(QWidget):
         if not text or self._session.busy:
             return
         self.input.clear()
+        self._hide_mention_popup()
         self._answered = self._failed = self._stopped = False
         self.recovery.hide()
         self.retry_bar.hide()
@@ -921,7 +1029,161 @@ class AgentPanel(QWidget):
         self._begin_conversation()
         self._append("user", text)
         self._maybe_start_mission(text)
-        self._session.send(text)
+        combined, image = self._composer.build(
+            text, provider_supports_images=self._provider_supports_images())
+        self._session.send(combined, image=image)
+        self._composer.clear()
+        self._refresh_context_ui()
+
+    # -- universal @context ------------------------------------------------
+    def _update_mentions(self) -> None:
+        """Called on every keystroke in the input: shows, updates, or hides
+        the candidate popup depending on whether the cursor now sits inside
+        an "@token"."""
+        query = self.input.mention_query()
+        if query is None:
+            self._hide_mention_popup()
+            return
+        self._mention_candidates = self._composer.search(query)
+        self._mention_popup.clear()
+        for candidate in self._mention_candidates:
+            label = f"{context_icon(candidate.kind)}  {candidate.title}"
+            if candidate.subtitle:
+                label += f"   {candidate.subtitle}"
+            self._mention_popup.addItem(QListWidgetItem(label))
+        if not self._mention_candidates:
+            self._hide_mention_popup()
+            return
+        self._mention_popup.setCurrentRow(0)
+        self.input.mention_active = True
+        self._mention_popup.show()
+
+    def _hide_mention_popup(self) -> None:
+        self._mention_popup.hide()
+        self.input.mention_active = False
+        self._mention_candidates = []
+
+    def _move_mention_selection(self, delta: int) -> None:
+        count = self._mention_popup.count()
+        if count == 0:
+            return
+        row = (self._mention_popup.currentRow() + delta) % count
+        self._mention_popup.setCurrentRow(row)
+
+    def _accept_current_mention(self) -> None:
+        row = self._mention_popup.currentRow()
+        if 0 <= row < len(self._mention_candidates):
+            self._select_mention(self._mention_candidates[row])
+
+    def _accept_mention_item(self, item: QListWidgetItem) -> None:
+        row = self._mention_popup.row(item)
+        if 0 <= row < len(self._mention_candidates):
+            self._select_mention(self._mention_candidates[row])
+
+    def _select_mention(self, candidate) -> None:
+        """Turn an accepted candidate into a selected chip - or, for the two
+        action entries, open the same native pickers Tools -> Add Local
+        File/Image to Context already use, so there is exactly one file-
+        reading and one image-reading code path in the whole app."""
+        self.input.remove_current_mention()
+        self._hide_mention_popup()
+        if candidate.kind == ACTION_FILE:
+            self._pick_local_file()
+        elif candidate.kind == ACTION_IMAGE:
+            self._pick_local_image()
+        else:
+            self._composer.add(candidate)
+        self._refresh_context_ui()
+        self.input.setFocus()
+
+    def _pick_local_file(self) -> None:
+        from PySide6.QtWidgets import QFileDialog, QMessageBox
+
+        from app.browser.file_context import SUPPORTED_SUFFIXES, FileParsingError
+
+        patterns = " ".join(f"*{suffix}" for suffix in sorted(SUPPORTED_SUFFIXES))
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Add File to Context", "", f"Supported files ({patterns})")
+        if not path:
+            return
+        try:
+            self._composer.add_file(path)
+        except FileParsingError as exc:
+            QMessageBox.warning(self, "Could not read file", str(exc))
+
+    def _pick_local_image(self) -> None:
+        from PySide6.QtWidgets import QFileDialog, QMessageBox
+
+        from app.browser.image_context import SUPPORTED_IMAGE_SUFFIXES, ImageContextError
+
+        patterns = " ".join(f"*{suffix}" for suffix in sorted(SUPPORTED_IMAGE_SUFFIXES))
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Add Image to Context", "", f"Images ({patterns})")
+        if not path:
+            return
+        try:
+            self._composer.add_image_file(path)
+        except ImageContextError as exc:
+            QMessageBox.warning(self, "Could not read image", str(exc))
+
+    def _refresh_context_ui(self) -> None:
+        self._refresh_context_chips()
+        self._refresh_vision_warning()
+
+    def _refresh_context_chips(self) -> None:
+        while self._context_chip_flow.count():
+            taken = self._context_chip_flow.takeAt(0)
+            widget = taken.widget() if taken is not None else None
+            if widget is not None:
+                widget.deleteLater()
+        items = self._composer.selected
+        for item in items:
+            button = QPushButton(f"{context_icon(item.kind)}: {item.title}  ×",
+                                 self.context_chips)
+            button.setProperty("kind", "chip")
+            button.setToolTip(item.subtitle)
+            button.clicked.connect(
+                lambda _checked=False, item_id=item.id: self._remove_chip(item_id))
+            self._context_chip_flow.addWidget(button)
+        if len(items) > 1:
+            clear_all = QPushButton("Clear all", self.context_chips)
+            clear_all.setProperty("kind", "chip")
+            clear_all.setToolTip("Remove every selected context item")
+            clear_all.clicked.connect(self._clear_all_context)
+            self._context_chip_flow.addWidget(clear_all)
+        self.context_chips.setVisible(bool(items))
+
+    def _clear_all_context(self) -> None:
+        self._composer.clear()
+        self._refresh_context_ui()
+
+    def _remove_chip(self, item_id: str) -> None:
+        self._composer.remove(item_id)
+        self._refresh_context_ui()
+
+    def _refresh_vision_warning(self) -> None:
+        conflicts = self._composer.vision_conflicts(self._provider_supports_images())
+        if not conflicts:
+            self.vision_warning.hide()
+            return
+        names = ", ".join(f'"{item.title}"' for item in conflicts)
+        provider_label = ""
+        if self._session is not None:
+            from app.agent.config import describe_provider
+
+            provider_label = describe_provider(self._session.config.provider).label
+        suffix = f" ({provider_label} is not one)" if provider_label else ""
+        self.vision_warning.setText(
+            f"{names} needs a vision-capable provider{suffix} - still selected, "
+            "but will not be sent until you switch provider.")
+        self.vision_warning.show()
+
+    def _provider_supports_images(self) -> bool:
+        if self._session is None:
+            return False
+        from app.agent.config import provider_supports_images
+
+        return provider_supports_images(self._session.config.provider)
 
     def _maybe_start_mission(self, text: str) -> None:
         """Auto-promote a typed, task-shaped message into a Mission, when
