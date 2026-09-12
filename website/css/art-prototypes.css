@@ -1,0 +1,244 @@
+/* ============================================================
+   DEV-ONLY ART-DIRECTION PROTOTYPES — NOT PART OF THE SHIPPED SITE
+   ============================================================
+   Three alternate treatments of the same background/atmosphere layer
+   the live site already has (body::before's quiet wash, and the
+   .hero/.story/.final-cta "cinematic stage" sections). Nothing here
+   touches layout, typography, copy, or the reveal/motion system - only
+   the atmosphere behind everything, which is what was asked for.
+
+   Activate with ?art=a | ?art=b | ?art=c in the URL (persists via
+   localStorage until ?art=off). Everything below is scoped under
+   html[data-art="…"], so with no attribute present - the default for
+   every real visitor - this file does precisely nothing.
+   See website/ART_PROTOTYPES.md for the write-up of each concept. */
+
+html[data-art] .motif { display: none; } /* the shipped π/rings motif - each concept replaces it with its own */
+html[data-art] body::before { animation: none; }
+
+/* ============================================================
+   CONCEPT A — Intelligent Spatial System
+   Deep neutral graphite, not purple-first. Thin luminous node-link
+   paths and orbital arcs - information moving through a system.
+   ============================================================ */
+html[data-art="a"] {
+  --a-bg: #0a0c10;
+  --a-bg-2: #10141b;
+  --a-line: #3ee0d8;
+  --a-line-dim: #4a6a72;
+  --a-accent: #5ee8dc;
+}
+/* Note: body itself stays the site's normal light --bg here (unchanged) -
+   only the .hero/.story/.final-cta "stage" sections and the faint
+   body::before wash change. The "quiet" content sections (Missions,
+   Technology, etc.) are meant to stay light and legible in every
+   concept - none of these prototypes is a whole-site dark-mode swap. */
+html[data-art="a"] body::before {
+  background:
+    radial-gradient(50% 40% at 50% 0%, color-mix(in srgb, var(--a-line) 5%, transparent), transparent 70%),
+    radial-gradient(40% 34% at 84% 86%, color-mix(in srgb, var(--a-line) 4%, transparent), transparent 74%);
+}
+/* A sparse node/path field - a handful of nodes joined by thin lines and
+   two long orbital arcs, tiled loosely so it reads as one continuous
+   system rather than a repeating pattern. Kept to strokes only (no
+   fills, no dots-as-particles) so it stays a "path", not "stars". */
+html[data-art="a"] .hero,
+html[data-art="a"] .story,
+html[data-art="a"] .final-cta {
+  --stage-bg-1: #07090c;
+  --stage-bg-2: #0d1116;
+  --stage-surface: #11151b;
+  --stage-line: rgba(94, 232, 220, .14);
+  --stage-accent: #5ee8dc;
+  --stage-accent-2: #7fb8ff;
+  --stage-accent-3: #9fe8d8;
+  --stage-accent-soft: #0f2a28;
+  background:
+    radial-gradient(60% 50% at 20% 15%, color-mix(in srgb, var(--a-line) 7%, transparent), transparent 72%),
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 900 900'%3E%3Cg fill='none' stroke='%233ee0d8' stroke-width='1' stroke-opacity='.28'%3E%3Ccircle cx='120' cy='140' r='3' fill='%233ee0d8' stroke='none'/%3E%3Ccircle cx='340' cy='90' r='2.4' fill='%233ee0d8' stroke='none'/%3E%3Ccircle cx='560' cy='210' r='3' fill='%233ee0d8' stroke='none'/%3E%3Ccircle cx='760' cy='120' r='2' fill='%233ee0d8' stroke='none'/%3E%3Ccircle cx='240' cy='420' r='2.6' fill='%233ee0d8' stroke='none'/%3E%3Ccircle cx='660' cy='480' r='2.2' fill='%233ee0d8' stroke='none'/%3E%3Cpath d='M120 140 L340 90 L560 210 L760 120'/%3E%3Cpath d='M340 90 L240 420 L660 480'/%3E%3Cpath d='M560 210 L660 480'/%3E%3Cpath d='M-40 700 A 520 520 0 0 1 700 -60' stroke-opacity='.16'/%3E%3Cpath d='M200 940 A 640 640 0 0 1 940 260' stroke-opacity='.12'/%3E%3C/g%3E%3C/svg%3E"),
+    linear-gradient(160deg, var(--stage-bg-2), var(--stage-bg-1) 65%);
+  background-repeat: no-repeat, no-repeat, no-repeat;
+  background-size: auto, 130% 130%, cover;
+  background-position: center, -8% -12%, center;
+  color: var(--stage-text, #f5f5fa);
+}
+/* A slow independent drift on the node field only - the gradient/base
+   stays still, so the "system" feels alive without the whole section
+   swaying. */
+html[data-art="a"] .hero::before,
+html[data-art="a"] .story::before,
+html[data-art="a"] .final-cta::before {
+  content: "";
+  position: absolute;
+  inset: -10%;
+  z-index: 0;
+  pointer-events: none;
+  background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 900 900'%3E%3Cg fill='none' stroke='%237fb8ff' stroke-width='1' stroke-opacity='.16'%3E%3Ccircle cx='500' cy='650' r='2.4' fill='%237fb8ff' stroke='none'/%3E%3Ccircle cx='800' cy='700' r='2' fill='%237fb8ff' stroke='none'/%3E%3Cpath d='M500 650 L800 700'/%3E%3Cpath d='M120 500 A 380 380 0 0 0 500 880' stroke-opacity='.14'/%3E%3C/g%3E%3C/svg%3E");
+  background-size: 120% 120%;
+  animation: a-drift 60s linear infinite alternate;
+}
+@keyframes a-drift {
+  from { transform: translate3d(0,0,0); }
+  to   { transform: translate3d(-3%, 2%, 0); }
+}
+html[data-art="a"] .section--muted { background: color-mix(in srgb, var(--a-bg-2) 4%, var(--surface-alt)); }
+
+/* ============================================================
+   CONCEPT B — Living Browser Environment
+   The product's own geometry (tabs, address bar, layered windows
+   receding into depth) as the atmosphere, kept abstract - silhouettes,
+   not literal screenshots.
+   ============================================================ */
+html[data-art="b"] {
+  --b-bg: #0c0e13;
+  --b-accent: #6d8bff;
+}
+html[data-art="b"] body::before {
+  background:
+    radial-gradient(46% 30% at 50% -6%, color-mix(in srgb, var(--b-accent) 5%, transparent), transparent 74%);
+}
+/* Two or three soft rounded-rectangle "windows" receding in depth
+   (offset, scaled down, progressively blurred/dimmer) plus a thin
+   tab-strip suggestion along the top edge and an address-bar pill
+   silhouette - all line-art, nothing filled solid, so it reads as
+   structure glimpsed behind glass rather than a fake screenshot. */
+html[data-art="b"] .hero,
+html[data-art="b"] .story,
+html[data-art="b"] .final-cta {
+  --stage-bg-1: #08090d;
+  --stage-bg-2: #0f1219;
+  --stage-surface: #12151c;
+  --stage-line: rgba(109, 139, 255, .16);
+  --stage-accent: #7d9bff;
+  --stage-accent-2: #8fd6ff;
+  --stage-accent-3: #b7c6ff;
+  --stage-accent-soft: #17203e;
+  background:
+    linear-gradient(160deg, var(--stage-bg-2), var(--stage-bg-1) 65%);
+  overflow: hidden;
+}
+html[data-art="b"] .hero::before,
+html[data-art="b"] .story::before,
+html[data-art="b"] .final-cta::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background-repeat: no-repeat;
+  background-image:
+    /* far window */
+    linear-gradient(transparent, transparent),
+    /* tab strip, top-right */
+    repeating-linear-gradient(90deg, transparent 0 64px, rgba(125,155,255,.10) 64px 66px, transparent 66px 130px);
+  background-size: 100% 100%, 46% 40px;
+  background-position: center, 100% 0%;
+}
+html[data-art="b"] .hero::after,
+html[data-art="b"] .story::after,
+html[data-art="b"] .final-cta::after {
+  content: "";
+  position: absolute;
+  z-index: 0;
+  pointer-events: none;
+  border-radius: 18px;
+  border: 1px solid rgba(125, 155, 255, .16);
+  box-shadow:
+    -60px 50px 0 -2px rgba(125, 155, 255, .08),
+    -120px 100px 0 -4px rgba(125, 155, 255, .05);
+  filter: blur(.2px);
+  width: 62%;
+  height: 58%;
+  right: -8%;
+  top: 14%;
+  transform: rotate(-2deg);
+  animation: b-drift 26s ease-in-out infinite alternate;
+}
+@keyframes b-drift {
+  from { transform: rotate(-2deg) translateY(0); }
+  to   { transform: rotate(-1.2deg) translateY(-10px); }
+}
+/* A slim address-bar silhouette, floating low and faint - the one
+   literal-ish shape allowed, kept abstract (no fake URL text). */
+html[data-art="b"] .hero-visual::after {
+  content: "";
+  position: absolute;
+  left: 8%;
+  bottom: -6%;
+  width: 46%;
+  height: 34px;
+  border-radius: 999px;
+  border: 1px solid rgba(125, 155, 255, .18);
+  background: rgba(125, 155, 255, .04);
+  pointer-events: none;
+}
+html[data-art="b"] .section--muted { background: color-mix(in srgb, var(--b-accent) 3%, var(--surface-alt)); }
+
+/* ============================================================
+   CONCEPT C — Minimal Cinematic
+   Almost black. One accent. Huge negative space. A soft spotlight
+   behind the product, faint grain, occasional π geometry - product
+   photography lighting rather than a gradient.
+   ============================================================ */
+html[data-art="c"] {
+  --c-bg: #060607;
+  --c-accent: #e8e8ec;
+}
+/* Minimal by design: no wash at all over the light content sections -
+   "huge negative space" applies to the whole page, not just the stage
+   sections, so the quiet sections stay exactly the site's plain light
+   surface with nothing added. */
+html[data-art="c"] body::before { background: none; animation: none; }
+html[data-art="c"] .hero,
+html[data-art="c"] .story,
+html[data-art="c"] .final-cta {
+  --stage-bg-1: #050506;
+  --stage-bg-2: #0a0a0b;
+  --stage-surface: #101011;
+  --stage-line: rgba(255, 255, 255, .09);
+  --stage-accent: #e8e8ec;
+  --stage-accent-2: #cfcfd6;
+  --stage-accent-3: #ffffff;
+  --stage-accent-soft: #1a1a1c;
+  --stage-accent-text: #0a0a0a;
+  background: radial-gradient(46% 38% at 68% 32%, rgba(255,255,255,.05), transparent 70%), var(--stage-bg-1);
+}
+/* One controlled spotlight, not a gradient wash - a single soft light
+   placed behind the product visual, the way a product photo is lit. */
+html[data-art="c"] .hero-visual::before {
+  background: radial-gradient(48% 48% at 45% 40%, rgba(255,255,255,.14), transparent 72%);
+}
+/* Faint film grain via a tiled SVG turbulence filter, screened over
+   everything at very low opacity - texture, not decoration. */
+html[data-art="c"] .hero::after,
+html[data-art="c"] .story::after,
+html[data-art="c"] .final-cta::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  opacity: .05;
+  mix-blend-mode: overlay;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='120'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+/* One occasional π arc - a single thin quarter-arc low in the frame,
+   never more than one per section. */
+html[data-art="c"] .final-cta .motif-pi,
+html[data-art="c"] .hero .motif-pi { display: none; }
+html[data-art="c"] .final-cta::before {
+  content: "";
+  position: absolute;
+  right: -10vh;
+  bottom: -22vh;
+  width: 46vh;
+  height: 46vh;
+  border-radius: 50%;
+  border: 1px solid rgba(255,255,255,.08);
+  border-left-color: transparent;
+  border-bottom-color: transparent;
+  z-index: 0;
+  pointer-events: none;
+}
+html[data-art="c"] .section--muted { background: #0d0d0e; }
+html[data-art="c"] .shot-frame--hero { box-shadow: 0 60px 140px -40px rgba(0,0,0,.8), 0 0 0 1px rgba(255,255,255,.06); }
