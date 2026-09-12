@@ -44,6 +44,13 @@ class BrowserTab(QWidget):
     # by whoever owns this tab (see main_window.py), never here: a tab knows
     # nothing about the agent, only that its context menu can offer this.
     ask_py_requested = Signal(str)
+    # "Save Highlight" / "Add to Mission" chosen from the selection menu -
+    # carry (url, title, selected_text) so the handler (main_window.py)
+    # never has to guess which tab a right-click came from. A tab knows
+    # nothing about HighlightStore or MissionService, only that its
+    # selection menu can offer these, exactly like ask_py_requested above.
+    save_highlight_requested = Signal(str, str, str)
+    add_selection_to_mission_requested = Signal(str, str, str)
 
     def __init__(
         self,
@@ -176,6 +183,15 @@ class BrowserTab(QWidget):
             custom = menu.addAction("Ask something else…")
             custom.triggered.connect(
                 lambda _checked=False: self._ask_py(f'About this: "{selected}"\n'))
+            menu.addSeparator()
+            save_action = menu.addAction("Save Highlight")
+            save_action.triggered.connect(
+                lambda _checked=False: self.save_highlight_requested.emit(
+                    self._page.url().toString(), self.title(), selected))
+            mission_action = menu.addAction("Add to Mission")
+            mission_action.triggered.connect(
+                lambda _checked=False: self.add_selection_to_mission_requested.emit(
+                    self._page.url().toString(), self.title(), selected))
         else:
             action = menu.addAction("Ask Py about this page")
             action.triggered.connect(lambda _checked=False: self._ask_py(""))

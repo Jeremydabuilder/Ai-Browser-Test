@@ -28,6 +28,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+from app.agent.tools import wrap_untrusted
 from app.browser.pdf_context import is_pdf_url
 
 #: Selected items' fenced text is capped in total, not just per item - a
@@ -83,10 +84,14 @@ class ContextComposer:
     than re-implementing them).
     """
 
-    def __init__(self, *, browser=None, missions=None, mcp=None) -> None:
+    def __init__(self, *, browser=None, missions=None, mcp=None, highlights=None) -> None:
         self._browser = browser
         self._missions = missions
         self._mcp = mcp
+        #: HighlightStore, owned by MainWindow like the others - None where
+        #: no window context exists (a bare test), in which case @highlight
+        #: simply lists nothing rather than failing.
+        self._highlights = highlights
         self._selected: dict[str, ContextItem] = {}
 
     # -- candidates --------------------------------------------------------
@@ -98,6 +103,7 @@ class ContextComposer:
         items.extend(self._tab_items())
         items.extend(self._mission_items())
         items.extend(self._mcp_items())
+        items.extend(self._highlight_items())
         items.append(ContextItem(id=ACTION_FILE, kind=ACTION_FILE,
                                  title="Attach a local file…",
                                  subtitle="Opens a file picker"))
@@ -131,6 +137,24 @@ class ContextComposer:
                 id=f"mission:{mission.id}", kind="mission",
                 title=mission.title or "Untitled Mission", subtitle=label,
                 ref={"mission_id": mission.id}))
+        return items
+
+    def _highlight_items(self) -> list[ContextItem]:
+        """A saved highlight is already fully self-contained (its own copy
+        of url/title/text/note) - see app/storage/highlights.py - so unlike
+        a tab this never needs a live page to still be useful as context."""
+        if self._highlights is None:
+            return []
+        items = []
+        for highlight in self._highlights.all():
+            subtitle = highlight.url or "(no source)"
+            if highlight.note:
+                subtitle = f"{subtitle} - {highlight.note}"
+            items.append(ContextItem(
+                id=f"highlight:{highlight.id}", kind="highlight",
+                title=highlight.title or "Untitled highlight", subtitle=subtitle,
+                ref={"text": highlight.text, "url": highlight.url,
+                     "title": highlight.title, "note": highlight.note}))
         return items
 
     def _mcp_items(self) -> list[ContextItem]:
@@ -268,8 +292,20 @@ class ContextComposer:
                 if len(text) > budget:
                     text = text[:budget] + "\n[truncated to fit the context budget]"
                 budget = max(0, budget - len(text))
-                lines.append(
-                    f'- File "{item.title}" ({item.subtitle}):\n{text}')
+                lines.append(f'- File "{item.title}" ({item.subtitle}):')
+                lines.append(wrap_untrusted({"file_text": text}))
+            elif item.kind == "highlight":
+                text = item.ref.get("text", "")
+                if len(text) > budget:
+                    text = text[:budget] + "\n[truncated to fit the context budget]"
+                budget = max(0, budget - len(text))
+                url = item.ref.get("url", "")
+                lines.append(f'- Highlight from "{item.title}" ({url}):')
+                payload = {"highlighted_text": text}
+                note = item.ref.get("note", "")
+                if note:
+                    payload["note"] = note
+                lines.append(wrap_untrusted(payload))
             elif item.kind == "image":
                 if not provider_supports_images:
                     lines.append(
@@ -295,5 +331,6 @@ def context_icon(kind: str) -> str:
     deliberately just a word, not an emoji-per-kind guessing game."""
     return {
         "tab": "TAB", "pdf_tab": "PDF", "mission": "MISSION", "mcp_tool": "MCP",
-        "file": "FILE", "image": "IMAGE", ACTION_FILE: "+FILE", ACTION_IMAGE: "+IMAGE",
+        "file": "FILE", "image": "IMAGE", "highlight": "HIGHLIGHT",
+        ACTION_FILE: "+FILE", ACTION_IMAGE: "+IMAGE",
     }.get(kind, "?")

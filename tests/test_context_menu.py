@@ -134,6 +134,71 @@ class AskMenuTests(unittest.TestCase):
         menu.deleteLater()
 
 
+class HighlightMenuActionsTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tab = BrowserTab(_profile)
+
+    def tearDown(self) -> None:
+        self.tab.page.deleteLater()
+        self.tab.deleteLater()
+        for _ in range(3):
+            _app.processEvents()
+
+    def test_a_selection_offers_save_highlight_and_add_to_mission(self) -> None:
+        menu = self.tab._build_ask_menu("a claim worth keeping")
+        labels = _menu_texts(menu)
+        self.assertIn("Save Highlight", labels)
+        self.assertIn("Add to Mission", labels)
+        menu.deleteLater()
+
+    def test_no_selection_offers_neither(self) -> None:
+        menu = self.tab._build_ask_menu("")
+        labels = _menu_texts(menu)
+        self.assertNotIn("Save Highlight", labels)
+        self.assertNotIn("Add to Mission", labels)
+        menu.deleteLater()
+
+    def test_choosing_save_highlight_emits_url_title_and_text(self) -> None:
+        self.tab.navigate("data:text/html,<title>A Page</title>")
+        self.assertTrue(
+            _pump(lambda: self.tab.title() == "A Page"))
+        menu = self.tab._build_ask_menu("a claim worth keeping")
+        action = next(a for a in menu.actions() if a.text() == "Save Highlight")
+        seen = []
+        self.tab.save_highlight_requested.connect(lambda u, t, x: seen.append((u, t, x)))
+        action.trigger()
+        self.assertEqual(len(seen), 1)
+        url, title, text = seen[0]
+        self.assertEqual(title, "A Page")
+        self.assertEqual(text, "a claim worth keeping")
+        menu.deleteLater()
+
+    def test_choosing_add_to_mission_emits_url_title_and_text(self) -> None:
+        menu = self.tab._build_ask_menu("a claim worth keeping")
+        action = next(a for a in menu.actions() if a.text() == "Add to Mission")
+        seen = []
+        self.tab.add_selection_to_mission_requested.connect(
+            lambda u, t, x: seen.append((u, t, x)))
+        action.trigger()
+        self.assertEqual(len(seen), 1)
+        self.assertEqual(seen[0][2], "a claim worth keeping")
+        menu.deleteLater()
+
+
+def _pump(predicate, timeout_ms: int = 8000) -> bool:
+    from PySide6.QtCore import QTimer
+
+    expired = [False]
+    timer = QTimer()
+    timer.setSingleShot(True)
+    timer.timeout.connect(lambda: expired.__setitem__(0, True))
+    timer.start(timeout_ms)
+    while not predicate() and not expired[0]:
+        _app.processEvents()
+    timer.stop()
+    return predicate()
+
+
 class TabManagerForwardingTests(unittest.TestCase):
     """The signal reaches TabManager.ask_py_requested for any tab - the same
     "forward from any tab, not only the current one" rule internal_action
@@ -149,6 +214,22 @@ class TabManagerForwardingTests(unittest.TestCase):
         tabs.ask_py_requested.connect(seen.append)
         tab.ask_py_requested.emit("hello")
         self.assertEqual(seen, ["hello"])
+        tabs.deleteLater()
+        _app.processEvents()
+
+    def test_highlight_signals_are_forwarded_too(self) -> None:
+        from app.browser.tab_manager import TabManager
+
+        tabs = TabManager(_profile, "about:blank")
+        tab = tabs.new_tab("about:blank")
+        save_seen, mission_seen = [], []
+        tabs.save_highlight_requested.connect(lambda u, t, x: save_seen.append((u, t, x)))
+        tabs.add_selection_to_mission_requested.connect(
+            lambda u, t, x: mission_seen.append((u, t, x)))
+        tab.save_highlight_requested.emit("https://x/", "X", "quote")
+        tab.add_selection_to_mission_requested.emit("https://x/", "X", "quote")
+        self.assertEqual(save_seen, [("https://x/", "X", "quote")])
+        self.assertEqual(mission_seen, [("https://x/", "X", "quote")])
         tabs.deleteLater()
         _app.processEvents()
 

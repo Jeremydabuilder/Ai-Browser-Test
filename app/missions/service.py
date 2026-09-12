@@ -681,6 +681,43 @@ class MissionService(QObject):
             result["limit"] = MAX_FINDINGS_PER_MISSION
         return result
 
+    def save_finding_from_source(self, text: str, url: str, title: str = "") -> dict:
+        """Like save_finding, but the source is given directly rather than
+        resolved from a live tab - for a highlight (see
+        app/storage/highlights.py), whose own saved url/title already IS
+        the real source it was captured from, and whose original tab may
+        long since be closed, or the page itself gone.
+
+        Deliberately a separate method from save_finding rather than an
+        optional url parameter on it: save_finding's whole safety story is
+        "there is no url parameter, so a model cannot forge one" - adding
+        one there, even for a legitimate caller, would blur that guarantee
+        for every other call site. This one is never reachable from a tool
+        schema at all; only MainWindow's own highlight actions call it.
+        """
+        mission = self._active
+        if mission is None:
+            return {"status": "no_mission"}
+
+        page_id = None
+        if url and is_associable(url):
+            page = self._store.add_page(mission.id, url, title, PageSource.READ,
+                                        outcome=PageOutcome.USEFUL)
+            page_id = page.id if page is not None else None
+
+        outcome, finding = self._store.add_finding(mission.id, text, page_id)
+        self._refresh()
+        self._announce(mission.id)
+        result = {"status": outcome}
+        if finding is not None:
+            result["ref"] = finding.label
+            result["source"] = finding.source_domain
+        if outcome == self._store.TOO_LONG:
+            result["limit"] = MAX_FINDING_CHARS
+        if outcome == self._store.FULL:
+            result["limit"] = MAX_FINDINGS_PER_MISSION
+        return result
+
     def note_source(self, useful: bool, tab_id: int | None = None) -> dict:
         """Record that a page was reviewed - the "skipped" half of source
         review that `save_finding` never produces on its own.

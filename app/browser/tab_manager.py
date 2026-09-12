@@ -44,6 +44,8 @@ class TabManager(QTabWidget):
     internal_action = Signal(str, dict)
     # "Ask Py" chosen from any tab's right-click menu - see BrowserTab.
     ask_py_requested = Signal(str)
+    save_highlight_requested = Signal(str, str, str)
+    add_selection_to_mission_requested = Signal(str, str, str)
     # Emitted when the user switches tab; payload is that tab's loading state.
     current_tab_switched = Signal(bool)
 
@@ -542,6 +544,8 @@ class TabManager(QTabWidget):
         tab.status_message.connect(self.status_message)
         tab.internal_action.connect(self.internal_action)
         tab.ask_py_requested.connect(self.ask_py_requested)
+        tab.save_highlight_requested.connect(self.save_highlight_requested)
+        tab.add_selection_to_mission_requested.connect(self.add_selection_to_mission_requested)
         tab.load_error.connect(lambda err, t=tab: self._forward_if_current(t, self.load_error, err))
         tab.page.certificate_rejected.connect(
             lambda host, desc, t=tab: self._on_security_event(

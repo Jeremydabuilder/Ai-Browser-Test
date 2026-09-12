@@ -25,7 +25,7 @@ import threading
 from pathlib import Path
 from typing import Any, Iterable, Sequence
 
-SCHEMA_VERSION = 14
+SCHEMA_VERSION = 15
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS history (
@@ -43,6 +43,19 @@ CREATE TABLE IF NOT EXISTS bookmarks (
     title      TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL
 );
+
+-- A highlight outlives the page it came from on purpose: url/title/text are
+-- copied in at save time, not looked up later, so a saved highlight is still
+-- usable as context long after the original page has changed or vanished.
+CREATE TABLE IF NOT EXISTS highlights (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    url        TEXT NOT NULL,
+    title      TEXT NOT NULL DEFAULT '',
+    text       TEXT NOT NULL,
+    note       TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_highlights_created_at ON highlights(created_at DESC);
 
 CREATE TABLE IF NOT EXISTS settings (
     key   TEXT PRIMARY KEY,
@@ -606,6 +619,17 @@ CREATE TABLE IF NOT EXISTS decision_alternatives (
     """,
     13: """
     ALTER TABLE missions ADD COLUMN constraints TEXT NOT NULL DEFAULT '[]';
+    """,
+    14: """
+    CREATE TABLE IF NOT EXISTS highlights (
+        id         INTEGER PRIMARY KEY AUTOINCREMENT,
+        url        TEXT NOT NULL,
+        title      TEXT NOT NULL DEFAULT '',
+        text       TEXT NOT NULL,
+        note       TEXT NOT NULL DEFAULT '',
+        created_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_highlights_created_at ON highlights(created_at DESC);
     """,
 }
 

@@ -249,5 +249,73 @@ class ContextComposerUiTests(unittest.TestCase):
         self.assertEqual(self.session.messages[0]["content"], "just a question")
 
 
+class HighlightAtMentionTests(unittest.TestCase):
+    """@highlight in the same composer - no separate prompt path, and its
+    text is fenced exactly like everything else selected."""
+
+    def setUp(self) -> None:
+        self._dir = tempfile.TemporaryDirectory()
+        from app.storage import Database, HighlightStore
+
+        self.hdb = Database(os.path.join(self._dir.name, "h.sqlite3"))
+        self.highlights = HighlightStore(self.hdb)
+        self.tabs = TabManager(_profile, "about:blank")
+        self.tabs.resize(900, 700)
+        self.tabs.show()
+        self.browser = BrowserController(self.tabs)
+        self.browser.open_tab("about:blank").wait()
+        self.session: AgentSession | None = None
+        self.panel: AgentPanel | None = None
+
+    def tearDown(self) -> None:
+        if self.session is not None:
+            self.session.shutdown()
+        if self.panel is not None:
+            self.panel.deleteLater()
+        for tab in self.tabs.tabs():
+            tab.page.deleteLater()
+        self.tabs.deleteLater()
+        self.hdb.close()
+        self._dir.cleanup()
+        _app.processEvents()
+
+    def type_at(self, panel: AgentPanel, text: str) -> None:
+        from PySide6.QtGui import QTextCursor
+
+        panel.input.setPlainText(text)
+        cursor = panel.input.textCursor()
+        cursor.movePosition(QTextCursor.MoveOperation.End)
+        panel.input.setTextCursor(cursor)
+        panel._update_mentions()
+
+    def test_a_saved_highlight_is_a_candidate_under_at_highlight(self) -> None:
+        self.highlights.add("https://example.com/", "Example Page", "a saved quote")
+        self.session = AgentSession(self.browser, ScriptedClaude([says("ok")]), AgentConfig())
+        self.panel = AgentPanel(self.session, browser=self.browser, highlights=self.highlights)
+        self.type_at(self.panel, "@highlight")
+        titles = [c.title for c in self.panel._mention_candidates]
+        self.assertIn("Example Page", titles)
+
+    def test_selecting_a_highlight_and_sending_embeds_its_fenced_text(self) -> None:
+        from app.agent.tools import UNTRUSTED_CLOSE, UNTRUSTED_OPEN
+
+        self.highlights.add("https://example.com/", "Example Page", "a saved quote")
+        self.session = AgentSession(self.browser, ScriptedClaude([says("ok")]), AgentConfig())
+        self.panel = AgentPanel(self.session, browser=self.browser, highlights=self.highlights)
+        self.type_at(self.panel, "@")
+        candidate = next(c for c in self.panel._mention_candidates if c.kind == "highlight")
+        self.panel._select_mention(candidate)
+        done = []
+        self.session.finished.connect(lambda: done.append(True))
+        self.panel.input.setPlainText("What did it say?")
+        self.panel._send()
+        self.assertTrue(pump(lambda: done))
+        sent = self.session.messages[0]["content"]
+        self.assertIn(UNTRUSTED_OPEN, sent)
+        self.assertIn(UNTRUSTED_CLOSE, sent)
+        fenced = sent.split(UNTRUSTED_OPEN, 1)[1].split(UNTRUSTED_CLOSE, 1)[0]
+        self.assertIn("a saved quote", fenced)
+
+
 if __name__ == "__main__":
     unittest.main()

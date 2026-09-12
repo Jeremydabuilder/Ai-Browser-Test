@@ -34,7 +34,7 @@ from app.routines import RoutineService, RoutineStore
 from app.browser.load_error import ErrorCategory, LoadError
 from app.browser.profile import BrowserProfile
 from app.browser.tab_manager import TabManager
-from app.storage import BookmarkStore, Database, HistoryStore, SettingsStore
+from app.storage import BookmarkStore, Database, HighlightStore, HistoryStore, SettingsStore
 from app.ui.dialogs import BookmarksDialog, HistoryDialog, confirm_destructive
 from app.ui.find_bar import FindBar
 from app.ui.navigation_bar import NavigationBar
@@ -59,6 +59,7 @@ class MainWindow(QMainWindow):
         self.settings = SettingsStore(database)
         self.history = HistoryStore(database)
         self.bookmarks = BookmarkStore(database)
+        self.highlights = HighlightStore(database)
 
         self.nav_bar = NavigationBar(self)
         self.addToolBar(self.nav_bar)
@@ -220,6 +221,8 @@ class MainWindow(QMainWindow):
         tools_menu.addSeparator()
         self._add_action(tools_menu, "&Mission Library", "Ctrl+Shift+M",
                          self._show_mission_library)
+        self._add_action(tools_menu, "&Highlights Library", "Ctrl+Shift+H",
+                         self._show_highlights_library)
         self._teach_action = self._add_action(
             tools_menu, "&Teach Py", "Ctrl+Shift+T", self._toggle_teaching)
         self._teach_action.setCheckable(True)
@@ -252,6 +255,9 @@ class MainWindow(QMainWindow):
         self.nav_bar.bookmark_toggled.connect(self._toggle_bookmark)
         self.nav_bar.ask_py_requested.connect(self._open_agent_with)
         self.tabs.ask_py_requested.connect(self._open_agent_with)
+        self.tabs.save_highlight_requested.connect(self._save_highlight_from_selection)
+        self.tabs.add_selection_to_mission_requested.connect(
+            self._add_selection_to_mission)
         self.find_bar.search_requested.connect(self._run_find)
         self.find_bar.closed.connect(self._clear_find)
 
@@ -1052,6 +1058,41 @@ class MainWindow(QMainWindow):
             prompt=f"I am attaching a screenshot of the current page ({url}). "
                    "Look at it and help with whatever I ask next.")
 
+    def _save_highlight_from_selection(self, url: str, title: str, text: str) -> None:
+        """"Save Highlight" from a tab's selection menu (app/browser/tab.py).
+
+        Saved with url/title/text copied in immediately - see
+        app/storage/highlights.py - so the highlight stays usable even if
+        the page it came from later changes or disappears.
+        """
+        from PySide6.QtWidgets import QMessageBox
+
+        from app.storage.highlights import MAX_HIGHLIGHT_CHARS
+
+        highlight, truncated = self.highlights.add(url, title, text)
+        if highlight is None:
+            return
+        if truncated:
+            QMessageBox.information(
+                self, "Highlight saved",
+                "That selection was long - only the first "
+                f"{MAX_HIGHLIGHT_CHARS:,} characters were saved.")
+
+    def _add_selection_to_mission(self, url: str, title: str, text: str) -> None:
+        """"Add to Mission" from a tab's selection menu, or from a saved
+        highlight in the Highlights Library - starts a Mission first if
+        none is active yet, the same auto-start already used by
+        _start_mission_from_tabs, then records the selection as a finding
+        attributed to the url it actually came from (not necessarily the
+        currently active tab - a highlight's source page may not even be
+        open any more)."""
+        if self.missions.active is None:
+            mission = self.missions.start(f"Research: {title or url}")
+            if mission is None:
+                return
+            self._open_mission(mission.id)
+        self.missions.save_finding_from_source(text, url, title)
+
     def _close_tabs_at(self, indices: list[int]) -> None:
         """Close tabs by TabManager index, highest index first so an earlier
         close never shifts a later target out from under it."""
@@ -1315,6 +1356,29 @@ class MainWindow(QMainWindow):
         dialog.open_requested.connect(lambda url: self.tabs.new_tab(url))
         dialog.exec()
 
+    def _show_highlights_library(self) -> None:
+        from app.ui.highlights_library import HighlightsLibraryDialog
+
+        dialog = HighlightsLibraryDialog(
+            self.highlights, self,
+            on_ask_py=self._ask_py_about_highlight,
+            on_add_to_mission=lambda h: self._add_selection_to_mission(h.url, h.title, h.text))
+        dialog.exec()
+
+    def _ask_py_about_highlight(self, highlight) -> None:
+        """Hand a saved highlight to Py, fenced as untrusted the same way
+        a live page's text or a local file's content already is."""
+        from app.agent.tools import wrap_untrusted
+
+        payload = {"highlighted_text": highlight.text}
+        if highlight.note:
+            payload["note"] = highlight.note
+        block = wrap_untrusted(payload)
+        self._ask_py(
+            f'I am attaching a saved highlight from "{highlight.title}" '
+            f"({highlight.url}). Its text follows, fenced as untrusted data:\n"
+            f"{block}\nRead it and help with whatever I ask about it next.")
+
     def _show_settings(self) -> None:
         from app.ui.settings_dialog import SettingsDialog
 
@@ -1464,6 +1528,7 @@ class MainWindow(QMainWindow):
         )),
         ("Finding things", (
             ("Ctrl+H", "History"), ("Ctrl+Shift+O", "Bookmarks"),
+            ("Ctrl+Shift+H", "Highlights Library"),
             ("Ctrl+D", "Bookmark this page"),
             ("Ctrl+F", "Find in page"),
             ("Ctrl+G / Ctrl+Shift+G", "Find next / previous"),
@@ -1546,7 +1611,7 @@ class MainWindow(QMainWindow):
                 credential = self._current_credential(self._agent_session.config.provider)
                 self._credential_id = credential.fingerprint if credential else ""
         self.set_side_panel(AgentPanel(self._agent_session, self, self.missions, self.mcp,
-                                       browser=self.controller))
+                                       browser=self.controller, highlights=self.highlights))
         self._agent_action.setChecked(True)
 
     def _configure_agent(self) -> None:
