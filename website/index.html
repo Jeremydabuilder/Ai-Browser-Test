@@ -79,6 +79,10 @@
 
 <!-- ============================= HERO ============================= -->
 <section class="hero" id="top">
+  <div class="motif" aria-hidden="true">
+    <div class="motif-rings"></div>
+    <div class="motif-pi"></div>
+  </div>
   <div class="wrap hero-inner">
     <div class="hero-copy">
       <p class="eyebrow"><img src="assets/brand/pi-mark.svg" class="eyebrow-mark" alt="" width="16" height="16"> PyBrowser</p>
@@ -116,26 +120,32 @@
       <p class="section-sub">You can browse normally, ask me questions, or give me bigger jobs.</p>
     </div>
 
-    <div class="tier-grid" data-reveal-group>
-      <div class="tier-card" data-reveal>
-        <div class="tier-num">01</div>
-        <h3>Browse</h3>
-        <p>PyBrowser is a real desktop browser first — tabs, history, bookmarks,
-          downloads, dark mode. Use it exactly like the browser you already know.</p>
+    <div class="tier-list" data-reveal-group>
+      <div class="tier-row" data-reveal>
+        <span class="tier-num">01</span>
+        <div>
+          <h3>Browse</h3>
+          <p>PyBrowser is a real desktop browser first — tabs, history, bookmarks,
+            downloads, dark mode. Use it exactly like the browser you already know.</p>
+        </div>
       </div>
-      <div class="tier-card" data-reveal>
-        <div class="tier-num">02</div>
-        <h3>Ask Py</h3>
-        <p>Ask about the page you're on, selected text, or your open tabs.
-          Quick questions get quick, page-aware answers — no new window, no
-          copy-pasting URLs into a chat box.</p>
+      <div class="tier-row" data-reveal>
+        <span class="tier-num">02</span>
+        <div>
+          <h3>Ask Py</h3>
+          <p>Ask about the page you're on, selected text, or your open tabs.
+            Quick questions get quick, page-aware answers — no new window, no
+            copy-pasting URLs into a chat box.</p>
+        </div>
       </div>
-      <div class="tier-card tier-card--accent" data-reveal>
-        <div class="tier-num">03</div>
-        <h3>Missions &amp; Research</h3>
-        <p>Give Py a goal. It searches, reads, compares, keeps findings and
-          sources organized, flags open questions, and checks with you before
-          anything that matters — then hands back a structured result.</p>
+      <div class="tier-row tier-row--accent" data-reveal>
+        <span class="tier-num">03</span>
+        <div>
+          <h3>Missions &amp; Research</h3>
+          <p>Give Py a goal. It searches, reads, compares, keeps findings and
+            sources organized, flags open questions, and checks with you before
+            anything that matters — then hands back a structured result.</p>
+        </div>
       </div>
     </div>
   </div>
@@ -169,6 +179,10 @@
 
 <!-- ============================= RESEARCH (scroll story) ============================= -->
 <section class="story" id="research" data-story>
+  <div class="motif" aria-hidden="true">
+    <div class="motif-rings"></div>
+    <div class="motif-pi"></div>
+  </div>
   <div class="wrap story-head" data-reveal>
     <p class="kicker">Research</p>
     <h2>Research without the tab chaos.</h2>
@@ -251,7 +265,7 @@
         <h3>Find the best hard-court tennis shoes under $120.</h3>
       </div>
       <div class="mission-example-grid" data-reveal-group>
-        <div class="mex-card" data-reveal>
+        <div class="mex-row" data-reveal>
           <p class="mini-label">Constraints</p>
           <ul class="chip-list">
             <li>under $120</li>
@@ -259,18 +273,18 @@
             <li>lateral support</li>
           </ul>
         </div>
-        <div class="mex-card" data-reveal>
+        <div class="mex-row" data-reveal>
           <p class="mini-label">Findings</p>
           <ul class="mini-list mini-list--plain">
             <li>ASICS Gel-Resolution 9 — $115, strong lateral support</li>
             <li>Wilson Rush Pro 4.0 — $110, reinforced for hard courts</li>
           </ul>
         </div>
-        <div class="mex-card" data-reveal>
+        <div class="mex-row" data-reveal>
           <p class="mini-label">Sources</p>
           <p class="mex-stat">3 reviewed · 2 useful · 1 skipped</p>
         </div>
-        <div class="mex-card mex-card--accent" data-reveal>
+        <div class="mex-row mex-row--accent" data-reveal>
           <p class="mini-label">Result</p>
           <p class="mex-text">The Wilson Rush Pro 4.0 is the best fit — $110,
             reinforced for hard courts, with strong lateral support.</p>
@@ -294,20 +308,20 @@
         asked for.</p>
     </div>
 
-    <div class="result-grid" data-reveal-group>
-      <div class="result-card" data-reveal>
+    <div class="result-list" data-reveal-group>
+      <div class="result-row" data-reveal>
         <h3>Comparison</h3>
         <p>Options weighed side by side against your constraints.</p>
       </div>
-      <div class="result-card" data-reveal>
+      <div class="result-row" data-reveal>
         <h3>Ranked options</h3>
         <p>A short list, ordered, with the reasoning kept next to it.</p>
       </div>
-      <div class="result-card" data-reveal>
+      <div class="result-row" data-reveal>
         <h3>Research summary</h3>
         <p>Findings and sources, organized under the question you asked.</p>
       </div>
-      <div class="result-card" data-reveal>
+      <div class="result-row" data-reveal>
         <h3>Tab comparison</h3>
         <p>What's different — and what agrees — across the tabs you have open.</p>
       </div>
@@ -317,6 +331,10 @@
 
 <!-- ============================= SAFETY (scroll story) ============================= -->
 <section class="story story--safety" id="safety" data-story>
+  <div class="motif" aria-hidden="true">
+    <div class="motif-rings"></div>
+    <div class="motif-pi"></div>
+  </div>
   <div class="story-grid story-grid--reverse">
     <div class="story-steps">
       <article class="story-step" data-state="approval" data-caption="I'll ask before anything important.">
@@ -362,39 +380,24 @@
         and expression are tied directly to what the browser is actually doing.</p>
     </div>
 
-    <div class="states-grid" data-state-showcase data-reveal-group>
-      <div class="state-card" data-reveal data-state="idle" tabindex="0" role="button" aria-label="Preview Py's idle state">
-        <img src="assets/mascot/py-idle.webp" alt="Py idle" loading="lazy" width="200" height="500">
-        <p class="state-name">Idle</p>
-        <p class="state-desc">Ready when you are.</p>
+    <div class="py-stage" data-state-showcase data-reveal>
+      <div class="py-stage-display" data-mascot-anchor>
+        <div class="py-stage-mascot">
+          <img src="assets/mascot/py-idle.webp" data-mascot-img alt="Py, the PyBrowser assistant" width="240" height="600">
+        </div>
+        <p class="py-stage-name" data-stage-name>Idle</p>
+        <p class="py-stage-desc" data-py-caption>Ready when you are.</p>
       </div>
-      <div class="state-card" data-reveal data-state="reading" tabindex="0" role="button" aria-label="Preview Py's reading state">
-        <img src="assets/mascot/py-reading.webp" alt="Py reading" loading="lazy" width="200" height="500">
-        <p class="state-name">Reading</p>
-        <p class="state-desc">Going through a page or a source.</p>
-      </div>
-      <div class="state-card" data-reveal data-state="thinking" tabindex="0" role="button" aria-label="Preview Py's thinking state">
-        <img src="assets/mascot/py-thinking.webp" alt="Py thinking" loading="lazy" width="200" height="500">
-        <p class="state-name">Thinking</p>
-        <p class="state-desc">Weighing what it's found so far.</p>
-      </div>
-      <div class="state-card" data-reveal data-state="working" tabindex="0" role="button" aria-label="Preview Py's working state">
-        <img src="assets/mascot/py-working.webp" alt="Py working" loading="lazy" width="200" height="500">
-        <p class="state-name">Working</p>
-        <p class="state-desc">Acting on a step of the Mission.</p>
-      </div>
-      <div class="state-card" data-reveal data-state="approval" tabindex="0" role="button" aria-label="Preview Py's waiting-for-approval state">
-        <img src="assets/mascot/py-approval.webp" alt="Py waiting for approval" loading="lazy" width="200" height="500">
-        <p class="state-name">Waiting for approval</p>
-        <p class="state-desc">Paused before something that matters.</p>
-      </div>
-      <div class="state-card" data-reveal data-state="finished" tabindex="0" role="button" aria-label="Preview Py's finished state">
-        <img src="assets/mascot/py-complete.webp" alt="Py finished" loading="lazy" width="200" height="500">
-        <p class="state-name">Finished</p>
-        <p class="state-desc">Done, with a result ready to read.</p>
+      <div class="py-stage-tabs" role="tablist" aria-label="Py's states">
+        <button type="button" class="py-tab" data-state="idle" data-desc="Ready when you are." aria-selected="true">Idle</button>
+        <button type="button" class="py-tab" data-state="reading" data-desc="Going through a page or a source.">Reading</button>
+        <button type="button" class="py-tab" data-state="thinking" data-desc="Weighing what it's found so far.">Thinking</button>
+        <button type="button" class="py-tab" data-state="working" data-desc="Acting on a step of the Mission.">Working</button>
+        <button type="button" class="py-tab" data-state="approval" data-desc="Paused before something that matters.">Waiting for approval</button>
+        <button type="button" class="py-tab" data-state="finished" data-desc="Done, with a result ready to read.">Finished</button>
       </div>
     </div>
-    <p class="section-note section-note--center">Hover or select a state to see its motion. Motion is subtle by design —
+    <p class="section-note section-note--center">Select a state to see its motion. Motion is subtle by design —
       a breath, a lean, a small transition between states — and it stops
       entirely when your system asks for reduced motion.</p>
   </div>
@@ -414,28 +417,28 @@
         browsing session itself.</p>
     </div>
 
-    <div class="tech-grid" data-reveal-group>
-      <div class="tech-card" data-reveal>
+    <div class="tech-list" data-reveal-group>
+      <div class="tech-row" data-reveal>
         <p class="tech-name">Python</p>
         <p class="tech-desc">Core application logic, end to end.</p>
       </div>
-      <div class="tech-card" data-reveal>
+      <div class="tech-row" data-reveal>
         <p class="tech-name">Qt (PySide6)</p>
         <p class="tech-desc">The native desktop interface.</p>
       </div>
-      <div class="tech-card" data-reveal>
+      <div class="tech-row" data-reveal>
         <p class="tech-name">Qt WebEngine</p>
         <p class="tech-desc">Chromium-based web rendering — real pages, not a mock.</p>
       </div>
-      <div class="tech-card" data-reveal>
+      <div class="tech-row" data-reveal>
         <p class="tech-name">Multiple AI providers</p>
         <p class="tech-desc">Anthropic (Claude), Google Gemini, Groq, and OpenRouter.</p>
       </div>
-      <div class="tech-card" data-reveal>
+      <div class="tech-row" data-reveal>
         <p class="tech-name">Mission system</p>
         <p class="tech-desc">Persistent, structured multi-step tasks with their own store.</p>
       </div>
-      <div class="tech-card" data-reveal>
+      <div class="tech-row" data-reveal>
         <p class="tech-name">Safety layer</p>
         <p class="tech-desc">Action sensitivity is classified by the browser, not the model.</p>
       </div>
@@ -506,8 +509,13 @@
 
 <!-- ============================= FINAL CTA ============================= -->
 <section class="final-cta">
+  <div class="motif" aria-hidden="true">
+    <div class="motif-pi"></div>
+  </div>
   <div class="wrap final-cta-inner" data-reveal>
-    <img src="assets/mascot/py-complete.webp" alt="Py, finished and ready to help" class="final-mascot" width="280" height="700" data-mascot-anchor data-mascot-img>
+    <div class="final-mascot-wrap" data-mascot-anchor>
+      <img src="assets/mascot/py-idle.webp" alt="Py, idle and listening for what's next" class="final-mascot" width="280" height="700" data-mascot-img>
+    </div>
     <p class="eyebrow eyebrow--light"><img src="assets/brand/pi-mark.svg" class="eyebrow-mark eyebrow-mark--light" alt="" width="16" height="16"> PyBrowser</p>
     <h2>So — what should I do?</h2>
     <p class="final-sub">Browse normally. Give Py the rest.</p>

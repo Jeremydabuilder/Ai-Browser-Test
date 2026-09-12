@@ -112,7 +112,7 @@
     taps.innerHTML = "<span></span><span></span>";
     host.appendChild(taps);
   }
-  document.querySelectorAll(".story-py, .state-card").forEach(injectDecorations);
+  document.querySelectorAll(".story-py, .py-stage-mascot").forEach(injectDecorations);
 
   const MASCOT_SRC = {
     idle: "assets/mascot/py-idle.webp",
@@ -316,70 +316,48 @@
     }
   }
 
-  // -- Meet Py: hover/click/keyboard preview, plus a slow auto-demo --------------------------------------------------------
+  // -- Meet Py: one stage, a row of tabs, plus a slow auto-demo --------------------------------------------------------
+  // A single large Py display driven by whichever tab is selected, reusing
+  // setMascot (the same crossfade/caption/finish-pop/confetti logic every
+  // other Py host uses) rather than six separate always-visible portraits.
   const showcase = document.querySelector("[data-state-showcase]");
   if (showcase) {
-    const cards = Array.from(showcase.querySelectorAll(".state-card"));
+    const stageAnchor = showcase.querySelector(".py-stage-display");
+    const nameEl = showcase.querySelector("[data-stage-name]");
+    const tabs = Array.from(showcase.querySelectorAll(".py-tab"));
     let autoTimer = null;
 
     function stopAuto() {
       if (autoTimer) { window.clearInterval(autoTimer); autoTimer = null; }
-      cards.forEach((c) => c.removeAttribute("data-spotlight"));
     }
-    function play(card) {
-      card.classList.add("is-playing");
-      if (card.dataset.state === "finished" && !reducedMotion.matches) {
-        const img = card.querySelector("img");
-        if (img && img.animate) {
-          img.animate(
-            [{ transform: "scale(1) rotate(0deg)" },
-             { transform: "scale(1.1) rotate(-3deg)", offset: .5 },
-             { transform: "scale(1) rotate(0deg)" }],
-            { duration: 520, easing: "cubic-bezier(.2,.8,.3,1.2)" }
-          );
-        }
-        spawnConfetti(card, img || card);
+    function select(tab) {
+      tabs.forEach((t) => t.setAttribute("aria-selected", t === tab ? "true" : "false"));
+      if (nameEl) nameEl.textContent = tab.textContent;
+      setMascot(stageAnchor, tab.dataset.state, tab.dataset.desc);
+    }
+
+    if (stageAnchor && tabs.length) {
+      stageAnchor.dataset.state = tabs[0].dataset.state;
+      tabs.forEach((tab) => {
+        tab.addEventListener("click", () => {
+          stopAuto();
+          select(tab);
+        });
+      });
+
+      // A slow, quiet auto-advance through the states so the stage reads as
+      // alive before anyone touches it - never faster than a person could
+      // comfortably read the caption, and it stops for good the moment
+      // someone picks a state themselves.
+      if (!reducedMotion.matches) {
+        let i = 0;
+        autoTimer = window.setInterval(() => {
+          i = (i + 1) % tabs.length;
+          select(tabs[i]);
+        }, 3400);
+        showcase.addEventListener("pointerdown", stopAuto, { once: true });
+        showcase.addEventListener("focusin", stopAuto, { once: true });
       }
-    }
-    function stop(card) {
-      card.classList.remove("is-playing");
-    }
-
-    cards.forEach((card) => {
-      card.addEventListener("mouseenter", () => play(card));
-      card.addEventListener("mouseleave", () => stop(card));
-      card.addEventListener("focus", () => play(card));
-      card.addEventListener("blur", () => stop(card));
-      card.addEventListener("click", () => {
-        stopAuto();
-        play(card);
-        window.setTimeout(() => stop(card), 1800);
-      });
-      card.addEventListener("keydown", (e) => {
-        if (e.key === "Enter" || e.key === " ") {
-          e.preventDefault();
-          card.click();
-        }
-      });
-    });
-
-    // A slow, quiet spotlight moves from card to card so the showcase reads
-    // as alive even before anyone touches it - never faster than a person
-    // could comfortably read the caption underneath, and it stops for good
-    // the moment someone interacts with the showcase themselves.
-    if (!reducedMotion.matches && cards.length) {
-      let i = 0;
-      cards[0].setAttribute("data-spotlight", "");
-      autoTimer = window.setInterval(() => {
-        cards[i].removeAttribute("data-spotlight");
-        stop(cards[i]);
-        i = (i + 1) % cards.length;
-        cards[i].setAttribute("data-spotlight", "");
-        play(cards[i]);
-        window.setTimeout(() => stop(cards[i]), 2600);
-      }, 4200);
-      showcase.addEventListener("pointerdown", stopAuto, { once: true });
-      showcase.addEventListener("focusin", stopAuto, { once: true });
     }
   }
 
@@ -391,35 +369,21 @@
   if (heroAnchor && !reducedMotion.matches) {
     heroAnchor.style.transform = "translateY(10px) scale(.96)";
     heroAnchor.style.opacity = "0";
+    heroAnchor.style.filter = "brightness(.45) saturate(.6)";
     window.setTimeout(() => {
-      heroAnchor.style.transition = "transform 560ms cubic-bezier(.16,1,.3,1), opacity 560ms cubic-bezier(.16,1,.3,1)";
+      heroAnchor.style.transition = "transform 560ms cubic-bezier(.16,1,.3,1), opacity 560ms cubic-bezier(.16,1,.3,1), filter 700ms cubic-bezier(.16,1,.3,1)";
       heroAnchor.style.transform = "none";
       heroAnchor.style.opacity = "1";
+      heroAnchor.style.filter = "brightness(1) saturate(1)";
     }, 320);
   }
 
-  // -- final CTA: Py's arrival pop, once the section is actually seen --------------------------------------------------------
-  // Reuses the same one-time "finished" beat Py plays at the end of a
-  // Mission - the last thing on the page is Py finishing, which is the
-  // whole pitch, so it gets the same satisfying reaction rather than a
-  // new one-off animation invented just for this spot.
-  const finalMascotAnchor = document.querySelector(".final-cta-inner[data-reveal]");
-  if (finalMascotAnchor && !reducedMotion.matches && "IntersectionObserver" in window) {
-    const finalObserver = new IntersectionObserver(
-      (entries, obs) => {
-        entries.forEach((entry) => {
-          if (!entry.isIntersecting) return;
-          window.setTimeout(() => {
-            playFinishPop(finalMascotAnchor);
-            spawnConfetti(finalMascotAnchor, finalMascotAnchor.querySelector("[data-mascot-img]"));
-          }, 420);
-          obs.disconnect();
-        });
-      },
-      { threshold: 0.4 }
-    );
-    finalObserver.observe(finalMascotAnchor);
-  }
+  // -- final CTA: Py is back at rest, not finishing another Mission --------------------------------------------------------
+  // The finish/confetti beat belongs to a completed Mission (the Research
+  // story already plays it) - here Py has simply returned to idle,
+  // listening for whatever comes next, so the only cue is the quiet
+  // "listening" ring defined in CSS (self-timed, no JS needed) plus the
+  // ordinary [data-reveal] fade already on .final-cta-inner.
 
   // -- scroll-spy nav highlighting --------------------------------------------------------
   const navLinks = Array.from(document.querySelectorAll(".nav-links a"));
