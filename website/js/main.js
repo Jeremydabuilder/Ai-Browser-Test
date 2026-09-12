@@ -111,6 +111,15 @@
     taps.setAttribute("aria-hidden", "true");
     taps.innerHTML = "<span></span><span></span>";
     host.appendChild(taps);
+    // The same ring motif used decoratively elsewhere on the page (see
+    // .motif-rings), reused here as a literal "processing" indicator - a
+    // partial ring that only appears and spins while Py is actively doing
+    // something (searching/reading/thinking/working), so the brand's own
+    // geometry becomes the busy-state cue instead of a generic spinner.
+    const orbit = document.createElement("span");
+    orbit.className = "py-orbit";
+    orbit.setAttribute("aria-hidden", "true");
+    host.appendChild(orbit);
   }
   document.querySelectorAll(".story-py, .py-stage-mascot").forEach(injectDecorations);
 
@@ -316,6 +325,36 @@
     }
   }
 
+  // -- hero: a small mouse-parallax on the whole visual cluster --------------------------------------------------------
+  // Screenshot and Py move together as one plane against the static
+  // background motif, capped to a few pixels - "this scene has depth,"
+  // not a scroll-jacking parallax effect. Desktop-with-a-mouse only
+  // (pointer:fine), rAF-throttled to at most one style write per frame.
+  const heroSection = document.querySelector(".hero");
+  const heroVisual = document.querySelector(".hero-visual");
+  if (heroSection && heroVisual && !reducedMotion.matches &&
+      window.matchMedia("(pointer: fine)").matches) {
+    let raf = null;
+    let px = 0, py = 0;
+    heroSection.addEventListener("mousemove", (e) => {
+      const rect = heroSection.getBoundingClientRect();
+      const nx = (e.clientX - rect.left) / rect.width - 0.5;
+      const ny = (e.clientY - rect.top) / rect.height - 0.5;
+      px = nx * 10;
+      py = ny * 8;
+      if (raf) return;
+      raf = requestAnimationFrame(() => {
+        heroVisual.style.setProperty("--par-x", `${px.toFixed(1)}px`);
+        heroVisual.style.setProperty("--par-y", `${py.toFixed(1)}px`);
+        raf = null;
+      });
+    });
+    heroSection.addEventListener("mouseleave", () => {
+      heroVisual.style.setProperty("--par-x", "0px");
+      heroVisual.style.setProperty("--par-y", "0px");
+    });
+  }
+
   // -- Meet Py: one stage, a row of tabs, plus a slow auto-demo --------------------------------------------------------
   // A single large Py display driven by whichever tab is selected, reusing
   // setMascot (the same crossfade/caption/finish-pop/confetti logic every
@@ -361,21 +400,28 @@
     }
   }
 
-  // -- hero mascot: a one-time settle animation, then idle --------------------------------------------------------
-  // Timed to land after the headline and screenshot have already started
-  // moving (see hero-rise / hero-shot-in in CSS) - Py arrives into a scene
-  // that is already forming, rather than all three racing in at once.
+  // -- hero mascot: arrives dim, then wakes once the browser switches on --------------------------------------------------------
+  // Two separate beats, not one: Py first arrives into the scene (a beat
+  // after the headline, per hero-rise's own delays) but stays visibly dim
+  // - not yet "on". The actual wake (brightness ramp + the ring pulse in
+  // CSS) is a second, later beat timed to land with the hero screenshot's
+  // own assemble/sweep (see .shot-frame--hero in CSS), so the browser
+  // visibly switches on first and Py's reaction reads as a response to it,
+  // not two unrelated entrances racing each other.
   const heroAnchor = document.querySelector(".hero-mascot[data-mascot-anchor]");
   if (heroAnchor && !reducedMotion.matches) {
     heroAnchor.style.transform = "translateY(10px) scale(.96)";
     heroAnchor.style.opacity = "0";
-    heroAnchor.style.filter = "brightness(.45) saturate(.6)";
+    heroAnchor.style.filter = "brightness(.4) saturate(.55)";
     window.setTimeout(() => {
-      heroAnchor.style.transition = "transform 560ms cubic-bezier(.16,1,.3,1), opacity 560ms cubic-bezier(.16,1,.3,1), filter 700ms cubic-bezier(.16,1,.3,1)";
+      heroAnchor.style.transition = "transform 560ms cubic-bezier(.16,1,.3,1), opacity 560ms cubic-bezier(.16,1,.3,1)";
       heroAnchor.style.transform = "none";
       heroAnchor.style.opacity = "1";
-      heroAnchor.style.filter = "brightness(1) saturate(1)";
     }, 320);
+    window.setTimeout(() => {
+      heroAnchor.style.transition = "filter 650ms cubic-bezier(.16,1,.3,1)";
+      heroAnchor.style.filter = "brightness(1) saturate(1)";
+    }, 1150);
   }
 
   // -- final CTA: Py is back at rest, not finishing another Mission --------------------------------------------------------
