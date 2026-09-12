@@ -882,7 +882,66 @@ class MainWindow(QMainWindow):
     def _open_tab_search(self) -> None:
         from app.ui.tab_search import TabSearchDialog
 
-        TabSearchDialog(self.tabs, self).exec()
+        TabSearchDialog(
+            self.tabs, self,
+            on_ask_py=self._ask_py_about_tabs,
+            on_close_duplicates=self._close_tabs_at,
+            on_start_mission=self._start_mission_from_tabs,
+        ).exec()
+
+    def _ask_py_about_tabs(self, indices: list[int]) -> None:
+        """Hand a set of open tabs the user picked to Py, to summarize or
+        compare - composing tools Py already has (browser_list_tabs,
+        browser_get_page_text(tab_id=...)) rather than adding a new one.
+
+        The prompt names each tab's stable controller tab_id explicitly so
+        Py does not have to guess which open tab a title refers to.
+        """
+        by_index = {row["index"]: row for row in self.controller.list_tabs()}
+        picked = [by_index[i] for i in indices if i in by_index]
+        if not picked:
+            return
+        lines = "\n".join(
+            f"- tab_id={row['tab_id']}: \"{row['title']}\" ({row['url']})"
+            for row in picked)
+        verb = "Summarize" if len(picked) == 1 else "Summarize and compare"
+        prompt = (
+            f"{verb} the following open tab{'s' if len(picked) != 1 else ''}. "
+            "For each, call browser_get_page_text with the given tab_id "
+            f"first:\n{lines}")
+        self._ask_py(prompt)
+
+    def _close_tabs_at(self, indices: list[int]) -> None:
+        """Close tabs by TabManager index, highest index first so an earlier
+        close never shifts a later target out from under it."""
+        for index in sorted(set(indices), reverse=True):
+            if 0 <= index < self.tabs.count():
+                self.tabs.close_tab(index)
+
+    def _start_mission_from_tabs(self, indices: list[int]) -> None:
+        """Create a Mission whose goal names the tabs the user picked, then
+        ask Py to actually read them - creating the Mission is instant and
+        local (MissionService.start), same as clicking "New Mission"
+        anywhere else in the browser; reading each tab still goes through
+        Py's ordinary tool calls, same as _ask_py_about_tabs above.
+        """
+        by_index = {row["index"]: row for row in self.controller.list_tabs()}
+        picked = [by_index[i] for i in indices if i in by_index]
+        if not picked:
+            return
+        titles = ", ".join(row["title"] for row in picked)
+        mission = self.missions.start(f"Research and consolidate: {titles}")
+        if mission is None:
+            return
+        self._open_mission(mission.id)
+        lines = "\n".join(
+            f"- tab_id={row['tab_id']}: \"{row['title']}\" ({row['url']})"
+            for row in picked)
+        self._ask_py(
+            "I started this Mission from these open tabs. For each, call "
+            "browser_get_page_text with the given tab_id, note anything "
+            "useful with mission_note_source/mission_save_finding, then "
+            f"summarize what you found:\n{lines}")
 
     def _run_find(self, text: str, backward: bool) -> None:
         """Search the current tab, ignoring results from superseded searches.

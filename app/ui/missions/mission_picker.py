@@ -116,6 +116,21 @@ class MissionPicker(QWidget):
         self.explainer.setStyleSheet(f"color:{c.muted}; font-size:{m.text_sm}px;")
         outer.addWidget(self.explainer)
 
+        # What "Py remembers" actually means, said plainly, where the
+        # concept lives - not a separate settings page nobody finds. It only
+        # remembers what a Mission shows (goal, findings, sources, decisions);
+        # it does not watch ordinary browsing to build any profile.
+        self.memory_note = QLabel(
+            "Py only remembers what you see in a Mission - goals, findings, "
+            "sources, decisions. It does not track your ordinary browsing. "
+            '<a href="library" style="color:inherit;">Review or delete '
+            "what's remembered</a>.", self)
+        self.memory_note.setWordWrap(True)
+        self.memory_note.setTextFormat(Qt.TextFormat.RichText)
+        self.memory_note.setStyleSheet(f"color:{c.disabled}; font-size:{m.text_xs}px;")
+        self.memory_note.linkActivated.connect(lambda _href: self._open_library())
+        outer.addWidget(self.memory_note)
+
         self.rule = QFrame(self)
         self.rule.setFrameShape(QFrame.Shape.HLine)
         self.rule.setFixedHeight(1)

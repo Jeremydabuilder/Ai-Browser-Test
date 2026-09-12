@@ -121,5 +121,84 @@ class TabSearchDialogTests(unittest.TestCase):
         self.assertEqual(label, "New Tab")
 
 
+class MultiTabActionsTests(unittest.TestCase):
+    """The "ask Py about selected tabs" and duplicate-detection actions -
+    both explicitly user-triggered, neither storing a second copy of what
+    tabs exist."""
+
+    def setUp(self) -> None:
+        self.tabs = TabManager(_profile, "about:blank")
+        self.tabs.resize(900, 500)
+        self.tabs.show()
+        self.tabs.new_tab("about:blank")
+        self.tabs.tabBar().setTabText(0, "GitHub")
+        self.tabs.new_tab("about:blank")
+        self.tabs.tabBar().setTabText(1, "Python.org")
+        pump()
+
+    def tearDown(self) -> None:
+        for tab in self.tabs.tabs():
+            tab.page.deleteLater()
+        self.tabs.deleteLater()
+        pump(3)
+
+    def test_ask_py_button_is_hidden_without_a_handler(self) -> None:
+        dialog = TabSearchDialog(self.tabs, None)
+        self.assertTrue(dialog.ask_py_button.isHidden())
+
+    def test_ask_py_button_shows_when_a_handler_is_supplied(self) -> None:
+        dialog = TabSearchDialog(self.tabs, None, on_ask_py=lambda indices: None)
+        self.assertFalse(dialog.ask_py_button.isHidden())
+
+    def test_ask_py_button_is_disabled_once_the_list_is_filtered_empty(self) -> None:
+        dialog = TabSearchDialog(self.tabs, None, on_ask_py=lambda indices: None)
+        self.assertTrue(dialog.ask_py_button.isEnabled())  # row 0 auto-selected
+        dialog.field.setText("this matches nothing at all")
+        self.assertFalse(dialog.ask_py_button.isEnabled())
+
+    def test_clicking_ask_py_reports_the_selected_tab_manager_indices(self) -> None:
+        received = []
+        dialog = TabSearchDialog(self.tabs, None, on_ask_py=received.append)
+        dialog.list.item(0).setSelected(True)
+        dialog.list.item(1).setSelected(True)
+        dialog._ask_py_about_selection()
+        self.assertEqual(sorted(received[0]), [0, 1])
+
+    def test_no_duplicates_hides_the_notice(self) -> None:
+        dialog = TabSearchDialog(self.tabs, None, on_close_duplicates=lambda i: None)
+        self.assertTrue(dialog.close_duplicates_button.isHidden())
+
+    def test_two_tabs_on_the_same_url_are_flagged(self) -> None:
+        self.tabs.new_tab("http://127.0.0.1:1/same")
+        self.tabs.new_tab("http://127.0.0.1:1/same")
+        pump()
+        dialog = TabSearchDialog(self.tabs, None, on_close_duplicates=lambda i: None)
+        self.assertFalse(dialog.close_duplicates_button.isHidden())
+        self.assertEqual(len(dialog._duplicate_indices), 1)
+
+    def test_close_duplicates_keeps_one_and_closes_the_rest(self) -> None:
+        self.tabs.new_tab("http://127.0.0.1:1/same")
+        self.tabs.new_tab("http://127.0.0.1:1/same")
+        self.tabs.new_tab("http://127.0.0.1:1/same")
+        pump()
+        before = self.tabs.count()
+        dialog = TabSearchDialog(self.tabs, None, on_close_duplicates=self._close)
+        dialog._close_duplicates()
+        self.assertEqual(self.tabs.count(), before - 2)
+
+    def _close(self, indices: list[int]) -> None:
+        for index in sorted(set(indices), reverse=True):
+            self.tabs.close_tab(index)
+
+    def test_new_tab_pages_are_never_flagged_as_duplicates(self) -> None:
+        # Every extra blank tab shares the same new-tab address - that must
+        # never read as "these are duplicate pages".
+        self.tabs.new_tab()
+        self.tabs.new_tab()
+        pump()
+        dialog = TabSearchDialog(self.tabs, None, on_close_duplicates=lambda i: None)
+        self.assertTrue(dialog.close_duplicates_button.isHidden())
+
+
 if __name__ == "__main__":
     unittest.main()
