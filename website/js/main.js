@@ -163,8 +163,13 @@
   }
 
   // A one-time confetti burst for the same "finished" beat - small pieces in
-  // the site's own accent colors, thrown up and out then falling with a bit
-  // of gravity, cleaned up from the DOM as each piece's own animation ends.
+  // the site's own accent colors, launched outward and up like they've been
+  // thrown, then falling past their start point under gravity while still
+  // tumbling, rather than just fading out where they landed. Each piece's
+  // rise is eased out (decelerating, like something losing its throw speed)
+  // and its fall is eased in (accelerating, like something actually
+  // dropping), which is what makes it read as gravity rather than a generic
+  // float. Cleaned up from the DOM as each piece's own animation ends.
   function spawnConfetti(container, origin) {
     if (!container || reducedMotion.matches) return;
     const probe = document.createElement("span");
@@ -178,7 +183,9 @@
       "var(--spectrum-1)", "var(--spectrum-2)", "var(--spectrum-3)",
       "var(--spectrum-4)", "var(--spectrum-5)",
     ];
-    for (let i = 0; i < 14; i++) {
+    const rise = "cubic-bezier(.16,.85,.35,1)"; // decelerating, like losing throw speed
+    const fall = "cubic-bezier(.55,0,.85,.45)"; // accelerating, like gravity taking over
+    for (let i = 0; i < 16; i++) {
       const piece = document.createElement("span");
       piece.className = "confetti-piece";
       piece.style.left = `${originX}px`;
@@ -186,26 +193,39 @@
       piece.style.background = colors[i % colors.length];
       piece.style.borderRadius = i % 2 === 0 ? "50%" : "2px";
       container.appendChild(piece);
-      const angle = (Math.random() * 140 - 70) * (Math.PI / 180);
-      const distance = 40 + Math.random() * 70;
-      const dx = Math.sin(angle) * distance;
-      const dy = -Math.cos(angle) * distance;
-      const rotate = Math.random() * 520 - 260;
-      const duration = 700 + Math.random() * 500;
+      const angle = (Math.random() * 130 - 65) * (Math.PI / 180);
+      const throwUp = 46 + Math.random() * 46;
+      const drift = (Math.sin(angle) * throwUp) + (Math.random() * 30 - 15);
+      const spin = (Math.random() < 0.5 ? -1 : 1) * (280 + Math.random() * 360);
+      const duration = 950 + Math.random() * 550;
+      const wobble = Math.random() * 18 - 9; // a slight mid-air drift correction, like air resistance
       const anim = piece.animate(
         [
-          { transform: "translate(-50%, -50%) rotate(0deg)", opacity: 1 },
+          { transform: "translate(-50%, -50%) rotate(0deg) scale(.5)", opacity: 1, offset: 0 },
           {
-            transform: `translate(calc(-50% + ${dx}px), calc(-50% + ${(dy * 0.5).toFixed(1)}px)) rotate(${(rotate * 0.5).toFixed(0)}deg)`,
+            transform: `translate(calc(-50% + ${(drift * 0.35).toFixed(1)}px), calc(-50% + ${(-throwUp).toFixed(1)}px)) rotate(${(spin * 0.3).toFixed(0)}deg) scale(1)`,
             opacity: 1,
-            offset: 0.45,
+            offset: 0.22,
+            easing: rise,
           },
           {
-            transform: `translate(calc(-50% + ${(dx * 1.1).toFixed(1)}px), calc(-50% + ${(dy * 0.4 + 60).toFixed(1)}px)) rotate(${rotate.toFixed(0)}deg)`,
+            transform: `translate(calc(-50% + ${(drift * 0.6 + wobble).toFixed(1)}px), calc(-50% + ${(-throwUp * 0.55).toFixed(1)}px)) rotate(${(spin * 0.6).toFixed(0)}deg) scale(.95)`,
+            opacity: 1,
+            offset: 0.45,
+            easing: fall,
+          },
+          {
+            transform: `translate(calc(-50% + ${(drift * 0.85).toFixed(1)}px), calc(-50% + ${(throwUp * 0.7).toFixed(1)}px)) rotate(${(spin * 0.85).toFixed(0)}deg) scale(.85)`,
+            opacity: 1,
+            offset: 0.75,
+            easing: fall,
+          },
+          {
+            transform: `translate(calc(-50% + ${drift.toFixed(1)}px), calc(-50% + ${(throwUp * 1.7).toFixed(1)}px)) rotate(${spin.toFixed(0)}deg) scale(.7)`,
             opacity: 0,
           },
         ],
-        { duration, easing: "cubic-bezier(.2,.6,.3,1)" }
+        { duration, fill: "forwards" }
       );
       anim.onfinish = () => piece.remove();
     }

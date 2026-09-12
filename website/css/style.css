@@ -170,10 +170,11 @@ body::before {
   z-index: 0;
   pointer-events: none;
   background:
-    radial-gradient(36% 30% at 14% 8%, color-mix(in srgb, var(--accent) 20%, transparent), transparent 70%),
-    radial-gradient(32% 28% at 88% 20%, color-mix(in srgb, var(--accent-2) 18%, transparent), transparent 70%),
-    radial-gradient(30% 26% at 78% 82%, color-mix(in srgb, var(--accent-3) 14%, transparent), transparent 72%),
-    radial-gradient(34% 30% at 10% 86%, color-mix(in srgb, var(--spectrum-2) 12%, transparent), transparent 72%);
+    radial-gradient(38% 32% at 14% 8%, color-mix(in srgb, var(--accent) 32%, transparent), transparent 72%),
+    radial-gradient(34% 30% at 88% 20%, color-mix(in srgb, var(--accent-2) 30%, transparent), transparent 72%),
+    radial-gradient(32% 28% at 78% 82%, color-mix(in srgb, var(--accent-3) 26%, transparent), transparent 74%),
+    radial-gradient(36% 32% at 10% 86%, color-mix(in srgb, var(--spectrum-2) 24%, transparent), transparent 74%),
+    radial-gradient(26% 22% at 50% 45%, color-mix(in srgb, var(--spectrum-5) 14%, transparent), transparent 76%);
   animation: atmosphere-drift 50s var(--ease-premium) infinite alternate;
   will-change: transform;
 }
@@ -529,46 +530,76 @@ h1 {
   0%, 100% { transform: translateY(0) scale(1); }
   50% { transform: translateY(-4px) scale(1.008); }
 }
+/* Searching = scanning the room, not rocking in place: the head turns
+   past centre one way, holds a beat as it registers something, turns
+   the other way, holds again. Asymmetric hold-then-turn timing (not a
+   smooth sine) is what actually reads as "looking around" rather than
+   "swaying". */
 @keyframes py-sway {
   0%, 100% { transform: rotate(0deg); }
-  50% { transform: rotate(2.2deg); }
+  20% { transform: rotate(-4deg); }
+  38% { transform: rotate(-4deg); }
+  62% { transform: rotate(3.5deg); }
+  80% { transform: rotate(3.5deg); }
 }
+/* Reading = eyes/head tracking a line left to right, then a quick
+   saccade back to the start of the next line down - a scan-scan-drop
+   pattern, not a back-and-forth wobble. */
 @keyframes py-track {
-  0%, 100% { transform: translateX(0); }
-  50% { transform: translateX(3px); }
+  0%   { transform: translate(-4px, 0); }
+  38%  { transform: translate(4px, 0); }
+  46%  { transform: translate(4px, .5px); }
+  50%  { transform: translate(-4px, 2px); }
+  88%  { transform: translate(4px, 2px); }
+  96%  { transform: translate(4px, 2.5px); }
+  100% { transform: translate(-4px, 0); }
 }
+/* Thinking = a slower upward tilt-and-hold, like looking up and off to
+   the side while working something out, not a plain vertical bob. */
 @keyframes py-calm {
-  0%, 100% { transform: translateY(0); }
-  50% { transform: translateY(-2px); }
+  0%, 100% { transform: translateY(0) rotate(0deg); }
+  45% { transform: translateY(-3px) rotate(-2deg); }
+  70% { transform: translateY(-3px) rotate(-2deg); }
 }
 /* Working used to share the same slow rock as searching/approval - it
    read as "idling", not "doing something". A fast, small, stepped
    wobble (steps(), not an eased curve) reads mechanically busy instead
-   of dreamy, which is what a burst of typing actually looks like on a
-   still image. Paired with .type-taps below. */
+   of dreamy, matching the quick, tiny, repetitive motion of hands
+   actually typing. Paired with .type-taps below. */
 @keyframes py-type {
-  0%, 100% { transform: translateY(0) rotate(0deg); }
-  25% { transform: translateY(-1px) rotate(-1deg); }
-  75% { transform: translateY(0) rotate(1deg); }
+  0%, 100% { transform: translate(0, 0) rotate(0deg); }
+  20% { transform: translate(-1px, -1px) rotate(-1.5deg); }
+  45% { transform: translate(1px, 0) rotate(1deg); }
+  70% { transform: translate(-1px, -1px) rotate(-1deg); }
+  85% { transform: translate(1px, 0) rotate(1.5deg); }
 }
+/* Waiting for approval = a raised-attention pulse, quicker and brighter
+   than a passive idle glow - the visual equivalent of someone paused
+   mid-motion, waiting on you before they can continue. */
 @keyframes py-alert-ring {
-  0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 30%, transparent); }
-  50% { box-shadow: 0 0 0 8px color-mix(in srgb, var(--accent) 0%, transparent); }
+  0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 38%, transparent); }
+  50% { box-shadow: 0 0 0 10px color-mix(in srgb, var(--accent) 0%, transparent); }
 }
-/* A thought-bubble trail - three dots rising and fading in sequence -
-   for "thinking", instead of the same idle-style sway every other state
-   used. */
+/* A thought-bubble trail - three dots popping in with a small overshoot
+   (like an actual comic thought-bubble settling into place), then
+   drifting up and fading - slower and unhurried, the pace of actually
+   turning something over rather than reacting to it. */
 @keyframes bubble-rise {
-  0%, 20% { transform: translateY(0) scale(.7); opacity: 0; }
-  50% { transform: translateY(-4px) scale(1); opacity: .9; }
-  85%, 100% { transform: translateY(-10px) scale(.8); opacity: 0; }
+  0%, 15% { transform: translateY(2px) scale(.4); opacity: 0; }
+  30% { transform: translateY(-2px) scale(1.15); opacity: .95; }
+  40% { transform: translateY(-4px) scale(1); opacity: .9; }
+  80% { transform: translateY(-14px) scale(.9); opacity: .4; }
+  100% { transform: translateY(-20px) scale(.75); opacity: 0; }
 }
-/* A blinking key-tap pair near where Py's hands would be - "working" now
-   reads as typing at a keyboard, not just moving. */
+/* Two key-taps blinking one at a time, quick and uneven - closer to the
+   irregular rhythm of fingers actually hitting keys than a synchronised
+   blink. */
 @keyframes tap-blink {
-  0%, 40% { opacity: 0; transform: scale(.6); }
-  50% { opacity: 1; transform: scale(1); }
-  90%, 100% { opacity: 0; transform: scale(.6); }
+  0%, 100% { opacity: 0; transform: scale(.5) translateY(1px); }
+  15% { opacity: 1; transform: scale(1) translateY(-1px); }
+  30% { opacity: 0; transform: scale(.5) translateY(1px); }
+  55% { opacity: 1; transform: scale(1.05) translateY(-1px); }
+  68% { opacity: 0; transform: scale(.5) translateY(1px); }
 }
 
 .hero-mascot .mascot-img { animation: py-breathe 4.6s ease-in-out infinite; }
@@ -620,23 +651,23 @@ h1 {
   opacity: 0;
 }
 
-.story-py[data-state="searching"] img { animation: py-sway 2.3s ease-in-out infinite; }
-.story-py[data-state="reading"] img { animation: py-track 2.8s ease-in-out infinite; }
-.story-py[data-state="thinking"] img { animation: py-calm 5s ease-in-out infinite; }
-.story-py[data-state="thinking"] .think-bubbles span { animation: bubble-rise 1.8s ease-in-out infinite; }
-.story-py[data-state="working"] img { animation: py-type .6s steps(2) infinite; }
-.story-py[data-state="working"] .type-taps span { animation: tap-blink .5s steps(1) infinite; }
-.story-py[data-state="approval"] { animation: py-alert-ring 2.2s ease-in-out infinite; }
+.story-py[data-state="searching"] img { animation: py-sway 3.2s ease-in-out infinite; }
+.story-py[data-state="reading"] img { animation: py-track 3.4s ease-in-out infinite; }
+.story-py[data-state="thinking"] img { animation: py-calm 5.5s ease-in-out infinite; }
+.story-py[data-state="thinking"] .think-bubbles span { animation: bubble-rise 2.2s ease-in-out infinite; }
+.story-py[data-state="working"] img { animation: py-type .6s steps(4, jump-none) infinite; }
+.story-py[data-state="working"] .type-taps span { animation: tap-blink .9s linear infinite; }
+.story-py[data-state="approval"] { animation: py-alert-ring 1.9s ease-in-out infinite; }
 .story-py[data-state="finished"] img { animation: none; }
 
 .state-card img { transition: transform .3s cubic-bezier(.2, .8, .3, 1.2); transform-origin: 50% 100%; }
-.state-card.is-playing[data-state="searching"] img { animation: py-sway 2.3s ease-in-out infinite; }
-.state-card.is-playing[data-state="reading"] img { animation: py-track 2.8s ease-in-out infinite; }
-.state-card.is-playing[data-state="thinking"] img { animation: py-calm 5s ease-in-out infinite; }
-.state-card.is-playing[data-state="thinking"] .think-bubbles span { animation: bubble-rise 1.8s ease-in-out infinite; }
-.state-card.is-playing[data-state="working"] img { animation: py-type .6s steps(2) infinite; }
-.state-card.is-playing[data-state="working"] .type-taps span { animation: tap-blink .5s steps(1) infinite; }
-.state-card.is-playing[data-state="approval"] img { animation: py-sway 2.6s ease-in-out infinite; }
+.state-card.is-playing[data-state="searching"] img { animation: py-sway 3.2s ease-in-out infinite; }
+.state-card.is-playing[data-state="reading"] img { animation: py-track 3.4s ease-in-out infinite; }
+.state-card.is-playing[data-state="thinking"] img { animation: py-calm 5.5s ease-in-out infinite; }
+.state-card.is-playing[data-state="thinking"] .think-bubbles span { animation: bubble-rise 2.2s ease-in-out infinite; }
+.state-card.is-playing[data-state="working"] img { animation: py-type .6s steps(4, jump-none) infinite; }
+.state-card.is-playing[data-state="working"] .type-taps span { animation: tap-blink .9s linear infinite; }
+.state-card.is-playing[data-state="approval"] img { animation: py-sway 2.9s ease-in-out infinite; }
 .state-card.is-playing[data-state="idle"] img { animation: py-breathe 4.6s ease-in-out infinite; }
 .think-bubbles span:nth-child(1) { animation-delay: 0s; }
 .think-bubbles span:nth-child(2) { animation-delay: .3s; }
@@ -709,8 +740,9 @@ h1 {
 .section { padding: var(--space-8) 0; }
 .section--muted {
   background:
-    radial-gradient(60% 140% at 100% 0%, color-mix(in srgb, var(--accent-2) 7%, transparent), transparent 70%),
-    radial-gradient(60% 140% at 0% 100%, color-mix(in srgb, var(--accent-3) 6%, transparent), transparent 70%),
+    radial-gradient(60% 140% at 100% 0%, color-mix(in srgb, var(--accent-2) 15%, transparent), transparent 70%),
+    radial-gradient(60% 140% at 0% 100%, color-mix(in srgb, var(--accent-3) 13%, transparent), transparent 70%),
+    radial-gradient(50% 100% at 50% 50%, color-mix(in srgb, var(--spectrum-2) 6%, transparent), transparent 75%),
     var(--surface-alt);
 }
 .section-head { max-width: 620px; margin-bottom: var(--space-6); }
@@ -1043,8 +1075,9 @@ h2 {
   padding: var(--space-8) 0;
   text-align: center;
   background:
-    radial-gradient(70% 100% at 20% 0%, color-mix(in srgb, var(--accent) 10%, transparent), transparent 65%),
-    radial-gradient(70% 100% at 80% 100%, color-mix(in srgb, var(--accent-3) 9%, transparent), transparent 65%),
+    radial-gradient(70% 100% at 20% 0%, color-mix(in srgb, var(--accent) 20%, transparent), transparent 65%),
+    radial-gradient(70% 100% at 80% 100%, color-mix(in srgb, var(--accent-3) 18%, transparent), transparent 65%),
+    radial-gradient(50% 80% at 50% 40%, color-mix(in srgb, var(--spectrum-5) 8%, transparent), transparent 70%),
     linear-gradient(180deg, var(--surface-alt), var(--bg));
 }
 .final-cta-inner { position: relative; display: flex; flex-direction: column; align-items: center; }
