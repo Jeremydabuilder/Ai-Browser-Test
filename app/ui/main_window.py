@@ -211,6 +211,8 @@ class MainWindow(QMainWindow):
         self._agent_action.setCheckable(True)
         self._add_action(tools_menu, "&Configure AI Agent…", None, self._configure_agent)
         self._add_action(tools_menu, "Agent &Diagnostics…", None, self._show_diagnostics)
+        self._add_action(tools_menu, "Add &Local File to Context…", None,
+                         self._ask_py_about_local_file)
         tools_menu.addSeparator()
         self._add_action(tools_menu, "&Mission Library", "Ctrl+Shift+M",
                          self._show_mission_library)
@@ -933,6 +935,44 @@ class MainWindow(QMainWindow):
             "For each, call the tool named next to it with the given tab_id "
             f"first:\n{lines}")
         self._ask_py(prompt)
+
+    def _ask_py_about_local_file(self) -> None:
+        """Let the user explicitly pick one local file, parse it locally,
+        and hand its text to Py - filename and source disclosed, content
+        fenced as untrusted the same way page text is.
+
+        Deliberately not a tool the model can call: the model never sees a
+        path, never chooses a file, and never reads anything the user did
+        not themselves pick in this native dialog. That is the whole
+        "no unrestricted filesystem access" story for local files.
+        """
+        from PySide6.QtWidgets import QFileDialog, QMessageBox
+
+        from app.agent.tools import wrap_untrusted
+        from app.browser.file_context import (
+            SUPPORTED_SUFFIXES, FileParsingError, read_local_file,
+        )
+
+        patterns = " ".join(f"*{suffix}" for suffix in sorted(SUPPORTED_SUFFIXES))
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Add File to Context", "", f"Supported files ({patterns})")
+        if not path:
+            return
+        try:
+            document = read_local_file(path)
+        except FileParsingError as exc:
+            QMessageBox.warning(self, "Could not read file", str(exc))
+            return
+        block = wrap_untrusted({
+            "filename": document.filename,
+            "source": document.source,
+            "file_text": document.text,
+            "truncated": document.truncated,
+        })
+        self._ask_py(
+            f"I am attaching the local file \"{document.filename}\". "
+            f"Its content follows, fenced as untrusted data:\n{block}\n"
+            "Read it and help with whatever I ask about it next.")
 
     def _close_tabs_at(self, indices: list[int]) -> None:
         """Close tabs by TabManager index, highest index first so an earlier

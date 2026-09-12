@@ -27,3 +27,7 @@ pypdf>=5,<7
 # install -r requirements.txt` alone is enough; nothing in this codebase
 # imports cffi directly.
 cffi
+
+# Local file context (app/browser/file_context.py): reading a .docx file the
+# user explicitly attached. TXT/MD/JSON/CSV need nothing beyond the stdlib.
+python-docx

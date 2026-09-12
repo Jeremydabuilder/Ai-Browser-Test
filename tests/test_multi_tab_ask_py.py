@@ -200,5 +200,64 @@ class CloseTabsAtTests(unittest.TestCase):
         self.assertEqual(self.window.tabs.count(), before - 1)
 
 
+class LocalFileContextTests(unittest.TestCase):
+    """_ask_py_about_local_file: the model never sees a path - only a user
+    action in a native file dialog can attach a file at all."""
+
+    def setUp(self) -> None:
+        self._dir = tempfile.TemporaryDirectory()
+        self.db = Database(os.path.join(self._dir.name, "t.sqlite3"))
+        self.profile = _profile
+        self.window = MainWindow(self.profile, self.db, start_urls=["about:blank"])
+        self.window.resize(1000, 700)
+        pump()
+        self._asked: list[str] = []
+        self.window._ask_py = self._asked.append
+
+    def tearDown(self) -> None:
+        self.window.close()
+        self.db.close()
+        self._dir.cleanup()
+        pump(3)
+
+    def _pick(self, path: str):
+        from unittest.mock import patch
+
+        return patch("PySide6.QtWidgets.QFileDialog.getOpenFileName",
+                    return_value=(path, ""))
+
+    def test_choosing_a_file_sends_its_content_fenced_to_py(self) -> None:
+        path = os.path.join(self._dir.name, "notes.txt")
+        with open(path, "w") as handle:
+            handle.write("Some notes a user wrote locally.")
+        with self._pick(path):
+            self.window._ask_py_about_local_file()
+        self.assertEqual(len(self._asked), 1)
+        prompt = self._asked[0]
+        self.assertIn("notes.txt", prompt)
+        self.assertIn("Some notes a user wrote locally.", prompt)
+        from app.agent.tools import UNTRUSTED_CLOSE, UNTRUSTED_OPEN
+
+        self.assertIn(UNTRUSTED_OPEN, prompt)
+        self.assertIn(UNTRUSTED_CLOSE, prompt)
+
+    def test_cancelling_the_dialog_asks_nothing(self) -> None:
+        with self._pick(""):
+            self.window._ask_py_about_local_file()
+        self.assertEqual(self._asked, [])
+
+    def test_an_unsupported_file_type_shows_a_warning_not_a_crash(self) -> None:
+        from unittest.mock import patch
+
+        path = os.path.join(self._dir.name, "program.exe")
+        with open(path, "wb") as handle:
+            handle.write(b"MZ\x00\x00")
+        with self._pick(path), patch(
+                "PySide6.QtWidgets.QMessageBox.warning") as warn:
+            self.window._ask_py_about_local_file()
+        warn.assert_called_once()
+        self.assertEqual(self._asked, [])
+
+
 if __name__ == "__main__":
     unittest.main()
