@@ -800,6 +800,12 @@ class ToolOutcome:
 
     future: BrowserFuture | None = None
     immediate: dict[str, Any] | None = None
+    #: Set instead of ``future`` for MCP tool calls. Resolves to a plain
+    #: ``{"ok": bool, "text": str}`` dict (see app.mcp.adapter.render_tool_result)
+    #: rather than a browser ActionResult - MCP calls have no page/effects to
+    #: encode, so they get their own completion path in AgentSession._execute
+    #: instead of being forced through encode()/render().
+    mcp_future: BrowserFuture | None = None
     #: Short human-readable line for the activity log, e.g. 'Clicking "Search"'.
     activity: str = ""
 
@@ -812,7 +818,7 @@ class ToolRegistry:
     """Validates tool arguments and calls BrowserController."""
 
     def __init__(self, browser: BrowserController, limits: ContextLimits | None = None,
-                 missions=None, *, autonomy: str = Autonomy.STANDARD) -> None:
+                 missions=None, *, autonomy: str = Autonomy.STANDARD, mcp=None) -> None:
         """``missions`` is the Mission service, or None when there is not one.
 
         Typed loosely on purpose: this class needs exactly one method from it,
@@ -826,10 +832,17 @@ class ToolRegistry:
         in assess(), never inside it. An unrecognised value is treated as
         STANDARD rather than raising, the same "a bad preference must not
         crash the agent" rule every other stored setting follows.
+
+        ``mcp`` is an ``McpConnectionManager`` (app.mcp.connection_manager),
+        or None when MCP is unavailable/unconfigured. Like ``missions``, this
+        registry asks it for exactly what it needs (``schemas()``,
+        ``knows()``, ``describe_call()``, ``run_tool()``) and holds nothing
+        else - app.mcp itself never imports anything from app.agent.
         """
         self._browser = browser
         self._limits = limits or ContextLimits()
         self._missions = missions
+        self._mcp = mcp
         self._autonomy = autonomy if autonomy in (
             Autonomy.READ_ONLY, Autonomy.ASK_ALWAYS, Autonomy.STANDARD) else Autonomy.STANDARD
 
@@ -869,7 +882,9 @@ class ToolRegistry:
     # -- the sensitivity question ----------------------------------------
     def knows(self, name: str) -> bool:
         """Is this a tool that exists? Asked before anything is announced."""
-        return name in TOOL_NAMES
+        if name in TOOL_NAMES:
+            return True
+        return bool(self._mcp is not None and name.startswith("mcp.") and self._mcp.knows(name))
 
     def assess(self, name: str, args: dict[str, Any]) -> dict[str, Any]:
         """What would this tool call do, and does it need the user's blessing?
@@ -885,6 +900,18 @@ class ToolRegistry:
     def _raw_assess(self, name: str, args: dict[str, Any]) -> dict[str, Any]:
         if name in READ_ONLY_TOOLS:
             return {"level": "normal", "reasons": [], "requires_confirmation": False}
+        if name.startswith("mcp."):
+            # Phase 1 only ever advertises (schemas()) and runs (run_tool())
+            # a READ_ONLY-classified MCP tool in the first place - see
+            # app.mcp.safety.classify - so by the time a call reaches this
+            # point it has already been judged read-only, independent of
+            # whatever the server itself claims. A tool that somehow is not
+            # actually known (should be unreachable) fails closed as elevated,
+            # the same as any other unclassified write.
+            if self._mcp is not None and self._mcp.knows(name):
+                return {"level": "normal", "reasons": [], "requires_confirmation": False}
+            return {"level": "elevated", "reasons": ["unrecognised MCP tool"],
+                    "requires_confirmation": False}
         if name in LOCAL_WRITE_TOOLS:
             # A local, reversible write to the user's own mission board. It
             # never reaches the browser's safety layer because there is no
@@ -1059,11 +1086,30 @@ class ToolRegistry:
                 return "Waiting for the page to update"
         except ToolError:
             pass
+        if name.startswith("mcp.") and self._mcp is not None:
+            return self._mcp.describe_call(name, args)
         return name.replace("browser_", "").replace("_", " ").capitalize()
+
+    def schemas(self) -> list[dict[str, Any]]:
+        """The full tool list to send the model: native tools plus whatever
+        read-only MCP tools are currently connected and enabled. Called
+        instead of the module-level TOOL_SCHEMAS wherever a session builds
+        its request, so MCP tools appear and disappear as servers connect
+        and disconnect without any other code needing to know MCP exists."""
+        if self._mcp is None:
+            return list(TOOL_SCHEMAS)
+        return list(TOOL_SCHEMAS) + self._mcp.schemas()
 
     # -- running ---------------------------------------------------------
     def run(self, name: str, args: dict[str, Any]) -> ToolOutcome:
         """Validate and dispatch. Raises ToolError for bad arguments."""
+        if name.startswith("mcp."):
+            if self._mcp is None or not self._mcp.knows(name):
+                raise ToolError(f"Unknown tool '{name}'.")
+            if not isinstance(args, dict):
+                raise ToolError("Tool arguments must be an object.")
+            return ToolOutcome(mcp_future=self._mcp.run_tool(name, args),
+                               activity=self._mcp.describe_call(name, args))
         if name not in TOOL_NAMES:
             raise ToolError(f"Unknown tool '{name}'.")
         if not isinstance(args, dict):

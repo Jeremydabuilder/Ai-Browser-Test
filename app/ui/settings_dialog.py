@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QRadioButton,
+    QTabWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -48,17 +49,47 @@ class SettingsDialog(QDialog):
     #: reaching into the dialog to find out what changed.
     saved = Signal()
 
-    def __init__(self, settings: SettingsStore, parent: QWidget | None = None) -> None:
+    def __init__(self, settings: SettingsStore, parent: QWidget | None = None,
+                 *, mcp=None) -> None:
+        """``mcp`` is an McpConnectionManager (app.mcp.connection_manager), or
+        None. When given, a "Connected Tools" tab is added alongside General -
+        omitting it (rather than requiring every caller to pass one) keeps
+        every other SettingsDialog call site and every existing test working
+        unchanged."""
         super().__init__(parent)
         self._settings = settings
         c = theme.palette_for(QApplication.instance())
         m = theme.METRICS
         self.setWindowTitle("Settings")
-        self.resize(520, 460)
+        self.resize(560, 520)
 
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(m.space_5, m.space_5, m.space_5, m.space_4)
-        layout.setSpacing(m.space_2)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+
+        if mcp is None:
+            general = QWidget(self)
+            layout = QVBoxLayout(general)
+            layout.setContentsMargins(m.space_5, m.space_5, m.space_5, m.space_4)
+            layout.setSpacing(m.space_2)
+            outer.addWidget(general)
+        else:
+            tabs = QTabWidget(self)
+            general = QWidget(self)
+            layout = QVBoxLayout(general)
+            layout.setContentsMargins(m.space_5, m.space_5, m.space_5, m.space_4)
+            layout.setSpacing(m.space_2)
+            tabs.addTab(general, "General")
+
+            from app.ui.mcp_settings import ConnectedToolsPanel
+
+            tools_tab = QWidget(self)
+            tools_layout = QVBoxLayout(tools_tab)
+            tools_layout.setContentsMargins(m.space_5, m.space_4, m.space_5, m.space_4)
+            tools_layout.addWidget(ConnectedToolsPanel(mcp, tools_tab))
+            tabs.addTab(tools_tab, "Connected Tools")
+
+            outer.addWidget(tabs)
 
         def section_heading(text: str) -> QLabel:
             label = QLabel(text, self)
@@ -137,6 +168,11 @@ class SettingsDialog(QDialog):
         layout.addWidget(self.problem)
 
         layout.addStretch(1)
+
+        # Shared by both tabs, so it stays visible - and Enter still saves -
+        # regardless of which tab is showing. Connected Tools changes apply
+        # immediately through the manager and do not need this button, but
+        # General's fields do, so Save/Cancel live outside the tab widget.
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel,
             self)
@@ -150,7 +186,10 @@ class SettingsDialog(QDialog):
             save_button.setAutoDefault(True)
         buttons.accepted.connect(self._save)
         buttons.rejected.connect(self.reject)
-        layout.addWidget(buttons)
+        button_row = QVBoxLayout()
+        button_row.setContentsMargins(m.space_5, m.space_2, m.space_5, m.space_4)
+        button_row.addWidget(buttons)
+        outer.addLayout(button_row)
 
     # -- behaviour --------------------------------------------------------
     def _selected_mode(self) -> str:

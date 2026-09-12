@@ -42,7 +42,7 @@ from app.agent.claude_client import AgentResponse, ClaudeError, ClaudeTransport,
 from app.agent.config import AgentConfig
 from app.agent.prompt import SYSTEM_PROMPT
 from app.agent import trace as tracing
-from app.agent.tools import TOOL_SCHEMAS, ToolError, ToolRegistry
+from app.agent.tools import ToolError, ToolRegistry
 from app.agent.usage import Usage
 from app.browser.controller import BrowserController
 
@@ -261,14 +261,16 @@ class AgentSession(QObject):
         config: AgentConfig | None = None,
         parent: QObject | None = None,
         missions=None,
+        mcp=None,
     ) -> None:
         super().__init__(parent)
         self.config = config or AgentConfig()
         self._browser = browser
-        # `missions` is passed straight through to the registry, which needs
-        # one method from it. The session itself stays Mission-ignorant.
+        # `missions` and `mcp` are passed straight through to the registry,
+        # which needs a handful of methods from each. The session itself
+        # stays Mission- and MCP-ignorant.
         self._tools = ToolRegistry(browser, self.config.limits, missions,
-                                  autonomy=self.config.autonomy)
+                                  autonomy=self.config.autonomy, mcp=mcp)
 
         # -- agent state, deliberately separate from browser state -------
         self._messages: list[dict[str, Any]] = []
@@ -530,7 +532,7 @@ class AgentSession(QObject):
         self.trace.record(tracing.MODEL_REQUESTED, turn=self._turns,
                           messages=len(self._messages))
         self._set_state(AgentState.THINKING)
-        self._dispatch.emit(SYSTEM_PROMPT, self._messages, TOOL_SCHEMAS)
+        self._dispatch.emit(SYSTEM_PROMPT, self._messages, self._tools.schemas())
 
     @Slot(object)
     def _on_response(self, response: AgentResponse) -> None:
@@ -626,7 +628,7 @@ class AgentSession(QObject):
         if self._cancelled:
             return
         self._set_state(AgentState.THINKING)
-        self._dispatch.emit(SYSTEM_PROMPT, self._messages, TOOL_SCHEMAS)
+        self._dispatch.emit(SYSTEM_PROMPT, self._messages, self._tools.schemas())
 
     def retry_now(self) -> None:
         """Skip the rest of a scheduled auto-retry wait and send it now.
@@ -874,6 +876,31 @@ class AgentSession(QObject):
                 self._record_result(call.id, self._tools.render(result, payload),
                                     is_error=not result.ok, tool_name=call.name)
             self._advance()
+
+        if outcome.mcp_future is not None:
+            def on_mcp_done(payload: Any) -> None:
+                if self._cancelled:
+                    return
+                if payload is None:
+                    self.trace.record(tracing.TOOL_FAILED, tool=call.name, reason="timeout")
+                    self._update_step(StepState.FAILED, "timed out")
+                    self._record_result(call.id, self._tool_error(
+                        "TIMEOUT", "The MCP tool did not respond in time."), is_error=True)
+                else:
+                    ok = bool(payload.get("ok", False))
+                    self.trace.record(tracing.TOOL_SUCCEEDED if ok else tracing.TOOL_FAILED,
+                                      tool=call.name)
+                    if ok:
+                        self._update_step(StepState.DONE)
+                        self._record_step(call, description)
+                    else:
+                        self._update_step(StepState.FAILED, "failed")
+                    self._record_result(call.id, payload.get("text", ""),
+                                        is_error=not ok, tool_name=call.name)
+                self._advance()
+
+            outcome.mcp_future.then(on_mcp_done)
+            return
 
         outcome.future.then(on_done)
 

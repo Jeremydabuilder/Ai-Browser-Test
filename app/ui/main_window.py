@@ -27,6 +27,8 @@ from PySide6.QtWidgets import (
 from app import APP_NAME
 from app.browser.controller import BrowserController
 from app.missions import MissionService, MissionStore
+from app.mcp.config import McpServerStore
+from app.mcp.connection_manager import McpConnectionManager
 from app.routines import RoutineService, RoutineStore
 from app.browser.load_error import ErrorCategory, LoadError
 from app.browser.profile import BrowserProfile
@@ -80,6 +82,11 @@ class MainWindow(QMainWindow):
         # drives it; see app/missions/service.py.
         self.missions = MissionService(
             MissionStore(database), self.controller, self.tabs, self)
+        #: MCP client core (Phase 1, read-only). Owned here for the same
+        #: reason as Missions: it must outlive the agent panel and every
+        #: rebuilt AgentSession, and connections should stay live across a
+        #: model/credential swap rather than reconnecting every time.
+        self.mcp = McpConnectionManager(McpServerStore(self.settings), self)
         #: Taught sequences of the agent's own actions. Owned alongside
         #: Missions for the same reason: it must outlive the panel and the
         #: agent session, both of which are rebuilt.
@@ -1042,7 +1049,7 @@ class MainWindow(QMainWindow):
     def _show_settings(self) -> None:
         from app.ui.settings_dialog import SettingsDialog
 
-        dialog = SettingsDialog(self.settings, self)
+        dialog = SettingsDialog(self.settings, self, mcp=self.mcp)
         dialog.saved.connect(self._apply_settings)
         dialog.exec()
 
@@ -1139,7 +1146,7 @@ class MainWindow(QMainWindow):
 
         if self._agent_session is None:
             self._agent_session, reason = build_session(
-                self.controller, self, self.settings, self.missions)
+                self.controller, self, self.settings, self.missions, self.mcp)
             if self._agent_session is None:
                 self._agent_unavailable = True
                 self._show_status(f"AI agent unavailable: {reason}")
@@ -1334,6 +1341,7 @@ class MainWindow(QMainWindow):
         if self._agent_session is not None:
             self._agent_session.shutdown()
             self._agent_session = None
+        self.mcp.shutdown()
         # Tear down render processes explicitly; otherwise Qt can emit warnings
         # about pages outliving their profile during interpreter shutdown.
         for tab in self.tabs.tabs():
