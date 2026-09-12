@@ -388,8 +388,15 @@ class AgentSession(QObject):
         """The conversation so far. Copied, so callers cannot corrupt it."""
         return list(self._messages)
 
-    def send(self, message: str) -> bool:
-        """Start a task. Returns False if the agent is already busy."""
+    def send(self, message: str, *, image: dict[str, str] | None = None) -> bool:
+        """Start a task. Returns False if the agent is already busy.
+
+        ``image`` is ``{"mime_type": ..., "data": <base64>}`` - passed only
+        by a caller that has already checked the configured provider actually
+        supports images (see app.agent.config.provider_supports_images) and
+        told the user which provider will receive it. This method does not
+        gate on that itself; it only shapes the message.
+        """
         message = (message or "").strip()
         if not message or self.busy:
             return False
@@ -409,7 +416,16 @@ class AgentSession(QObject):
         briefing = self._briefing()
         if briefing:
             self._messages.append({"role": "user", "content": briefing})
-        self._messages.append({"role": "user", "content": message})
+        if image is not None:
+            content: Any = [
+                {"type": "text", "text": message},
+                {"type": "image", "source": {"type": "base64",
+                                             "media_type": image["mime_type"],
+                                             "data": image["data"]}},
+            ]
+        else:
+            content = message
+        self._messages.append({"role": "user", "content": content})
         self._trim_history()
         self._request()
         return True

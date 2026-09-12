@@ -967,16 +967,20 @@ class AgentPanel(QWidget):
         self._last_user_message = ""
         self._session.clear()
 
-    def ask(self, text: str) -> None:
+    def ask(self, text: str, *, image: dict[str, str] | None = None) -> None:
         """Send a prepared message from outside the panel.
 
         Public because the window uses it for actions the user started
         elsewhere - challenging a claim from the Mission page. It is the same
         path as a quick action, so nothing new can reach the agent through it.
-        """
-        self._ask(text)
 
-    def _ask(self, text: str) -> None:
+        ``image`` carries a screenshot or local image file the caller has
+        already gated on provider support and disclosed to the user - see
+        MainWindow._send_image_to_py.
+        """
+        self._ask(text, image=image)
+
+    def _ask(self, text: str, *, image: dict[str, str] | None = None) -> None:
         """Send a prepared message, exactly as if the user had typed it."""
         if self._session is None or self._session.busy:
             return
@@ -986,7 +990,7 @@ class AgentPanel(QWidget):
         self._last_user_message = text
         self._begin_conversation()
         self._append("user", text)
-        self._session.send(text)
+        self._session.send(text, image=image)
 
     def _begin_conversation(self) -> None:
         """Clear the invitation the first time something is actually asked."""

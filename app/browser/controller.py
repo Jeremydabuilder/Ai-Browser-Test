@@ -754,6 +754,25 @@ class BrowserController(QObject):
         result.data["height"] = image.height()
         return result
 
+    def grab_tab_pixmap(self, tab_id: int | None = None):
+        """The tab's rendered surface as a QPixmap, or None with a message.
+
+        Used for in-memory image context (see app/browser/image_context.py) -
+        UI-internal, unlike `screenshot`, which is the general automation API
+        and always writes to a path. Never returned through an ActionResult:
+        a QPixmap is not JSON-safe and this never crosses the tool boundary.
+        """
+        tab = self._tab_for(tab_id)
+        if tab is None:
+            return None, "No tab is open."
+        try:
+            image = tab.view.grab()
+        except Exception as exc:  # noqa: BLE001
+            return None, f"Capturing the page failed: {exc}"
+        if image.isNull():
+            return None, "The page could not be captured."
+        return image, ""
+
     # -- public: waiting --------------------------------------------------
     def wait_for_load(self, tab_id: int | None = None, *, timeout_ms: int = DEFAULT_TIMEOUT_MS) -> BrowserFuture:
         """Resolve when the tab is not loading (immediately if it already isn't)."""

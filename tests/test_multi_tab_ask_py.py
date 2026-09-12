@@ -259,5 +259,105 @@ class LocalFileContextTests(unittest.TestCase):
         self.assertEqual(self._asked, [])
 
 
+class ImageContextTests(unittest.TestCase):
+    """Screenshot and local-image flows: capability-gated on the configured
+    provider, and disclosed to the user before anything is sent - see
+    MainWindow._send_image_to_py."""
+
+    def setUp(self) -> None:
+        self._dir = tempfile.TemporaryDirectory()
+        self.db = Database(os.path.join(self._dir.name, "t.sqlite3"))
+        self.profile = _profile
+        self.window = MainWindow(self.profile, self.db, start_urls=["about:blank"])
+        self.window.resize(1000, 700)
+        pump()
+        self._asked: list[tuple] = []
+        self.window._ask_py = lambda text, image=None: self._asked.append((text, image))
+
+    def tearDown(self) -> None:
+        self.window.close()
+        self.db.close()
+        self._dir.cleanup()
+        pump(3)
+
+    def _set_provider(self, provider: str) -> None:
+        from app.agent.config import KEY_AGENT_PROVIDER
+
+        self.window.settings.set(KEY_AGENT_PROVIDER, provider)
+
+    def test_local_image_is_refused_for_a_provider_without_image_support(self) -> None:
+        from unittest.mock import patch
+
+        self._set_provider("groq")
+        png_path = os.path.join(self._dir.name, "pic.png")
+        from PySide6.QtGui import QColor, QPixmap
+
+        pixmap = QPixmap(4, 4)
+        pixmap.fill(QColor("green"))
+        pixmap.save(png_path, "PNG")
+        with patch("PySide6.QtWidgets.QFileDialog.getOpenFileName",
+                  return_value=(png_path, "")), \
+             patch("PySide6.QtWidgets.QMessageBox.warning") as warn:
+            self.window._ask_py_about_local_image()
+        warn.assert_called_once()
+        self.assertIn("does not support", warn.call_args[0][2])
+        self.assertEqual(self._asked, [])
+
+    def test_local_image_asks_for_confirmation_before_sending(self) -> None:
+        from unittest.mock import patch
+
+        from PySide6.QtGui import QColor, QPixmap
+        from PySide6.QtWidgets import QMessageBox
+
+        self._set_provider("anthropic")
+        png_path = os.path.join(self._dir.name, "pic.png")
+        pixmap = QPixmap(4, 4)
+        pixmap.fill(QColor("green"))
+        pixmap.save(png_path, "PNG")
+        with patch("PySide6.QtWidgets.QFileDialog.getOpenFileName",
+                  return_value=(png_path, "")), \
+             patch("PySide6.QtWidgets.QMessageBox.question",
+                  return_value=QMessageBox.StandardButton.Yes) as question:
+            self.window._ask_py_about_local_image()
+        question.assert_called_once()
+        self.assertIn("Anthropic", question.call_args[0][2])
+        self.assertEqual(len(self._asked), 1)
+        text, image = self._asked[0]
+        self.assertIn("pic.png", text)
+        self.assertEqual(image["mime_type"], "image/png")
+
+    def test_declining_confirmation_sends_nothing(self) -> None:
+        from unittest.mock import patch
+
+        from PySide6.QtGui import QColor, QPixmap
+        from PySide6.QtWidgets import QMessageBox
+
+        self._set_provider("anthropic")
+        png_path = os.path.join(self._dir.name, "pic.png")
+        pixmap = QPixmap(4, 4)
+        pixmap.fill(QColor("green"))
+        pixmap.save(png_path, "PNG")
+        with patch("PySide6.QtWidgets.QFileDialog.getOpenFileName",
+                  return_value=(png_path, "")), \
+             patch("PySide6.QtWidgets.QMessageBox.question",
+                  return_value=QMessageBox.StandardButton.No):
+            self.window._ask_py_about_local_image()
+        self.assertEqual(self._asked, [])
+
+    def test_screenshot_flow_captures_the_current_tab(self) -> None:
+        from unittest.mock import patch
+
+        from PySide6.QtWidgets import QMessageBox
+
+        self._set_provider("anthropic")
+        with patch("PySide6.QtWidgets.QMessageBox.question",
+                  return_value=QMessageBox.StandardButton.Yes):
+            self.window._ask_py_about_screenshot()
+        self.assertEqual(len(self._asked), 1)
+        text, image = self._asked[0]
+        self.assertIn("screenshot", text.lower())
+        self.assertEqual(image["mime_type"], "image/png")
+
+
 if __name__ == "__main__":
     unittest.main()

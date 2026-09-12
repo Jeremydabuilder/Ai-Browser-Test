@@ -80,6 +80,34 @@ def _assistant_turn(blocks: list[Any]) -> dict[str, Any]:
     return turn
 
 
+def _is_user_content_turn(blocks: list[Any]) -> bool:
+    """True for a user-composed text(+image) turn (see AgentSession.send's
+    ``image`` parameter) rather than a list of tool_result blocks."""
+    return any(_block_get(block, "type") in ("text", "image") for block in blocks)
+
+
+def _user_content_turn(blocks: list[Any]) -> dict[str, Any]:
+    """A user-composed text(+image) turn -> an OpenAI-shaped user message.
+
+    This provider path has no image support wired up (see
+    app.agent.config.provider_supports_images - only Anthropic is marked
+    True today), so an image block here is never silently dropped: it is
+    replaced with a plain-text note saying so, and the request still goes
+    out with whatever text there was.
+    """
+    parts: list[str] = []
+    for block in blocks:
+        kind = _block_get(block, "type")
+        if kind == "text":
+            text = _block_get(block, "text")
+            if text:
+                parts.append(text)
+        elif kind == "image":
+            parts.append("[An image was attached here, but this provider "
+                         "is not configured to receive images - it was not sent.]")
+    return {"role": "user", "content": "\n".join(parts)}
+
+
 def _tool_result_turns(blocks: list[Any]) -> list[dict[str, Any]]:
     """Anthropic-shaped ``tool_result`` blocks -> OpenAI ``role: tool`` turns.
 
@@ -112,6 +140,8 @@ def messages_param(system: str, messages: list[dict[str, Any]]) -> list[dict[str
             continue
         if role == "assistant":
             out.append(_assistant_turn(content))
+        elif role == "user" and _is_user_content_turn(content):
+            out.append(_user_content_turn(content))
         else:
             out.extend(_tool_result_turns(content))
     return out

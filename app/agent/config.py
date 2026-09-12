@@ -163,6 +163,13 @@ class ProviderInfo:
     #: multi-way credential cascade (keyring, OAuth profile, cloud
     #: backends) - the others are "paste a key" and nothing more.
     is_anthropic: bool = False
+    #: Whether sending an image (a screenshot or a local image file) to this
+    #: provider is wired up at all. Anthropic only for now - see
+    #: app/browser/image_context.py and AgentSession.send()'s image
+    #: parameter. Not a statement that other providers' models cannot see
+    #: images; it is a statement about what this codebase's message
+    #: translation currently builds for each wire format.
+    supports_images: bool = False
 
 
 PROVIDERS: tuple[ProviderInfo, ...] = (
@@ -171,6 +178,7 @@ PROVIDERS: tuple[ProviderInfo, ...] = (
         "ANTHROPIC_API_KEY",
         "Paid; see Tools → Configure AI Agent for every way to authenticate.",
         is_anthropic=True,
+        supports_images=True,
     ),
     ProviderInfo(
         PROVIDER_OPENAI, "OpenAI (GPT)",
@@ -200,6 +208,12 @@ _PROVIDERS_BY_ID = {info.id: info for info in PROVIDERS}
 
 def describe_provider(provider_id: str) -> ProviderInfo:
     return _PROVIDERS_BY_ID.get(provider_id, PROVIDERS[0])
+
+
+def provider_supports_images(provider_id: str) -> bool:
+    """Whether image context (a screenshot or local image file) can be sent
+    to this provider today - see ProviderInfo.supports_images."""
+    return describe_provider(provider_id).supports_images
 
 
 PROVIDER_IDS = frozenset(info.id for info in PROVIDERS)

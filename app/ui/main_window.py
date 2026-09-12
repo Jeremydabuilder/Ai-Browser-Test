@@ -213,6 +213,10 @@ class MainWindow(QMainWindow):
         self._add_action(tools_menu, "Agent &Diagnostics…", None, self._show_diagnostics)
         self._add_action(tools_menu, "Add &Local File to Context…", None,
                          self._ask_py_about_local_file)
+        self._add_action(tools_menu, "Add &Image to Context…", None,
+                         self._ask_py_about_local_image)
+        self._add_action(tools_menu, "Ask Py about a &Screenshot", None,
+                         self._ask_py_about_screenshot)
         tools_menu.addSeparator()
         self._add_action(tools_menu, "&Mission Library", "Ctrl+Shift+M",
                          self._show_mission_library)
@@ -736,7 +740,7 @@ class MainWindow(QMainWindow):
         # transcript is the request they actually made, not a briefing.
         self._ask_py(f"Challenge this {noun}: {claim}")
 
-    def _ask_py(self, text: str) -> None:
+    def _ask_py(self, text: str, *, image: dict[str, str] | None = None) -> None:
         """Open Py and send a prepared request.
 
         Unlike `_open_agent_with`, which writes into the box for the user to
@@ -750,7 +754,7 @@ class MainWindow(QMainWindow):
         panel = self._side_panel
         ask = getattr(panel, "ask", None)
         if callable(ask):
-            ask(text)
+            ask(text, image=image)
 
     def _toggle_teaching(self) -> None:
         """Start or stop recording the agent's next actions as a Routine.
@@ -973,6 +977,80 @@ class MainWindow(QMainWindow):
             f"I am attaching the local file \"{document.filename}\". "
             f"Its content follows, fenced as untrusted data:\n{block}\n"
             "Read it and help with whatever I ask about it next.")
+
+    def _send_image_to_py(self, attachment, *, prompt: str) -> None:
+        """Common tail for the screenshot and local-image flows: check the
+        configured provider actually supports images, disclose which
+        provider will receive it, and only then send it - never silently.
+        """
+        from PySide6.QtWidgets import QMessageBox
+
+        from app.agent.config import AgentConfig, describe_provider, provider_supports_images
+
+        config = AgentConfig.from_environment(self.settings)
+        provider = describe_provider(config.provider)
+        if not provider_supports_images(config.provider):
+            QMessageBox.warning(
+                self, "Images not supported by this provider",
+                f"The configured provider ({provider.label}) does not support "
+                "image input in this build. Switch to Anthropic (Claude) in "
+                "Tools → Configure AI Agent to use image context.")
+            return
+        confirm = QMessageBox.question(
+            self, "Send image to " + provider.label,
+            f"This image will be sent to {provider.label}. Continue?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No)
+        if confirm != QMessageBox.StandardButton.Yes:
+            return
+        self._ask_py(prompt, image={"mime_type": attachment.mime_type,
+                                    "data": attachment.base64})
+
+    def _ask_py_about_local_image(self) -> None:
+        """Let the user explicitly pick one local image file and, after
+        disclosure and confirmation, hand it to Py."""
+        from PySide6.QtWidgets import QFileDialog, QMessageBox
+
+        from app.browser.image_context import (
+            SUPPORTED_IMAGE_SUFFIXES, ImageContextError, read_local_image,
+        )
+
+        patterns = " ".join(f"*{suffix}" for suffix in sorted(SUPPORTED_IMAGE_SUFFIXES))
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Add Image to Context", "", f"Images ({patterns})")
+        if not path:
+            return
+        try:
+            attachment = read_local_image(path)
+        except ImageContextError as exc:
+            QMessageBox.warning(self, "Could not read image", str(exc))
+            return
+        self._send_image_to_py(
+            attachment,
+            prompt=f"I am attaching the local image \"{attachment.filename}\". "
+                   "Look at it and help with whatever I ask next.")
+
+    def _ask_py_about_screenshot(self) -> None:
+        """Capture the current tab as an image and, after disclosure and
+        confirmation, hand it to Py."""
+        from PySide6.QtWidgets import QMessageBox
+
+        from app.browser.image_context import ImageContextError, screenshot_attachment
+
+        pixmap, error = self.controller.grab_tab_pixmap()
+        if pixmap is None:
+            QMessageBox.warning(self, "Could not capture screenshot", error)
+            return
+        url = self.controller.get_current_page().page.url
+        try:
+            attachment = screenshot_attachment(pixmap, source=f"screenshot:{url}")
+        except ImageContextError as exc:
+            QMessageBox.warning(self, "Could not capture screenshot", str(exc))
+            return
+        self._send_image_to_py(
+            attachment,
+            prompt=f"I am attaching a screenshot of the current page ({url}). "
+                   "Look at it and help with whatever I ask next.")
 
     def _close_tabs_at(self, indices: list[int]) -> None:
         """Close tabs by TabManager index, highest index first so an earlier
