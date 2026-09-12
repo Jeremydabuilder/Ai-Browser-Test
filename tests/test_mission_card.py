@@ -18,6 +18,7 @@ from PySide6.QtWidgets import QApplication  # noqa: E402
 
 from app.missions.model import (  # noqa: E402
     Mission,
+    MissionAction,
     MissionFinding,
     MissionPage,
     MissionQuestion,
@@ -25,7 +26,11 @@ from app.missions.model import (  # noqa: E402
     PageOutcome,
     QuestionStatus,
 )
-from app.ui.missions.mission_card import MissionCard, VISIBLE_QUESTIONS  # noqa: E402
+from app.ui.missions.mission_card import (  # noqa: E402
+    MissionCard,
+    VISIBLE_ACTIVITY,
+    VISIBLE_QUESTIONS,
+)
 
 _app: QApplication | None = None
 
@@ -38,6 +43,9 @@ def setUpModule() -> None:
 class _FakeService:
     def open_keys(self):
         return set()
+
+    def actions(self, mission_id):
+        return []
 
 
 class ConstraintsSectionTests(unittest.TestCase):
@@ -301,6 +309,79 @@ class PagesUsefulCountTests(unittest.TestCase):
         self.card.show_mission(self._mission(
             pages=(page,), findings=(self._finding(1, page_id=1),)))
         self.assertEqual(self.card.pages_label.text(), "SOURCES · 1 · 1 useful")
+
+
+class _FakeServiceWithActions:
+    def __init__(self, actions):
+        self._actions = actions
+
+    def open_keys(self):
+        return set()
+
+    def actions(self, mission_id):
+        return self._actions
+
+
+class ActivitySectionTests(unittest.TestCase):
+    """MCP calls and native tool actions alike, shown as one chronological
+    log - see MissionCard._render_activity."""
+
+    def tearDown(self) -> None:
+        self.card.deleteLater()
+        _app.processEvents()
+
+    def _mission(self, **overrides) -> Mission:
+        base = dict(id=1, title="Find shoes", goal="find running shoes",
+                   status=MissionStatus.ACTIVE)
+        base.update(overrides)
+        return Mission(**base)
+
+    def _action(self, index: int, **overrides) -> MissionAction:
+        base = dict(id=index, mission_id=1, description=f"Step {index}",
+                   tool_name="", outcome="done")
+        base.update(overrides)
+        return MissionAction(**base)
+
+    def test_no_actions_hides_the_section(self) -> None:
+        self.card = MissionCard(_FakeServiceWithActions([]))
+        self.card.show_mission(self._mission())
+        self.assertTrue(self.card.activity_label.isHidden())
+
+    def test_actions_show_the_section_with_descriptions(self) -> None:
+        actions = [self._action(1, description="Using GitHub: create_item",
+                                tool_name="mcp.github.create_item")]
+        self.card = MissionCard(_FakeServiceWithActions(actions))
+        self.card.show_mission(self._mission())
+        self.assertFalse(self.card.activity_label.isHidden())
+        self.assertEqual(self.card._activity_box.count(), 1)
+        row = self.card._activity_box.itemAt(0).widget()
+        self.assertIn("Using GitHub: create_item", row.text())
+
+    def test_mcp_and_native_actions_are_shown_together(self) -> None:
+        actions = [
+            self._action(1, description="Reading the page", tool_name="browser_get_page"),
+            self._action(2, description="Using GitHub: list_issues",
+                        tool_name="mcp.github.list_issues"),
+        ]
+        self.card = MissionCard(_FakeServiceWithActions(actions))
+        self.card.show_mission(self._mission())
+        self.assertEqual(self.card._activity_box.count(), 2)
+
+    def test_only_the_most_recent_are_shown(self) -> None:
+        actions = [self._action(i) for i in range(1, VISIBLE_ACTIVITY + 5)]
+        self.card = MissionCard(_FakeServiceWithActions(actions))
+        self.card.show_mission(self._mission())
+        self.assertEqual(self.card._activity_box.count(), VISIBLE_ACTIVITY)
+        last_row = self.card._activity_box.itemAt(VISIBLE_ACTIVITY - 1).widget()
+        self.assertIn(actions[-1].description, last_row.text())
+
+    def test_a_declined_action_reads_differently_from_done_or_failed(self) -> None:
+        actions = [self._action(1, description="Declined: create an issue",
+                                outcome="skipped")]
+        self.card = MissionCard(_FakeServiceWithActions(actions))
+        self.card.show_mission(self._mission())
+        row = self.card._activity_box.itemAt(0).widget()
+        self.assertIn("⊘", row.text())
 
 
 if __name__ == "__main__":

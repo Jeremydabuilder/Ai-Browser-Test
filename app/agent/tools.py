@@ -896,6 +896,22 @@ class ToolRegistry:
         mission = getattr(self._missions, "active", None) if self._missions is not None else None
         return getattr(mission, "id", None) if mission is not None else None
 
+    def active_mission_title(self) -> str:
+        """The active Mission's title, or "" - a display-only snapshot for
+        the MCP audit log, so a logged call still names the Mission it
+        happened under even after that Mission is later renamed."""
+        mission = getattr(self._missions, "active", None) if self._missions is not None else None
+        return getattr(mission, "title", "") or "" if mission is not None else ""
+
+    def record_mcp_denied(self, name: str) -> None:
+        """Log a live decline (the user answered an approval prompt "no")
+        to the MCP audit trail - the one denial path assess() itself never
+        sees, since it only ever evaluates a *remembered* Deny."""
+        if self._mcp is None or not name.startswith("mcp."):
+            return
+        self._mcp.record_declined_call(name, mission_id=self.active_mission_id(),
+                                       mission_title=self.active_mission_title())
+
     def mcp_editable_field(self, name: str, args: dict[str, Any]) -> tuple[str, str]:
         """Which argument of an mcp.* call, if any, is worth letting the
         user hand-edit before approving - see
@@ -940,7 +956,8 @@ class ToolRegistry:
             if self._mcp is None:
                 return {"level": "elevated", "reasons": ["unrecognised MCP tool"],
                         "requires_confirmation": False}
-            return self._mcp.assess_call(name, args, mission_id=self.active_mission_id())
+            return self._mcp.assess_call(name, args, mission_id=self.active_mission_id(),
+                                         mission_title=self.active_mission_title())
         if name in LOCAL_WRITE_TOOLS:
             # A local, reversible write to the user's own mission board. It
             # never reaches the browser's safety layer because there is no
@@ -1146,8 +1163,11 @@ class ToolRegistry:
                 raise ToolError(f"Unknown tool '{name}'.")
             if not isinstance(args, dict):
                 raise ToolError("Tool arguments must be an object.")
-            return ToolOutcome(mcp_future=self._mcp.run_tool(name, args),
-                               activity=self._mcp.describe_call(name, args))
+            return ToolOutcome(
+                mcp_future=self._mcp.run_tool(
+                    name, args, mission_id=self.active_mission_id(),
+                    mission_title=self.active_mission_title()),
+                activity=self._mcp.describe_call(name, args))
         if name not in TOOL_NAMES:
             raise ToolError(f"Unknown tool '{name}'.")
         if not isinstance(args, dict):

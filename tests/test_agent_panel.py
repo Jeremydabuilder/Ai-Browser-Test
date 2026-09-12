@@ -30,7 +30,12 @@ from app.agent.session import AgentSession  # noqa: E402
 from app.browser.controller import BrowserController  # noqa: E402
 from app.browser.tab_manager import TabManager  # noqa: E402
 from app.agent.session import ConfirmationRequest  # noqa: E402
-from app.ui.agent_panel import QUICK_ACTIONS, AgentPanel, ConfirmationBar  # noqa: E402
+from app.ui.agent_panel import (  # noqa: E402
+    QUICK_ACTIONS,
+    AgentPanel,
+    ConfirmationBar,
+    McpDisconnectBar,
+)
 from app.ui.mascot import MascotState  # noqa: E402
 from tests.fake_claude import ScriptedClaude, says  # noqa: E402
 from tests.qt_profile import shared_profile  # noqa: E402
@@ -296,6 +301,91 @@ class ConfirmationBarTests(unittest.TestCase):
         self.assertFalse(self.bar._edit.isVisible())
         self.assertEqual(self.bar._edit.text(), "")
 
+    # -- MCP data preview: structure, truncation, destructive handling ----
+    def _mcp_request(self, **overrides) -> ConfirmationRequest:
+        base = dict(
+            tool_call_id="1", tool_name="mcp.github.create_item",
+            description="use GitHub: create_item", mcp_server="GitHub",
+            mcp_effect="This will create, change, or send something on GitHub.")
+        base.update(overrides)
+        return ConfirmationRequest(**base)
+
+    def test_data_fields_are_shown_one_per_row(self) -> None:
+        request = self._mcp_request(mcp_data={"repository": "a/b", "title": "Release notes"})
+        self.bar.ask(request)
+        text = self.bar._mcp_data_label.text()
+        self.assertIn("repository", text)
+        self.assertIn("a/b", text)
+        self.assertIn("title", text)
+        self.assertIn("Release notes", text)
+
+    def test_long_values_are_truncated_with_an_ellipsis(self) -> None:
+        long_value = "x" * 500
+        request = self._mcp_request(mcp_data={"body": long_value})
+        self.bar.ask(request)
+        text = self.bar._mcp_data_label.text()
+        self.assertIn("…", text)
+        self.assertNotIn(long_value, text)
+
+    def test_show_full_payload_reveals_the_untruncated_value(self) -> None:
+        long_value = "y" * 500
+        request = self._mcp_request(mcp_data={"body": long_value})
+        self.bar.ask(request)
+        self.assertTrue(self.bar._mcp_full_toggle.isVisible())
+        self.assertFalse(self.bar._mcp_full_data.isVisible())
+        self.bar._mcp_full_toggle.click()
+        self.assertTrue(self.bar._mcp_full_data.isVisible())
+        self.assertIn(long_value, self.bar._mcp_full_data.toPlainText())
+
+    def test_toggle_collapses_state_before_a_new_request(self) -> None:
+        request = self._mcp_request(mcp_data={"body": "z" * 500})
+        self.bar.ask(request)
+        self.bar._mcp_full_toggle.click()
+        self.assertTrue(self.bar._mcp_full_data.isVisible())
+        self.bar.ask(self._mcp_request(mcp_data={"small": "value"}))
+        self.assertFalse(self.bar._mcp_full_data.isVisible())
+        self.assertEqual(self.bar._mcp_full_toggle.text(), "Show full payload")
+
+    def test_no_data_hides_the_preview_entirely(self) -> None:
+        request = self._mcp_request(mcp_data=None)
+        self.bar.ask(request)
+        self.assertFalse(self.bar._mcp_data_label.isVisible())
+        self.assertFalse(self.bar._mcp_full_toggle.isVisible())
+
+    def test_sensitive_field_names_are_still_redacted_in_the_row(self) -> None:
+        # _redact_arguments (connection_manager.py) already replaces the
+        # *value* before this ever reaches the widget - this only checks
+        # the widget renders whatever it was handed, redacted or not,
+        # rather than re-deriving redaction here.
+        request = self._mcp_request(mcp_data={"token": "•••"})
+        self.bar.ask(request)
+        text = self.bar._mcp_data_label.text()
+        self.assertIn("•••", text)
+        self.assertNotIn("secret-value", text)
+
+    def test_destructive_request_shows_a_warning_and_no_always_option(self) -> None:
+        from app.mcp.types import Scope, Sensitivity
+
+        request = self._mcp_request(mcp_sensitivity=Sensitivity.DESTRUCTIVE)
+        self.bar.ask(request)
+        self.assertTrue(self.bar._mcp_warning.isVisible())
+        self.assertIn("destructive", self.bar._mcp_warning.text().lower())
+        self.assertEqual(self.bar._remember.findData(Scope.ALWAYS), -1)
+
+    def test_non_destructive_request_offers_always_and_no_warning(self) -> None:
+        from app.mcp.types import Scope, Sensitivity
+
+        self.bar.ask(self._mcp_request(mcp_sensitivity=Sensitivity.DESTRUCTIVE))
+        self.bar.ask(self._mcp_request(mcp_sensitivity=Sensitivity.WRITE))
+        self.assertFalse(self.bar._mcp_warning.isVisible())
+        self.assertNotEqual(self.bar._remember.findData(Scope.ALWAYS), -1)
+
+    def test_this_is_sent_externally_notice_names_the_server(self) -> None:
+        request = self._mcp_request(mcp_server="GitHub")
+        self.bar.ask(request)
+        self.assertIn("GitHub", self.bar._mcp_block.text())
+        self.assertIn("outside your browser", self.bar._mcp_block.text())
+
 
 if __name__ == "__main__":
     unittest.main()
@@ -559,3 +649,87 @@ class RecoveryTests(PanelTests):
         self.assertFalse(panel.recovery.isHidden())
         self.run_task(panel, "something else entirely")
         self.assertTrue(panel.recovery.isHidden())
+
+
+class McpDisconnectBarTests(unittest.TestCase):
+    """The connection-drop recovery bar - see McpDisconnectBar."""
+
+    def setUp(self) -> None:
+        self.bar = McpDisconnectBar()
+
+    def tearDown(self) -> None:
+        self.bar.deleteLater()
+        _app.processEvents()
+
+    def test_hidden_before_anything_happens(self) -> None:
+        self.assertTrue(self.bar.isHidden())
+
+    def test_shows_the_server_and_tool_by_name(self) -> None:
+        self.bar.show_dropped("github", "GitHub", "mcp.github.read_repository")
+        self.assertFalse(self.bar.isHidden())
+        text = self.bar._label.text()
+        self.assertIn("GitHub", text)
+        self.assertIn("read repository", text)
+
+    def test_reconnect_emits_the_server_id(self) -> None:
+        self.bar.show_dropped("github", "GitHub", "mcp.github.read_repository")
+        seen = []
+        self.bar.reconnect_requested.connect(seen.append)
+        self.bar.reconnect_button.click()
+        self.assertEqual(seen, ["github"])
+
+    def test_skip_and_stop_each_emit_their_own_signal(self) -> None:
+        self.bar.show_dropped("github", "GitHub", "mcp.github.read_repository")
+        skipped = []
+        stopped = []
+        self.bar.skip_requested.connect(lambda: skipped.append(True))
+        self.bar.stop_requested.connect(lambda: stopped.append(True))
+        self.bar.skip_button.click()
+        self.assertEqual(skipped, [True])
+        self.assertEqual(stopped, [])
+        self.bar.stop_button.click()
+        self.assertEqual(stopped, [True])
+
+
+class McpDisconnectBarWiringTests(PanelTests):
+    """AgentPanel wires a real McpConnectionManager's connection_dropped
+    signal straight to the bar, and Reconnect calls back into the manager -
+    see AgentPanel.__init__ and _mcp_reconnect."""
+
+    def test_a_dropped_connection_shows_the_bar(self) -> None:
+        from app.mcp.config import McpServerStore
+        from app.mcp.connection_manager import McpConnectionManager
+
+        self.start([])
+        manager = McpConnectionManager(McpServerStore(None))
+        try:
+            panel = AgentPanel(self.session, missions=None, mcp=manager)
+            self.assertTrue(panel.mcp_disconnect_bar.isHidden())
+            manager.connection_dropped.emit("github", "GitHub", "mcp.github.read_repository")
+            self.assertFalse(panel.mcp_disconnect_bar.isHidden())
+            panel.deleteLater()
+        finally:
+            manager.shutdown()
+
+    def test_reconnect_calls_the_manager(self) -> None:
+        from app.mcp.config import McpServerStore
+        from app.mcp.connection_manager import McpConnectionManager
+        from app.mcp.types import McpServerConfig, Transport
+
+        self.start([])
+        manager = McpConnectionManager(McpServerStore(None))
+        try:
+            manager.add_or_update_server(McpServerConfig(
+                id="github", name="GitHub", transport=Transport.STDIO,
+                command="does-not-exist", enabled=False))
+            panel = AgentPanel(self.session, missions=None, mcp=manager)
+            manager.connection_dropped.emit("github", "GitHub", "mcp.github.read_repository")
+            # A disabled server's reconnect_server() is a deliberate no-op
+            # (see connect_server's own enabled guard) - what matters here
+            # is only that the button reaches the manager at all, and that
+            # the bar itself is dismissed either way.
+            panel.mcp_disconnect_bar.reconnect_button.click()
+            self.assertTrue(panel.mcp_disconnect_bar.isHidden())
+            panel.deleteLater()
+        finally:
+            manager.shutdown()

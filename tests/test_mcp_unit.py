@@ -18,6 +18,8 @@ from unittest import mock
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from app.mcp import adapter, config, safety  # noqa: E402
+from app.mcp.audit import McpAuditStore, OUTCOME_ERROR, OUTCOME_NOT_EXECUTED, OUTCOME_SUCCESS  # noqa: E402
+from app.mcp.audit import DECISION_ALLOWED_ONCE, DECISION_AUTO, DECISION_DENIED_REMEMBERED  # noqa: E402
 from app.mcp.protocol import McpProtocolError, _validate_message  # noqa: E402
 from app.mcp.types import McpServerConfig, McpToolDescriptor, Sensitivity, Transport  # noqa: E402
 from app.storage.settings import SettingsStore  # noqa: E402
@@ -288,6 +290,115 @@ class SecretStorageTests(unittest.TestCase):
                 self.assertIsNone(config.get_secret("s"))
             finally:
                 os.unlink(tmp.name)
+
+
+class AuditStoreTests(unittest.TestCase):
+    def setUp(self):
+        self._tmp = tempfile.NamedTemporaryFile(suffix=".sqlite3", delete=False)
+        self._tmp.close()
+        self.db = Database(self._tmp.name)
+        self.settings = SettingsStore(self.db)
+        self.store = McpAuditStore(self.settings)
+
+    def tearDown(self):
+        os.unlink(self._tmp.name)
+
+    def _record(self, **overrides):
+        defaults = dict(
+            server_id="github", server_name="GitHub", tool_name="create_item",
+            sensitivity=Sensitivity.WRITE, mission_id=1, mission_title="Ship it",
+            decision=DECISION_ALLOWED_ONCE, outcome=OUTCOME_SUCCESS, duration_ms=42.0)
+        defaults.update(overrides)
+        self.store.record(**defaults)
+
+    def test_empty_store_has_no_entries(self):
+        self.assertEqual(self.store.entries(), [])
+
+    def test_record_and_read_back(self):
+        self._record()
+        entries = self.store.entries()
+        self.assertEqual(len(entries), 1)
+        entry = entries[0]
+        self.assertEqual(entry.server_id, "github")
+        self.assertEqual(entry.tool_name, "create_item")
+        self.assertTrue(entry.allowed)
+        self.assertFalse(entry.is_error)
+
+    def test_newest_first(self):
+        self._record(tool_name="first")
+        self._record(tool_name="second")
+        entries = self.store.entries()
+        self.assertEqual([e.tool_name for e in entries], ["second", "first"])
+
+    def test_filter_by_server(self):
+        self._record(server_id="github")
+        self._record(server_id="drive")
+        self.assertEqual(len(self.store.entries(server_id="github")), 1)
+
+    def test_filter_by_mission(self):
+        self._record(mission_id=1)
+        self._record(mission_id=2)
+        self.assertEqual(len(self.store.entries(mission_id=1)), 1)
+
+    def test_filter_by_allowed(self):
+        self._record(decision=DECISION_ALLOWED_ONCE, outcome=OUTCOME_SUCCESS)
+        self._record(decision=DECISION_DENIED_REMEMBERED, outcome=OUTCOME_NOT_EXECUTED)
+        self.assertEqual(len(self.store.entries(allowed=True)), 1)
+        self.assertEqual(len(self.store.entries(allowed=False)), 1)
+
+    def test_filter_errors_only(self):
+        self._record(outcome=OUTCOME_SUCCESS)
+        self._record(outcome=OUTCOME_ERROR)
+        errors = self.store.entries(errors_only=True)
+        self.assertEqual(len(errors), 1)
+        self.assertEqual(errors[0].outcome, OUTCOME_ERROR)
+
+    def test_filter_by_sensitivity(self):
+        self._record(sensitivity=Sensitivity.READ_ONLY, decision=DECISION_AUTO)
+        self._record(sensitivity=Sensitivity.WRITE)
+        read_only = self.store.entries(sensitivity_in=(Sensitivity.READ_ONLY,))
+        self.assertEqual(len(read_only), 1)
+
+    def test_clear(self):
+        self._record()
+        self.store.clear()
+        self.assertEqual(self.store.entries(), [])
+
+    def test_clear_server_only_affects_that_server(self):
+        self._record(server_id="github")
+        self._record(server_id="drive")
+        self.store.clear_server("github")
+        remaining = self.store.entries()
+        self.assertEqual(len(remaining), 1)
+        self.assertEqual(remaining[0].server_id, "drive")
+
+    def test_cap_trims_oldest(self):
+        from app.mcp import audit as audit_module
+        original_cap = audit_module.MAX_AUDIT_ENTRIES
+        audit_module.MAX_AUDIT_ENTRIES = 3
+        try:
+            store = McpAuditStore(self.settings)
+            for i in range(5):
+                store.record(server_id="s", server_name="S", tool_name=f"t{i}",
+                            sensitivity=Sensitivity.READ_ONLY, mission_id=None,
+                            mission_title="", decision=DECISION_AUTO, outcome=OUTCOME_SUCCESS)
+            entries = store.entries()
+            self.assertEqual(len(entries), 3)
+            self.assertEqual([e.tool_name for e in entries], ["t4", "t3", "t2"])
+        finally:
+            audit_module.MAX_AUDIT_ENTRIES = original_cap
+
+    def test_none_settings_degrades_to_no_ops(self):
+        store = McpAuditStore(None)
+        self.assertEqual(store.entries(), [])
+        store.record(server_id="s", server_name="S", tool_name="t",
+                    sensitivity=Sensitivity.READ_ONLY, mission_id=None, mission_title="",
+                    decision=DECISION_AUTO, outcome=OUTCOME_SUCCESS)  # no-op, must not raise
+
+    def test_corrupted_blob_degrades_to_empty(self):
+        from app.mcp.audit import KEY_MCP_AUDIT_LOG
+        self.settings.set(KEY_MCP_AUDIT_LOG, "{ not json")
+        self.assertEqual(self.store.entries(), [])
 
 
 if __name__ == "__main__":

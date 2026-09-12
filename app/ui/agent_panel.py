@@ -7,6 +7,8 @@ logic - every decision belongs to AgentSession, which this panel only watches.
 
 from __future__ import annotations
 
+import json
+
 from PySide6.QtCore import QEasingCurve, QPropertyAnimation, Qt, Signal
 from PySide6.QtGui import QFont, QFontMetrics, QKeyEvent, QTextCursor
 from PySide6.QtWidgets import (
@@ -38,7 +40,7 @@ from app.agent.session import (
     Step,
     StepState,
 )
-from app.mcp.types import Scope
+from app.mcp.types import Scope, Sensitivity
 
 #: How each step state reads: a mark, and which palette colour names it. A step
 #: is a thing the agent did to the browser, never a thing it thought - the panel
@@ -192,7 +194,7 @@ class ConfirmationBar(QFrame):
         self._edit_label.hide()
         self._edit.hide()
 
-        # MCP-only: server/tool/data/effect, shown instead of the plain
+        # MCP-only: server/tool/effect, shown instead of the plain
         # action-and-site line above for a request that came from an MCP
         # tool rather than a browser action - built once and toggled with
         # setVisible, not created fresh each time, since ask() runs on every
@@ -202,6 +204,38 @@ class ConfirmationBar(QFrame):
         self._mcp_block.setTextFormat(Qt.TextFormat.RichText)
         layout.addWidget(self._mcp_block)
         self._mcp_block.hide()
+
+        # "Data being sent" - one key per line rather than one dense run-on
+        # sentence, each value truncated so one huge field cannot push the
+        # whole prompt (and the Allow/Deny buttons) off-screen. "Show full
+        # payload" reveals everything untruncated, for the rare case
+        # someone actually needs to check it byte for byte.
+        self._mcp_data_label = QLabel("", self)
+        self._mcp_data_label.setWordWrap(True)
+        self._mcp_data_label.setTextFormat(Qt.TextFormat.RichText)
+        layout.addWidget(self._mcp_data_label)
+        self._mcp_data_label.hide()
+
+        self._mcp_full_toggle = QPushButton("Show full payload", self)
+        self._mcp_full_toggle.setProperty("kind", "quiet")
+        self._mcp_full_toggle.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._mcp_full_toggle.clicked.connect(self._toggle_full_payload)
+        layout.addWidget(self._mcp_full_toggle)
+        self._mcp_full_toggle.hide()
+
+        self._mcp_full_data = QPlainTextEdit(self)
+        self._mcp_full_data.setReadOnly(True)
+        self._mcp_full_data.setMaximumHeight(140)
+        self._mcp_full_data.setStyleSheet(f"font-family:monospace; font-size:{m.text_xs}px;")
+        layout.addWidget(self._mcp_full_data)
+        self._mcp_full_data.hide()
+
+        self._mcp_warning = QLabel("", self)
+        self._mcp_warning.setWordWrap(True)
+        self._mcp_warning.setStyleSheet(
+            f"color:{c.danger}; font-weight:600; font-size:{m.text_sm}px;")
+        layout.addWidget(self._mcp_warning)
+        self._mcp_warning.hide()
 
         # "Remember" - MCP only. Defaults to "Just this time" on every
         # confirmation; nothing is ever pre-selected onto something that
@@ -240,6 +274,55 @@ class ConfirmationBar(QFrame):
         if not self._remember.isVisible():
             return Scope.ONCE
         return self._remember.currentData()
+
+    #: Values longer than this are truncated in the structured preview -
+    #: long enough to read a sentence, short enough that one huge field
+    #: cannot push Allow/Deny off the bottom of the panel.
+    _PREVIEW_VALUE_LIMIT = 120
+    #: More fields than this only appear in "Show full payload", not inline.
+    _PREVIEW_FIELD_LIMIT = 8
+
+    def _render_mcp_data(self, data: dict | None, escape) -> None:
+        """"Data being sent": one row per field, each value truncated,
+        with a "Show full payload" toggle for the untruncated JSON -
+        never fetches anything to build this, it only ever formats the
+        arguments the model already chose to send."""
+        if not data:
+            self._mcp_data_label.hide()
+            self._mcp_full_toggle.hide()
+            self._mcp_full_data.clear()
+            return
+
+        rows = []
+        for key, value in list(data.items())[:self._PREVIEW_FIELD_LIMIT]:
+            text = str(value)
+            truncated = len(text) > self._PREVIEW_VALUE_LIMIT
+            shown = text[:self._PREVIEW_VALUE_LIMIT].rstrip() + "…" if truncated else text
+            rows.append(
+                f'<div style="margin-top:6px;">'
+                f'<span style="font-size:11px;opacity:.7;">{escape(str(key))}</span><br>'
+                f"{escape(shown)}</div>")
+        hidden_count = len(data) - self._PREVIEW_FIELD_LIMIT
+        if hidden_count > 0:
+            rows.append(f'<div style="opacity:.7;">and {hidden_count} more field'
+                       f'{"s" if hidden_count != 1 else ""}…</div>')
+        self._mcp_data_label.setText(
+            '<span style="font-size:11px;letter-spacing:.04em;opacity:.75;">'
+            "DATA BEING SENT</span>" + "".join(rows))
+        self._mcp_data_label.show()
+
+        self._mcp_full_toggle.show()
+        try:
+            full_json = json.dumps(data, indent=2, ensure_ascii=False, default=str)
+        except TypeError:
+            full_json = str(data)
+        self._mcp_full_data.setPlainText(full_json)
+
+    def _toggle_full_payload(self) -> None:
+        expanded = self._mcp_full_data.isVisible()
+        self._mcp_full_data.setVisible(not expanded)
+        self._mcp_full_toggle.setText(
+            "Hide full payload" if not expanded else "Show full payload")
 
     def ask(self, request: ConfirmationRequest) -> None:
         """Show what would happen, where, and what would be sent.
@@ -283,27 +366,54 @@ class ConfirmationBar(QFrame):
             self._edit.hide()
             self._edit.clear()
 
+        # Collapse any previous call's expanded payload before showing (or
+        # not showing) this one's - never carry state from the request
+        # before this into the one now on screen.
+        self._mcp_full_data.hide()
+        self._mcp_full_toggle.setText("Show full payload")
+
         if request.is_mcp:
+            is_destructive = request.mcp_sensitivity == Sensitivity.DESTRUCTIVE
             mcp_lines = [f"<b>Server:</b> {escape(request.mcp_server)}"]
             tool_name = request.tool_name.split(".")[-1] if request.tool_name else ""
             if tool_name:
                 mcp_lines.append(f"<b>Tool:</b> {escape(tool_name)}")
-            if request.mcp_data:
-                shown = ", ".join(
-                    f"{escape(str(k))}: {escape(str(v))}"
-                    for k, v in list(request.mcp_data.items())[:6])
-                if shown:
-                    mcp_lines.append(f"<b>Data sent:</b> {shown}")
             if request.mcp_effect:
                 mcp_lines.append(f"<b>Expected effect:</b> {escape(request.mcp_effect)}")
+            mcp_lines.append(
+                f"This is sent to {escape(request.mcp_server) or 'the server'} "
+                "outside your browser.")
             self._mcp_block.setText("<br>".join(mcp_lines))
             self._mcp_block.show()
+
+            self._render_mcp_data(request.mcp_data, escape)
+
+            if is_destructive:
+                self._mcp_warning.setText(
+                    "⚠ This action is destructive and cannot be undone.")
+                self._mcp_warning.show()
+            else:
+                self._mcp_warning.hide()
+
             self._remember.setCurrentIndex(0)   # always defaults to "Just this time"
+            # A destructive tool never offers "Always" - matches
+            # McpConnectionManager.remember_permission_for's own refusal of
+            # that exact combination, so the option not being here and the
+            # registry refusing it if it somehow were are the same rule
+            # enforced twice, not one trusting the other.
+            always_index = self._remember.findData(Scope.ALWAYS)
+            if is_destructive and always_index != -1:
+                self._remember.removeItem(always_index)
+            elif not is_destructive and always_index == -1:
+                self._remember.addItem("Always", Scope.ALWAYS)
             self._remember_label.show()
             self._remember.show()
         else:
             self._mcp_block.hide()
             self._mcp_block.clear()
+            self._mcp_data_label.hide()
+            self._mcp_full_toggle.hide()
+            self._mcp_warning.hide()
             self._remember_label.hide()
             self._remember.hide()
 
@@ -363,11 +473,76 @@ class RetryBar(QFrame):
             _enter(self)
 
 
+class McpDisconnectBar(QFrame):
+    """"GitHub disconnected while Py was reading repository data." - shown
+    the moment a live MCP call reveals its server dropped, with the three
+    honest options: try to pick back up, move on without this step, or stop
+    the Mission outright. Never replays a write call on the user's behalf -
+    "Reconnect" only reconnects the server; whatever runs next is still
+    whatever the model (or the user) asks for next, through the ordinary
+    approval gate if it needs one.
+    """
+
+    reconnect_requested = Signal(str)   # server_id
+    skip_requested = Signal()
+    stop_requested = Signal()
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        c = theme.palette_for(QApplication.instance())
+        m = theme.METRICS
+        self._server_id = ""
+        self.setObjectName("mcpdisconnect")
+        self.setStyleSheet(
+            f"#mcpdisconnect {{ background: {c.danger_soft};"
+            f" border: 1px solid {c.danger};"
+            f" border-radius: {m.radius_lg}px; }}"
+            f"#mcpdisconnect QLabel {{ background: transparent; border: none;"
+            f" color: {c.text}; }}")
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(m.space_3, m.space_2, m.space_3, m.space_2)
+        layout.setSpacing(m.space_2)
+
+        self._label = QLabel("", self)
+        self._label.setWordWrap(True)
+        layout.addWidget(self._label)
+
+        buttons = QHBoxLayout()
+        buttons.setSpacing(m.space_2)
+        self.reconnect_button = QPushButton("Reconnect && resume", self)
+        self.reconnect_button.setProperty("kind", "primary")
+        self.reconnect_button.clicked.connect(
+            lambda: self.reconnect_requested.emit(self._server_id))
+        self.skip_button = QPushButton("Skip this step", self)
+        self.skip_button.setProperty("kind", "quiet")
+        self.skip_button.clicked.connect(self.skip_requested.emit)
+        self.stop_button = QPushButton("Stop Mission", self)
+        self.stop_button.setProperty("kind", "quiet")
+        self.stop_button.clicked.connect(self.stop_requested.emit)
+        buttons.addWidget(self.reconnect_button)
+        buttons.addWidget(self.skip_button)
+        buttons.addWidget(self.stop_button)
+        buttons.addStretch(1)
+        layout.addLayout(buttons)
+        self.hide()
+
+    def show_dropped(self, server_id: str, server_name: str, tool_name: str) -> None:
+        self._server_id = server_id
+        activity = tool_name.split(".")[-1].replace("_", " ") if tool_name else "a tool"
+        self._label.setText(
+            f"<b>{server_name} disconnected</b> while Py was using {activity}.")
+        was_hidden = self.isHidden()
+        self.show()
+        if was_hidden:
+            _enter(self)
+
+
 class AgentPanel(QWidget):
     """The right-hand panel. Install it with MainWindow.set_side_panel()."""
 
     def __init__(self, session: AgentSession | None, parent: QWidget | None = None,
-                 missions=None) -> None:
+                 missions=None, mcp=None) -> None:
         super().__init__(parent)
         m = theme.METRICS
         self._colours = theme.palette_for(QApplication.instance())
@@ -378,6 +553,11 @@ class AgentPanel(QWidget):
         #: every time it is toggled; the service is not, which is the whole
         #: reason it lives out there rather than in here.
         self._missions = missions
+        #: The MCP connection manager, owned by the window like ``missions``
+        #: - only used to reconnect a server the disconnect bar named, and
+        #: to receive its connection_dropped signal. None when MCP is
+        #: unavailable, in which case the bar simply never appears.
+        self._mcp = mcp
         #: True while an answer is being written into the transcript piece by
         #: piece, so the finished message is not appended a second time.
         self._streaming = False
@@ -595,6 +775,14 @@ class AgentPanel(QWidget):
         self.retry_bar = RetryBar(self)
         self.retry_bar.retry_now_requested.connect(self._retry_now)
         layout.addWidget(self.retry_bar)
+
+        self.mcp_disconnect_bar = McpDisconnectBar(self)
+        self.mcp_disconnect_bar.reconnect_requested.connect(self._mcp_reconnect)
+        self.mcp_disconnect_bar.skip_requested.connect(self.mcp_disconnect_bar.hide)
+        self.mcp_disconnect_bar.stop_requested.connect(self._mcp_stop)
+        layout.addWidget(self.mcp_disconnect_bar)
+        if self._mcp is not None:
+            self._mcp.connection_dropped.connect(self.mcp_disconnect_bar.show_dropped)
 
         self.input = _MessageBox(self)
         layout.addWidget(self.input)
@@ -1006,6 +1194,21 @@ class AgentPanel(QWidget):
         if self._session is not None:
             self._session.retry_now()
         self.retry_bar.hide()
+
+    def _mcp_reconnect(self, server_id: str) -> None:
+        # Reconnects the server only - never replays the call that failed.
+        # Whatever the model does next (retry the read, try something else)
+        # goes through the ordinary tool/confirmation path like any other
+        # step; a write action is never re-issued on the user's behalf just
+        # because its outcome was uncertain.
+        if self._mcp is not None:
+            self._mcp.reconnect_server(server_id)
+        self.mcp_disconnect_bar.hide()
+
+    def _mcp_stop(self) -> None:
+        if self._session is not None:
+            self._session.cancel()
+        self.mcp_disconnect_bar.hide()
 
     def _on_error_detail(self, text: str) -> None:
         """What the API said, under what we said about it.

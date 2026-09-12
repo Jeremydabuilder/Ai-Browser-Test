@@ -127,6 +127,14 @@ class ConfirmationRequest:
     mcp_data: dict[str, Any] | None = None
     #: Plain-language "expected effect" line (see safety.describe_effect).
     mcp_effect: str = ""
+    #: The tool's raw Sensitivity (see app.mcp.types) - "" for a browser
+    #: confirmation. The UI reads this to decide whether "Always" belongs
+    #: in the Remember control at all: a DESTRUCTIVE tool never offers it,
+    #: matching McpConnectionManager.remember_permission_for's own refusal
+    #: of that exact combination - the UI hiding it and the registry
+    #: refusing it are two guards for the same rule, not one relying on
+    #: the other.
+    mcp_sensitivity: str = ""
 
     @property
     def is_mcp(self) -> bool:
@@ -531,6 +539,8 @@ class AgentSession(QObject):
         self.trace.record(tracing.APPROVAL_DENIED, tool=call.name)
         self._update_step(StepState.SKIPPED, "you declined")
         self.activity.emit(f"Declined: {request.description}")
+        if request.is_mcp:
+            self._tools.record_mcp_denied(call.name)
         self._record_result(call.id, (
             '{"ok": false, "error": {"code": "USER_DECLINED", '
             '"message": "The user declined this action.", "recoverable": false}, '
@@ -818,6 +828,7 @@ class AgentSession(QObject):
                 mcp_server=(mcp_info or {}).get("server", ""),
                 mcp_data=(mcp_info or {}).get("data") if mcp_info else None,
                 mcp_effect=(mcp_info or {}).get("effect", ""),
+                mcp_sensitivity=(mcp_info or {}).get("sensitivity", ""),
             )
             self._set_state(AgentState.AWAITING_CONFIRMATION)
             self.trace.record(tracing.APPROVAL_REQUESTED, tool=call.name,

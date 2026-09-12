@@ -27,6 +27,18 @@ from PySide6.QtCore import QObject, Signal
 
 from app.browser.futures import BrowserFuture, resolved
 from app.mcp import adapter
+from app.mcp.audit import (
+    DECISION_ALLOWED_ONCE,
+    DECISION_ALLOWED_REMEMBERED,
+    DECISION_AUTO,
+    DECISION_DENIED_ONCE,
+    DECISION_DENIED_REMEMBERED,
+    OUTCOME_ERROR,
+    OUTCOME_NOT_EXECUTED,
+    OUTCOME_SUCCESS,
+    OUTCOME_TIMEOUT,
+    McpAuditStore,
+)
 from app.mcp.config import McpServerStore, get_secret
 from app.mcp.permissions import McpPermissionStore
 from app.mcp.protocol import (
@@ -125,6 +137,13 @@ class McpConnectionManager(QObject):
     #: reconnects to this to refresh its rows without polling.
     server_changed = Signal(str)  # server_id
 
+    #: A *live call* (not a fresh connect attempt) discovered the connection
+    #: is dead - server_id, server display name, the tool that was running.
+    #: Distinct from server_changed: this is the one moment worth
+    #: interrupting the user for ("GitHub disconnected while Py was reading
+    #: repository data"), not just a status row quietly turning red.
+    connection_dropped = Signal(str, str, str)
+
     #: Internal: background-thread -> GUI-thread handoff. Never connect to
     #: this from outside the class; it exists purely so a coroutine running
     #: on the background loop can resolve a BrowserFuture (and touch
@@ -135,6 +154,7 @@ class McpConnectionManager(QObject):
         super().__init__(parent)
         self._store = store
         self._permissions = McpPermissionStore(store.settings)
+        self._audit = McpAuditStore(store.settings)
         self._connections: dict[str, McpConnection] = {
             server.id: McpConnection(server) for server in store.list_servers()
         }
@@ -391,29 +411,72 @@ class McpConnectionManager(QObject):
             return
         server_id, tool_name = parts
         tool = self.find_tool(server_id, tool_name)
+        if (permission == Permission.ALLOW and scope == Scope.ALWAYS and tool is not None
+                and tool.sensitivity == Sensitivity.DESTRUCTIVE):
+            # Same rule as set_tool_permission, enforced here too: an
+            # "Always allow" answered from a live approval prompt reaches
+            # this method exactly the way Settings' dropdown does, so a
+            # destructive tool refuses it from both entry points, not just
+            # the one that happens to hide the option in its UI.
+            return
         fingerprint = tool.schema_fingerprint if tool is not None else ""
         self._permissions.remember(server_id, tool_name, fingerprint, permission, scope,
                                    mission_id=mission_id)
 
-    def set_tool_permission(self, server_id: str, tool_name: str, permission: str) -> None:
+    def set_tool_permission(self, server_id: str, tool_name: str, permission: str) -> bool:
         """The Settings UI's per-tool control - always Scope.ALWAYS, since
         there is no Mission context in Settings. ``permission`` may also be
         Permission.ASK, which *clears* any remembered Allow/Deny instead of
         storing "ask" as a value (ASK is never persisted - see
-        McpPermissionStore)."""
+        McpPermissionStore).
+
+        Returns False, refusing the change, for one case only: Allow on a
+        DESTRUCTIVE tool. That is enforced here rather than only hidden
+        from the dropdown, so nothing - a stale UI, a script, a future
+        caller - can silently make a destructive tool auto-run by going
+        around the widget. Every other combination, WRITE and SENSITIVE
+        included, may still be set to Allow if the user chooses to.
+        """
+        tool = self.find_tool(server_id, tool_name)
+        if (permission == Permission.ALLOW and tool is not None
+                and tool.sensitivity == Sensitivity.DESTRUCTIVE):
+            return False
         if permission == Permission.ASK:
             self._permissions.clear(server_id, tool_name)
         else:
-            tool = self.find_tool(server_id, tool_name)
             fingerprint = tool.schema_fingerprint if tool is not None else ""
             self._permissions.remember(server_id, tool_name, fingerprint, permission,
                                        Scope.ALWAYS)
+        return True
 
     def clear_permission(self, server_id: str, tool_name: str) -> None:
         self._permissions.clear(server_id, tool_name)
 
     def permission_records(self, server_id: str):
         return self._permissions.all_for_server(server_id)
+
+    def permission_scope_for(self, server_id: str, tool_name: str) -> str:
+        """"always" / "mission" / "" (no remembered decision - the default
+        applies fresh each time) for display in the global permissions view.
+        Ignores *which* Mission a Scope.MISSION record belongs to - the
+        summary view only needs to say a decision is Mission-scoped, not
+        which one; McpConnectionManager.permission_for is what actually
+        checks a specific Mission id when a call is made.
+        """
+        tool = self.find_tool(server_id, tool_name)
+        if tool is not None and tool.never_confirmed:
+            return ""
+        fingerprint = tool.schema_fingerprint if tool is not None else ""
+        for record in self._permissions.all_for_server(server_id):
+            if record.tool_name == tool_name and record.schema_fingerprint == fingerprint:
+                return record.scope
+        return ""
+
+    def reset_server_permissions(self, server_id: str) -> None:
+        self._permissions.forget_server(server_id)
+
+    def reset_all_permissions(self) -> None:
+        self._permissions.clear_all()
 
     def editable_field(self, namespaced_name: str, args: dict[str, Any]) -> tuple[str, str]:
         """Which argument, if any, is worth letting the user hand-edit
@@ -450,7 +513,7 @@ class McpConnectionManager(QObject):
         return field, value
 
     def assess_call(self, namespaced_name: str, args: dict[str, Any], *,
-                    mission_id: int | None = None) -> dict[str, Any]:
+                    mission_id: int | None = None, mission_title: str = "") -> dict[str, Any]:
         """The MCP equivalent of BrowserController.describe_action: what
         would this call do, and does it need the user's blessing - decided
         here, from PyBrowser's own classification and stored permission,
@@ -490,6 +553,10 @@ class McpConnectionManager(QObject):
         permission = self.permission_for(server_id, tool_name, mission_id=mission_id)
 
         if permission == Permission.DENY:
+            self._record_audit(server_id, tool_name, sensitivity=sensitivity,
+                              mission_id=mission_id, mission_title=mission_title,
+                              decision=DECISION_DENIED_REMEMBERED,
+                              outcome=OUTCOME_NOT_EXECUTED)
             return {
                 "level": sensitivity, "reasons": reasons, "requires_confirmation": False,
                 "refused": True,
@@ -509,7 +576,8 @@ class McpConnectionManager(QObject):
                 "requires_confirmation": True, "mcp": mcp_info}
 
     # -- running -----------------------------------------------------
-    def run_tool(self, namespaced_name: str, args: dict[str, Any]) -> BrowserFuture:
+    def run_tool(self, namespaced_name: str, args: dict[str, Any], *,
+                mission_id: int | None = None, mission_title: str = "") -> BrowserFuture:
         parts = adapter.split_namespaced(namespaced_name)
         if parts is None or self._loop is None:
             return resolved("mcp_call", adapter.render_tool_result(
@@ -518,6 +586,10 @@ class McpConnectionManager(QObject):
         server_id, tool_name = parts
         connection = self._connections.get(server_id)
         if connection is None or connection.state != ConnectionState.CONNECTED:
+            self._record_audit(server_id, tool_name, sensitivity=Sensitivity.UNKNOWN,
+                              mission_id=mission_id, mission_title=mission_title,
+                              decision=self._current_decision(server_id, tool_name, mission_id),
+                              outcome=OUTCOME_ERROR, error_code="SERVER_NOT_CONNECTED")
             return resolved("mcp_call", adapter.render_tool_result(
                 ok=False, server_id=server_id, tool_name=tool_name,
                 error_code="SERVER_NOT_CONNECTED",
@@ -535,6 +607,9 @@ class McpConnectionManager(QObject):
         # (see the "server renames tool after reconnect" test) is still
         # safe: its *new* name would need to pass assess_call() again on
         # its own, fresh classification and fingerprint, to ever get here.
+        decision = self._current_decision(server_id, tool_name, mission_id)
+        sensitivity = tool.sensitivity
+        start_time = time.monotonic()
 
         future = BrowserFuture(f"mcp:{namespaced_name}")
         # A backstop only: the asyncio-level timeout inside call_tool()
@@ -559,7 +634,8 @@ class McpConnectionManager(QObject):
                 # message must be copied out before the lambda that runs
                 # later (on the GUI thread) can safely reference it.
                 message = str(exc)
-                self._post_to_gui_thread(lambda: self._mark_connection_error(server_id, message))
+                self._post_to_gui_thread(
+                    lambda: self._mark_connection_error(server_id, message, tool_name=tool_name))
                 payload = adapter.render_tool_result(
                     ok=False, server_id=server_id, tool_name=tool_name,
                     error_code="MCP_ERROR", error_message=message)
@@ -578,17 +654,31 @@ class McpConnectionManager(QObject):
                 else:
                     payload = adapter.render_tool_result(
                         ok=True, server_id=server_id, tool_name=tool_name, content=content)
+            duration_ms = (time.monotonic() - start_time) * 1000
+            outcome = (OUTCOME_SUCCESS if payload.get("ok") else
+                      OUTCOME_TIMEOUT if "TIMEOUT" in payload.get("text", "") else OUTCOME_ERROR)
+            self._record_audit(server_id, tool_name, sensitivity=sensitivity,
+                              mission_id=mission_id, mission_title=mission_title,
+                              decision=decision, outcome=outcome, duration_ms=duration_ms)
             self._post_to_gui_thread(lambda: future.set_result(payload))
 
         cf.add_done_callback(on_bg_done)
         return future
 
-    def _mark_connection_error(self, server_id: str, message: str) -> None:
+    def _mark_connection_error(self, server_id: str, message: str, *,
+                               tool_name: str = "") -> None:
         """A tool call revealed the connection is actually dead - reflect
         that in state immediately rather than waiting for the user to
         notice on a stale "Connected" row. Does not auto-reconnect: see the
         architecture doc's note that Phase 1 reconnection is user-triggered,
-        not an unattended retry loop."""
+        not an unattended retry loop.
+
+        ``tool_name`` is set only when this was discovered mid-call (as
+        opposed to a fresh connect attempt failing, which has its own
+        Settings-row feedback and never emits connection_dropped) - it is
+        what tells the user "GitHub disconnected while Py was reading
+        repository data" rather than just a status row quietly going red.
+        """
         connection = self._connections.get(server_id)
         if connection is None:
             return
@@ -596,3 +686,58 @@ class McpConnectionManager(QObject):
         connection.last_error = message
         connection.client = None
         self.server_changed.emit(server_id)
+        if tool_name:
+            server_name = connection.config.name
+            self.connection_dropped.emit(server_id, server_name, tool_name)
+
+    # -- audit ------------------------------------------------------------
+    def _current_decision(self, server_id: str, tool_name: str,
+                          mission_id: int | None) -> str:
+        """Why this call is allowed to run, purely from current state - no
+        extra plumbing needed from the caller. Correct because a remembered
+        record (Scope.ALWAYS/MISSION) is always written *before* the call
+        it applies to next runs: resolve_confirmation() persists the
+        decision, then executes: see AgentSession.resolve_confirmation."""
+        tool = self.find_tool(server_id, tool_name)
+        if tool is not None and tool.never_confirmed:
+            return DECISION_AUTO
+        fingerprint = tool.schema_fingerprint if tool is not None else ""
+        remembered = self._permissions.decision_for(server_id, tool_name, fingerprint,
+                                                     mission_id=mission_id)
+        return DECISION_ALLOWED_REMEMBERED if remembered == Permission.ALLOW else DECISION_ALLOWED_ONCE
+
+    def _record_audit(self, server_id: str, tool_name: str, *, sensitivity: str,
+                      mission_id: int | None, mission_title: str, decision: str,
+                      outcome: str, duration_ms: float | None = None,
+                      error_code: str = "") -> None:
+        connection = self._connections.get(server_id)
+        server_name = connection.config.name if connection is not None else server_id
+        self._audit.record(
+            server_id=server_id, server_name=server_name, tool_name=tool_name,
+            sensitivity=sensitivity, mission_id=mission_id, mission_title=mission_title,
+            decision=decision, outcome=outcome, duration_ms=duration_ms, error_code=error_code)
+
+    def record_declined_call(self, namespaced_name: str, *,
+                             mission_id: int | None = None, mission_title: str = "") -> None:
+        """Called from AgentSession.resolve_confirmation when the user
+        declines a live approval prompt - the one path a denial can happen
+        through that assess_call() itself never sees, since a fresh "Ask"
+        answered "no" is not a remembered decision."""
+        parts = adapter.split_namespaced(namespaced_name)
+        if parts is None:
+            return
+        server_id, tool_name = parts
+        tool = self.find_tool(server_id, tool_name)
+        sensitivity = tool.sensitivity if tool is not None else Sensitivity.UNKNOWN
+        self._record_audit(server_id, tool_name, sensitivity=sensitivity,
+                          mission_id=mission_id, mission_title=mission_title,
+                          decision=DECISION_DENIED_ONCE, outcome=OUTCOME_NOT_EXECUTED)
+
+    def audit_entries(self, **kwargs):
+        return self._audit.entries(**kwargs)
+
+    def clear_audit(self) -> None:
+        self._audit.clear()
+
+    def clear_audit_for_server(self, server_id: str) -> None:
+        self._audit.clear_server(server_id)

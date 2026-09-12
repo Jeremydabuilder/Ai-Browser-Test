@@ -95,6 +95,12 @@ VISIBLE_FINDINGS = 4
 #: Pages listed before the rest are summarised. Fewer than the findings above
 #: them, on purpose - a Mission panel is a reminder, not a file manager.
 VISIBLE_PAGES = 3
+VISIBLE_ACTIVITY = 5
+
+#: MissionAction.outcome -> a glyph, mirroring the ✓/✗ vocabulary the rest
+#: of the app already uses for done/failed. "skipped" (a declined MCP
+#: approval, or a stopped task) gets its own, since it is neither.
+_ACTIVITY_GLYPH = {"done": "✓", "failed": "✗", "skipped": "⊘"}
 
 #: Open questions listed before the rest are summarised. Same reasoning as
 #: VISIBLE_PAGES - the card is a glance, the full list lives on the mission.
@@ -493,6 +499,24 @@ class MissionCard(QFrame):
         self.more.hide()
         outer.addWidget(self.more)
 
+        # What Py actually did, in order - native browser actions and
+        # connected-tool (MCP) calls alike, so a write tool that needed
+        # approval reads as part of the Mission rather than something that
+        # happened somewhere behind it. Deliberately just the last few: the
+        # full record is Missions.actions(), available to anyone who wants
+        # more than a glance.
+        self.activity_label = QLabel("", self)
+        self.activity_label.setStyleSheet(
+            f"color:{c.disabled}; font-size:{m.text_xs}px; font-weight:600;"
+            " letter-spacing:0.06em;")
+        self.activity_label.setContentsMargins(0, m.space_1, 0, 0)
+        self.activity_label.hide()
+        outer.addWidget(self.activity_label)
+
+        self._activity_box = QVBoxLayout()
+        self._activity_box.setSpacing(0)
+        outer.addLayout(self._activity_box)
+
         actions = QHBoxLayout()
         actions.setSpacing(m.space_2)
         # Same reasoning as the page rows: styled here so hover is visible
@@ -574,6 +598,7 @@ class MissionCard(QFrame):
         self._render_findings(mission, is_new_mission)
         self._render_questions(mission, is_new_mission)
         self._render_pages(mission, is_new_mission)
+        self._render_activity(mission)
         self._shown_mission_id = mission.id
         self.show()
 
@@ -752,6 +777,36 @@ class MissionCard(QFrame):
             self.more.show()
         else:
             self.more.hide()
+
+    def _render_activity(self, mission: Mission) -> None:
+        """The last few things Py actually did - native browser actions and
+        MCP tool calls shown the same way, since MissionAction already
+        carries both under one shape (see app/missions/model.py). Read-only
+        history: unlike findings/questions/pages, nothing here is clickable
+        or animated - it is a log, not a section anyone edits.
+        """
+        self._clear(self._activity_box)
+        actions = self._service.actions(mission.id)
+        if not actions:
+            self.activity_label.hide()
+            return
+        self.activity_label.setText("ACTIVITY")
+        self.activity_label.show()
+        c = self._colours
+        m = theme.METRICS
+        # actions() returns oldest-first (see MissionStore.actions); the
+        # most recent few, oldest of those at the top, reads as a short log
+        # rather than a jumbled list.
+        for action in actions[-VISIBLE_ACTIVITY:]:
+            glyph = _ACTIVITY_GLYPH.get(action.outcome, "•")
+            tone = {"done": c.success, "failed": c.danger, "skipped": c.disabled}.get(
+                action.outcome, c.muted)
+            row = QLabel(f'<span style="color:{tone};">{glyph}</span> '
+                        f"{_html_escape(action.description)}", self)
+            row.setTextFormat(Qt.TextFormat.RichText)
+            row.setWordWrap(True)
+            row.setStyleSheet(f"color:{c.muted}; font-size:{m.text_xs}px;")
+            self._activity_box.addWidget(row)
 
     # -- actions ---------------------------------------------------------
     def _rename(self) -> None:

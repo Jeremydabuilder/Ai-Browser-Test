@@ -136,9 +136,19 @@ class McpPermissionStore:
         self._write(records)
 
     def forget_server(self, server_id: str) -> None:
-        """Called when a server is removed - its permissions go with it."""
+        """Called when a server is removed - its permissions go with it.
+        Also the implementation of "Reset this server"'s permissions from
+        the global Settings view, which does the same thing without
+        removing the server itself."""
         records = [r for r in self._load() if r.server_id != server_id]
         self._write(records)
 
+    def clear_all(self) -> None:
+        """"Reset all MCP permissions" - every server, every tool."""
+        self._write([])
+
     def all_for_server(self, server_id: str) -> list[PermissionRecord]:
         return [r for r in self._load() if r.server_id == server_id]
+
+    def all(self) -> list[PermissionRecord]:
+        return self._load()

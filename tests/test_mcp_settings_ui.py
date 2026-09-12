@@ -19,10 +19,15 @@ from PySide6.QtWidgets import QApplication, QTabWidget  # noqa: E402
 
 from app.mcp.config import McpServerStore  # noqa: E402
 from app.mcp.connection_manager import McpConnectionManager  # noqa: E402
-from app.mcp.types import ConnectionState, McpServerConfig, Transport  # noqa: E402
+from app.mcp.types import ConnectionState, McpServerConfig, Permission, Transport  # noqa: E402
 from app.storage.database import Database  # noqa: E402
 from app.storage.settings import SettingsStore  # noqa: E402
-from app.ui.mcp_settings import AddServerDialog, ConnectedToolsPanel  # noqa: E402
+from app.ui.mcp_settings import (  # noqa: E402
+    AddServerDialog,
+    AuditLogDialog,
+    ConnectedToolsPanel,
+    GlobalPermissionsDialog,
+)
 from app.ui.settings_dialog import SettingsDialog  # noqa: E402
 
 _app: QApplication | None = None
@@ -193,6 +198,146 @@ class AddServerDialogTests(McpUiTestCase):
         dialog._save()
         self.assertIn("name", dialog.problem.text().lower())
         self.assertEqual(self.manager.configured_servers(), [])
+        dialog.deleteLater()
+
+
+def _add_connected_tool(manager, server_id, tool_name, sensitivity):
+    """A UI test only needs a tool to exist and be classified - not a real
+    subprocess round trip (see test_mcp_phase3.py for that level)."""
+    from app.mcp.types import ConnectionState, McpToolDescriptor
+
+    connection = manager.connection(server_id)
+    connection.state = ConnectionState.CONNECTED
+    connection.tools = list(connection.tools) + [McpToolDescriptor(
+        server_id=server_id, name=tool_name, description="", sensitivity=sensitivity)]
+
+
+class GlobalPermissionsDialogTests(McpUiTestCase):
+    def test_lists_every_servers_tools(self):
+        from app.mcp.types import Sensitivity
+
+        self.manager.add_or_update_server(McpServerConfig(
+            id="s1", name="Server One", transport=Transport.STDIO, command="true"))
+        _add_connected_tool(self.manager, "s1", "get_thing", Sensitivity.READ_ONLY)
+        _add_connected_tool(self.manager, "s1", "make_thing", Sensitivity.WRITE)
+        dialog = GlobalPermissionsDialog(self.manager)
+        self.assertEqual(dialog.tree.topLevelItemCount(), 2)
+        dialog.deleteLater()
+
+    def test_read_only_tool_shows_always_allowed_with_no_control(self):
+        from app.mcp.types import Sensitivity
+
+        self.manager.add_or_update_server(McpServerConfig(
+            id="s1", name="Server One", transport=Transport.STDIO, command="true"))
+        _add_connected_tool(self.manager, "s1", "get_thing", Sensitivity.READ_ONLY)
+        dialog = GlobalPermissionsDialog(self.manager)
+        item = dialog.tree.topLevelItem(0)
+        widget = dialog.tree.itemWidget(item, 3)
+        self.assertIsInstance(widget, __import__("PySide6.QtWidgets", fromlist=["QLabel"]).QLabel)
+        self.assertIn("Always allowed", widget.text())
+        dialog.deleteLater()
+
+    def test_changing_permission_from_the_global_view_persists(self):
+        from app.mcp.types import Sensitivity
+
+        self.manager.add_or_update_server(McpServerConfig(
+            id="s1", name="Server One", transport=Transport.STDIO, command="true"))
+        _add_connected_tool(self.manager, "s1", "make_thing", Sensitivity.WRITE)
+        dialog = GlobalPermissionsDialog(self.manager)
+        item = dialog.tree.topLevelItem(0)
+        combo = dialog.tree.itemWidget(item, 3)
+        allow_index = combo.findData(Permission.ALLOW)
+        combo.setCurrentIndex(allow_index)
+        self.assertEqual(self.manager.permission_for("s1", "make_thing"), Permission.ALLOW)
+        dialog.deleteLater()
+
+    def test_destructive_tool_has_no_allow_option(self):
+        from app.mcp.types import Sensitivity
+
+        self.manager.add_or_update_server(McpServerConfig(
+            id="s1", name="Server One", transport=Transport.STDIO, command="true"))
+        _add_connected_tool(self.manager, "s1", "delete_thing", Sensitivity.DESTRUCTIVE)
+        dialog = GlobalPermissionsDialog(self.manager)
+        item = dialog.tree.topLevelItem(0)
+        combo = dialog.tree.itemWidget(item, 3)
+        self.assertEqual(combo.findData(Permission.ALLOW), -1)
+        dialog.deleteLater()
+
+    def test_reset_selected_server_clears_its_permissions(self):
+        from app.mcp.types import Sensitivity
+
+        self.manager.add_or_update_server(McpServerConfig(
+            id="s1", name="Server One", transport=Transport.STDIO, command="true"))
+        _add_connected_tool(self.manager, "s1", "make_thing", Sensitivity.WRITE)
+        self.manager.set_tool_permission("s1", "make_thing", Permission.ALLOW)
+        dialog = GlobalPermissionsDialog(self.manager)
+        dialog.tree.topLevelItem(0).setSelected(True)
+        from unittest import mock
+        with mock.patch("app.ui.mcp_settings.confirm_destructive_choice", return_value=True):
+            dialog._reset_selected_server()
+        self.assertEqual(self.manager.permission_for("s1", "make_thing"), Permission.ASK)
+        dialog.deleteLater()
+
+    def test_reset_all_clears_every_server(self):
+        from app.mcp.types import Sensitivity
+
+        self.manager.add_or_update_server(McpServerConfig(
+            id="s1", name="Server One", transport=Transport.STDIO, command="true"))
+        self.manager.add_or_update_server(McpServerConfig(
+            id="s2", name="Server Two", transport=Transport.STDIO, command="true"))
+        _add_connected_tool(self.manager, "s1", "make_thing", Sensitivity.WRITE)
+        _add_connected_tool(self.manager, "s2", "make_thing", Sensitivity.WRITE)
+        self.manager.set_tool_permission("s1", "make_thing", Permission.ALLOW)
+        self.manager.set_tool_permission("s2", "make_thing", Permission.DENY)
+        dialog = GlobalPermissionsDialog(self.manager)
+        from unittest import mock
+        with mock.patch("app.ui.mcp_settings.confirm_destructive_choice", return_value=True):
+            dialog._reset_all()
+        self.assertEqual(self.manager.permission_for("s1", "make_thing"), Permission.ASK)
+        self.assertEqual(self.manager.permission_for("s2", "make_thing"), Permission.ASK)
+        dialog.deleteLater()
+
+
+class AuditLogDialogTests(McpUiTestCase):
+    def test_shows_recorded_entries(self):
+        self.manager.add_or_update_server(McpServerConfig(
+            id="s1", name="Server One", transport=Transport.STDIO, command="true"))
+        self.manager._audit.record(
+            server_id="s1", server_name="Server One", tool_name="get_thing",
+            sensitivity="read_only", mission_id=None, mission_title="",
+            decision="auto", outcome="success", duration_ms=5.0)
+        dialog = AuditLogDialog(self.manager)
+        self.assertEqual(dialog.tree.topLevelItemCount(), 1)
+        dialog.deleteLater()
+
+    def test_errors_only_filter(self):
+        self.manager.add_or_update_server(McpServerConfig(
+            id="s1", name="Server One", transport=Transport.STDIO, command="true"))
+        self.manager._audit.record(
+            server_id="s1", server_name="Server One", tool_name="get_thing",
+            sensitivity="read_only", mission_id=None, mission_title="",
+            decision="auto", outcome="success", duration_ms=5.0)
+        self.manager._audit.record(
+            server_id="s1", server_name="Server One", tool_name="get_other",
+            sensitivity="read_only", mission_id=None, mission_title="",
+            decision="auto", outcome="error", duration_ms=5.0)
+        dialog = AuditLogDialog(self.manager)
+        dialog.errors_only.setChecked(True)
+        self.assertEqual(dialog.tree.topLevelItemCount(), 1)
+        dialog.deleteLater()
+
+    def test_clear_empties_the_log(self):
+        self.manager.add_or_update_server(McpServerConfig(
+            id="s1", name="Server One", transport=Transport.STDIO, command="true"))
+        self.manager._audit.record(
+            server_id="s1", server_name="Server One", tool_name="get_thing",
+            sensitivity="read_only", mission_id=None, mission_title="",
+            decision="auto", outcome="success", duration_ms=5.0)
+        dialog = AuditLogDialog(self.manager)
+        from unittest import mock
+        with mock.patch("app.ui.mcp_settings.confirm_destructive_choice", return_value=True):
+            dialog._clear()
+        self.assertEqual(dialog.tree.topLevelItemCount(), 0)
         dialog.deleteLater()
 
 
