@@ -6,6 +6,7 @@ from app.storage.bookmarks import Bookmark, BookmarkStore
 from app.storage.highlights import Highlight, HighlightStore
 from app.storage.skills import SkillStore
 from app.storage.settings import SettingsStore
+from app.storage.scheduled_tasks import ScheduledTaskStore
 
 __all__ = [
     "Database",
@@ -17,4 +18,5 @@ __all__ = [
     "HighlightStore",
     "SkillStore",
     "SettingsStore",
+    "ScheduledTaskStore",
 ]

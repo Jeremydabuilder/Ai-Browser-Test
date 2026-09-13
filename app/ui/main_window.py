@@ -39,6 +39,7 @@ from app.storage import (
     Database,
     HighlightStore,
     HistoryStore,
+    ScheduledTaskStore,
     SettingsStore,
     SkillStore,
 )
@@ -102,6 +103,15 @@ class MainWindow(QMainWindow):
         #: agent session, both of which are rebuilt.
         self.routines = RoutineService(RoutineStore(database))
 
+        #: Scheduled Missions (Phase 7) - a scheduling layer on top of the
+        #: same MissionService/AgentSession this window already owns, never
+        #: a second one. See app/missions/task_runner.py.
+        self.scheduled_tasks = ScheduledTaskStore(database)
+        from app.missions.task_runner import TaskRunner
+
+        self.task_runner = TaskRunner(
+            self.scheduled_tasks, self.missions, self._ensure_agent_session, self)
+
         # A dismissible strip above the tabs for things the status bar is too
         # quiet for: blocked certificates, failed loads, crashed renderers.
         self.notice = NoticeBar(self)
@@ -154,6 +164,18 @@ class MainWindow(QMainWindow):
         self._restore_groups()
         self._apply_tab_layout()
         self._tabs_splitter.splitterMoved.connect(self._on_tabs_splitter_moved)
+
+        self.task_runner.mission_completed.connect(self._on_scheduled_mission_completed)
+        self.task_runner.mission_failed.connect(self._on_scheduled_mission_failed)
+        self.task_runner.approval_required.connect(self._on_scheduled_approval_required)
+        recovered = self.task_runner.recover_after_restart()
+        if recovered:
+            names = ", ".join(t.mission_title or t.goal[:40] for t in recovered[:3])
+            self.notice.show_message(
+                f"{len(recovered)} scheduled task(s) were interrupted by a restart and "
+                f"marked failed for review: {names}",
+                level="warning", action_text="Task Center", action=self._show_task_center)
+        self.task_runner.start()
 
     # ------------------------------------------------------------------
     # construction helpers
@@ -233,6 +255,8 @@ class MainWindow(QMainWindow):
                          self._show_highlights_library)
         self._add_action(tools_menu, "&Skills Library", "Ctrl+Shift+S",
                          self._show_skills_library)
+        self._add_action(tools_menu, "&Task Center…", "Ctrl+Shift+J",
+                         self._show_task_center)
         self._teach_action = self._add_action(
             tools_menu, "&Teach Py", "Ctrl+Shift+T", self._toggle_teaching)
         self._teach_action.setCheckable(True)
@@ -1672,6 +1696,7 @@ class MainWindow(QMainWindow):
         )),
         ("Py & the browser", (
             ("Ctrl+Shift+A", "Show AI agent"), ("Ctrl+Shift+M", "Mission library"),
+            ("Ctrl+Shift+J", "Task Center"),
             ("Ctrl+J", "Downloads"), ("Ctrl+,", "Settings"),
         )),
         ("View", (
@@ -1723,13 +1748,15 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
     # The AI agent panel
     # ------------------------------------------------------------------
-    def _toggle_agent_panel(self) -> None:
-        """Show or hide the agent. Built lazily, on first use."""
-        if self._side_panel is not None:
-            self.set_side_panel(None)
-            self._agent_action.setChecked(False)
-            return
-        from app.ui.agent_panel import AgentPanel
+    def _ensure_agent_session(self):
+        """Build the window's one AgentSession if it does not exist yet, and
+        return it (or None if the agent has no working credential).
+
+        The single accessor both interactive use (_toggle_agent_panel) and
+        the scheduler (TaskRunner) go through - there is exactly one
+        AgentSession per window either way, never a second one built for
+        scheduled runs.
+        """
         from app.ui.agent_setup import build_session
 
         if self._agent_session is None:
@@ -1746,9 +1773,53 @@ class MainWindow(QMainWindow):
                 self._agent_session.state_changed.connect(self.missions.on_agent_state_changed)
                 credential = self._current_credential(self._agent_session.config.provider)
                 self._credential_id = credential.fingerprint if credential else ""
-        self.set_side_panel(AgentPanel(self._agent_session, self, self.missions, self.mcp,
+        return self._agent_session
+
+    def _toggle_agent_panel(self) -> None:
+        """Show or hide the agent. Built lazily, on first use."""
+        if self._side_panel is not None:
+            self.set_side_panel(None)
+            self._agent_action.setChecked(False)
+            return
+        from app.ui.agent_panel import AgentPanel
+
+        session = self._ensure_agent_session()
+        self.set_side_panel(AgentPanel(session, self, self.missions, self.mcp,
                                        browser=self.controller, highlights=self.highlights))
         self._agent_action.setChecked(True)
+
+    # ------------------------------------------------------------------
+    # Scheduled Missions (Phase 7) - Task Center and its notifications
+    # ------------------------------------------------------------------
+    def _show_task_center(self) -> None:
+        from app.ui.task_center import TaskCenterDialog
+
+        dialog = TaskCenterDialog(self.scheduled_tasks, self.task_runner, self.missions, self)
+        dialog.exec()
+
+    def _on_scheduled_mission_completed(self, task) -> None:
+        label = task.mission_title or task.goal[:60]
+        self.notice.show_message(
+            f'Scheduled Mission completed: "{label}"',
+            level="info", action_text="Task Center", action=self._show_task_center)
+
+    def _on_scheduled_mission_failed(self, task) -> None:
+        label = task.mission_title or task.goal[:60]
+        detail = f" — {task.last_error}" if task.last_error else ""
+        self.notice.show_message(
+            f'Scheduled Mission failed: "{label}"{detail}',
+            level="warning", action_text="Task Center", action=self._show_task_center)
+
+    def _on_scheduled_approval_required(self, task) -> None:
+        label = task.mission_title or task.goal[:60]
+        self.notice.show_message(
+            f'Py needs your approval to continue the scheduled Mission "{label}".',
+            level="warning", action_text="Open Py",
+            action=lambda: self._open_agent_panel_for_approval())
+
+    def _open_agent_panel_for_approval(self) -> None:
+        if self._side_panel is None:
+            self._toggle_agent_panel()
 
     def _configure_agent(self) -> None:
         from app.ui.agent_setup import ApiKeyDialog
@@ -1926,6 +1997,7 @@ class MainWindow(QMainWindow):
 
     # ------------------------------------------------------------------
     def closeEvent(self, event) -> None:  # noqa: N802
+        self.task_runner.stop()
         # Stop the agent's worker thread before the window goes away.
         if self._agent_session is not None:
             self._agent_session.shutdown()

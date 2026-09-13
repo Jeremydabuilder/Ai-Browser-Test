@@ -25,7 +25,7 @@ import threading
 from pathlib import Path
 from typing import Any, Iterable, Sequence
 
-SCHEMA_VERSION = 16
+SCHEMA_VERSION = 17
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS history (
@@ -76,6 +76,45 @@ CREATE TABLE IF NOT EXISTS skills (
     created_at          TEXT NOT NULL,
     updated_at          TEXT NOT NULL
 );
+
+-- Scheduled Missions (Phase 7): a scheduling layer on top of the Mission
+-- system, not a second one - see app/missions/scheduler.py and
+-- app/missions/task_runner.py. mission_id is nullable because a schedule
+-- can be created before the Mission it will start exists yet.
+CREATE TABLE IF NOT EXISTS scheduled_tasks (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    mission_id          INTEGER,
+    mission_title       TEXT NOT NULL DEFAULT '',
+    goal                TEXT NOT NULL,
+    schedule_kind       TEXT NOT NULL,
+    schedule_at         TEXT,
+    time_of_day         TEXT,
+    weekday             INTEGER,
+    interval_seconds    INTEGER,
+    state               TEXT NOT NULL DEFAULT 'queued',
+    next_run_at         TEXT,
+    last_run_at         TEXT,
+    last_duration_s     REAL,
+    last_error          TEXT,
+    write_attempted     INTEGER NOT NULL DEFAULT 0,
+    created_at          TEXT NOT NULL,
+    updated_at          TEXT NOT NULL,
+    FOREIGN KEY (mission_id) REFERENCES missions(id) ON DELETE SET NULL
+);
+CREATE INDEX IF NOT EXISTS idx_scheduled_tasks_next_run ON scheduled_tasks(next_run_at);
+
+-- One row per fire, kept even after scheduled_tasks itself changes - the
+-- audit trail a single task row's last_run_at/last_error cannot show.
+CREATE TABLE IF NOT EXISTS task_runs (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id     INTEGER NOT NULL,
+    started_at  TEXT NOT NULL,
+    finished_at TEXT,
+    outcome     TEXT NOT NULL DEFAULT 'running',
+    error       TEXT,
+    FOREIGN KEY (task_id) REFERENCES scheduled_tasks(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_task_runs_task ON task_runs(task_id, started_at DESC);
 
 CREATE TABLE IF NOT EXISTS settings (
     key   TEXT PRIMARY KEY,
@@ -666,6 +705,43 @@ CREATE TABLE IF NOT EXISTS decision_alternatives (
         created_at          TEXT NOT NULL,
         updated_at          TEXT NOT NULL
     );
+    """,
+    16: """
+    CREATE TABLE IF NOT EXISTS scheduled_tasks (
+        id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+        mission_id          INTEGER,
+        mission_title       TEXT NOT NULL DEFAULT '',
+        goal                TEXT NOT NULL,
+        schedule_kind       TEXT NOT NULL,
+        schedule_at         TEXT,
+        time_of_day         TEXT,
+        weekday             INTEGER,
+        interval_seconds    INTEGER,
+        state               TEXT NOT NULL DEFAULT 'queued',
+        next_run_at         TEXT,
+        last_run_at         TEXT,
+        last_duration_s     REAL,
+        last_error          TEXT,
+        write_attempted     INTEGER NOT NULL DEFAULT 0,
+        created_at          TEXT NOT NULL,
+        updated_at          TEXT NOT NULL,
+        FOREIGN KEY (mission_id) REFERENCES missions(id) ON DELETE SET NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_scheduled_tasks_next_run ON scheduled_tasks(next_run_at);
+
+    -- One row per fire, kept even after scheduled_tasks itself changes -
+    -- the audit trail a single task row's last_run_at/last_error cannot
+    -- show (only the most recent run, not the history of every run).
+    CREATE TABLE IF NOT EXISTS task_runs (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        task_id     INTEGER NOT NULL,
+        started_at  TEXT NOT NULL,
+        finished_at TEXT,
+        outcome     TEXT NOT NULL DEFAULT 'running',
+        error       TEXT,
+        FOREIGN KEY (task_id) REFERENCES scheduled_tasks(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_task_runs_task ON task_runs(task_id, started_at DESC);
     """,
 }
 
