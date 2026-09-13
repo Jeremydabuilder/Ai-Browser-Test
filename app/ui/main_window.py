@@ -71,6 +71,15 @@ class MainWindow(QMainWindow):
         self.bookmarks = BookmarkStore(database)
         self.highlights = HighlightStore(database)
         self.skills = SkillStore(database)
+        #: Semantic History / Local RAG (Phase 13) - off until the user
+        #: opts in (self.settings.semantic_history_enabled); see
+        #: app/knowledge/index.py, which no-ops every indexing call while
+        #: disabled.
+        from app.storage import KnowledgeStore
+        from app.knowledge.index import KnowledgeIndex
+
+        self.knowledge_store = KnowledgeStore(database)
+        self.knowledge_index = KnowledgeIndex(self.knowledge_store, self.settings)
 
         self.nav_bar = NavigationBar(self)
         self.addToolBar(self.nav_bar)
@@ -94,7 +103,8 @@ class MainWindow(QMainWindow):
         # outlives both. It observes the controller's action stream and never
         # drives it; see app/missions/service.py.
         self.missions = MissionService(
-            MissionStore(database), self.controller, self.tabs, self)
+            MissionStore(database), self.controller, self.tabs, self,
+            knowledge=self.knowledge_index)
         #: MCP client core (Phase 1, read-only). Owned here for the same
         #: reason as Missions: it must outlive the agent panel and every
         #: rebuilt AgentSession, and connections should stay live across a
@@ -266,6 +276,8 @@ class MainWindow(QMainWindow):
         view_menu.addSeparator()
         self._add_action(view_menu, "&Search Tabs…", "Ctrl+Shift+K", self._open_tab_search)
         self._add_action(view_menu, "Suggest Tab &Groups…", None, self._suggest_tab_groups)
+        self._add_action(view_menu, "Search &History && Knowledge…", "Ctrl+Shift+F",
+                         self._open_knowledge_search)
 
         history_menu: QMenu = menubar.addMenu("&History")
         self._add_action(history_menu, "&Back", "Alt+Left", self._back)
@@ -362,6 +374,15 @@ class MainWindow(QMainWindow):
         self.tabs.internal_action.connect(self._on_internal_action)
         self.tabs.page_visited.connect(self.history.add_visit)
         self.tabs.page_title_resolved.connect(self.history.update_title)
+        self.tabs.page_visited.connect(
+            lambda url, title: self.knowledge_index.index_history_visit(url, title))
+        # A title often resolves after page_visited already fired with a
+        # placeholder - re-index once the real one lands so history search
+        # is not stuck matching only the URL. Same content_hash-based
+        # dedup as everywhere else makes a redundant call here harmless.
+        self.tabs.page_title_resolved.connect(
+            lambda url, title: self.knowledge_index.index_history_visit(url, title))
+        self.tabs.page_visited.connect(self._index_pdf_visit)
         # Closing the last tab closes the window, like Chrome.
         self.tabs.all_tabs_closed.connect(self.close)
         # A download that gives no feedback looks like a dead link.
@@ -1001,6 +1022,31 @@ class MainWindow(QMainWindow):
             on_start_mission=self._start_mission_from_tabs,
         ).exec()
 
+    def _open_knowledge_search(self) -> None:
+        from app.ui.knowledge_search_dialog import KnowledgeSearchDialog
+
+        KnowledgeSearchDialog(
+            self.knowledge_index, self, on_open=self._open_knowledge_result).exec()
+
+    def _open_knowledge_result(self, result) -> None:
+        """Open a knowledge-search result where "open" makes sense for its
+        source type - a URL/path navigates a tab; a Mission or its finding
+        opens the Mission Library at that Mission; a highlight with no
+        surviving URL simply has nothing to navigate to."""
+        from app.knowledge.types import SourceType
+
+        chunk = result.chunk
+        if chunk.source_type in (SourceType.HISTORY, SourceType.PDF, SourceType.FILE):
+            location = chunk.location.split("#page=")[0]
+            if location:
+                self.tabs.new_tab(location)
+        elif chunk.source_type == SourceType.HIGHLIGHT:
+            if chunk.location:
+                self.tabs.new_tab(chunk.location)
+        elif chunk.source_type in (SourceType.MISSION, SourceType.MISSION_FINDING):
+            mission_id = int(chunk.parent_id or chunk.source_id)
+            self._open_mission(mission_id)
+
     def _tab_read_tool(self, url: str) -> str:
         """Which tool reads a tab's content: PDFs have no DOM text, so a tab
         showing one needs browser_get_pdf_text instead of the ordinary
@@ -1033,6 +1079,24 @@ class MainWindow(QMainWindow):
             f"first:\n{lines}")
         self._ask_py(prompt)
 
+    def _index_pdf_visit(self, url: str, _title: str) -> None:
+        """A local PDF the user just opened is content they read, same as
+        a highlight or a saved file - see the Phase 13 spec's "PDFs" source
+        type. Deliberately restricted to file:// PDFs: a remote PDF would
+        need a network fetch inside this signal handler, which must never
+        block page navigation. A remote PDF's title/URL still gets indexed
+        as ordinary history metadata via the sibling connection above."""
+        from app.browser.pdf_context import PdfExtractionError, extract_pdf, is_pdf_url
+
+        if not self.knowledge_index.enabled or not is_pdf_url(url) or not url.startswith("file://"):
+            return
+        try:
+            document = extract_pdf(url)
+        except PdfExtractionError:
+            return
+        self.knowledge_index.index_pdf(
+            url, [page.text for page in document.pages], title=document.title or url)
+
     def _ask_py_about_local_file(self) -> None:
         """Let the user explicitly pick one local file, parse it locally,
         and hand its text to Py - filename and source disclosed, content
@@ -1060,6 +1124,8 @@ class MainWindow(QMainWindow):
         except FileParsingError as exc:
             QMessageBox.warning(self, "Could not read file", str(exc))
             return
+        self.knowledge_index.index_file(
+            document.source, document.text, title=document.filename)
         block = wrap_untrusted({
             "filename": document.filename,
             "source": document.source,
@@ -1159,6 +1225,8 @@ class MainWindow(QMainWindow):
         highlight, truncated = self.highlights.add(url, title, text)
         if highlight is None:
             return
+        self.knowledge_index.index_highlight(
+            highlight.id, highlight.text, title=highlight.title, location=highlight.url)
         if truncated:
             QMessageBox.information(
                 self, "Highlight saved",
@@ -1449,7 +1517,8 @@ class MainWindow(QMainWindow):
         dialog = HighlightsLibraryDialog(
             self.highlights, self,
             on_ask_py=self._ask_py_about_highlight,
-            on_add_to_mission=lambda h: self._add_selection_to_mission(h.url, h.title, h.text))
+            on_add_to_mission=lambda h: self._add_selection_to_mission(h.url, h.title, h.text),
+            knowledge_index=self.knowledge_index)
         dialog.exec()
 
     def _show_skills_library(self) -> None:
@@ -1594,9 +1663,35 @@ class MainWindow(QMainWindow):
     def _show_settings(self) -> None:
         from app.ui.settings_dialog import SettingsDialog
 
-        dialog = SettingsDialog(self.settings, self, mcp=self.mcp, mcp_server=self.mcp_server)
+        dialog = SettingsDialog(self.settings, self, mcp=self.mcp, mcp_server=self.mcp_server,
+                                knowledge=self.knowledge_index)
+        dialog.knowledge_panel.rebuild_callback = self._rebuild_knowledge_index
         dialog.saved.connect(self._apply_settings)
         dialog.exec()
+
+    def _rebuild_knowledge_index(self) -> None:
+        """Re-index everything currently indexable from its live source -
+        history, Missions/findings, highlights. PDFs and files are not
+        re-scanned here (Section: known limitations) since PyBrowser keeps
+        no standing list of "PDFs/files ever added"; re-adding one from
+        Tools re-indexes it. Cheap enough at desktop scale (hashing, not a
+        model) to run inline rather than needing its own background
+        thread - see app/knowledge/index.py's module docstring."""
+        for entry in self.history.recent(limit=2000):
+            self.knowledge_index.index_history_visit(
+                entry.url, entry.title, entry.visited_at)
+        for mission in self.missions.store.recent(limit=1000, with_pages=False):
+            full = self.missions.store.get(mission.id, with_pages=True)
+            if full is None:
+                continue
+            self.knowledge_index.index_mission(full.id, full.goal, full.result,
+                                               title=full.title)
+            for finding in full.findings:
+                self.knowledge_index.index_mission_finding(
+                    finding.id, full.id, finding.text, title=full.title)
+        for highlight in self.highlights.all():
+            self.knowledge_index.index_highlight(
+                highlight.id, highlight.text, title=highlight.title, location=highlight.url)
 
     def _apply_settings(self) -> None:
         """Adopt changed preferences without a restart.
@@ -1814,7 +1909,8 @@ class MainWindow(QMainWindow):
 
         if self._agent_session is None:
             self._agent_session, reason = build_session(
-                self.controller, self, self.settings, self.missions, self.mcp)
+                self.controller, self, self.settings, self.missions, self.mcp,
+                knowledge=self.knowledge_index)
             if self._agent_session is None:
                 self._agent_unavailable = True
                 self._show_status(f"AI agent unavailable: {reason}")
@@ -1838,7 +1934,8 @@ class MainWindow(QMainWindow):
 
         session = self._ensure_agent_session()
         self.set_side_panel(AgentPanel(session, self, self.missions, self.mcp,
-                                       browser=self.controller, highlights=self.highlights))
+                                       browser=self.controller, highlights=self.highlights,
+                                       knowledge=self.knowledge_index))
         self._agent_action.setChecked(True)
 
     # ------------------------------------------------------------------
@@ -1962,7 +2059,8 @@ class MainWindow(QMainWindow):
         from app.ui.agent_setup import build_session
 
         session, reason = build_session(
-            self.controller, self, self.settings, self.missions, self.mcp)
+            self.controller, self, self.settings, self.missions, self.mcp,
+            knowledge=self.knowledge_index)
         if session is None:
             self._show_status(f"A Multi-Agent worker could not start: {reason}")
             return None

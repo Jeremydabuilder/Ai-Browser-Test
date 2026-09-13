@@ -24,6 +24,11 @@ KEY_TAB_GROUPS = "tab_groups"
 #: Whether the PyBrowser MCP Server (Phase 11 - External AI Access) should
 #: be listening. Off by default: a brand-new profile must never expose it.
 KEY_MCP_SERVER_ENABLED = "mcp_server_enabled"
+#: Whether Semantic History / Local RAG (Phase 13) indexes anything at
+#: all. Off by default - no strong existing-product precedent justifies
+#: indexing a person's browsing history and Missions without them
+#: explicitly opting in first.
+KEY_SEMANTIC_HISTORY_ENABLED = "semantic_history_enabled"
 
 #: Pinned tabs kept across a restart - past this, remembering more starts
 #: looking less like "pin what matters" and more like a second session
@@ -69,6 +74,7 @@ _DEFAULTS = {
     KEY_VERTICAL_TABS_WIDTH: str(VERTICAL_TABS_DEFAULT_WIDTH),
     KEY_VERTICAL_TABS_COLLAPSED: "0",
     KEY_MCP_SERVER_ENABLED: "0",
+    KEY_SEMANTIC_HISTORY_ENABLED: "0",
 }
 
 
@@ -121,6 +127,14 @@ class SettingsStore:
     @mcp_server_enabled.setter
     def mcp_server_enabled(self, value: bool) -> None:
         self.set_bool(KEY_MCP_SERVER_ENABLED, value)
+
+    @property
+    def semantic_history_enabled(self) -> bool:
+        return self.get_bool(KEY_SEMANTIC_HISTORY_ENABLED, False)
+
+    @semantic_history_enabled.setter
+    def semantic_history_enabled(self, value: bool) -> None:
+        self.set_bool(KEY_SEMANTIC_HISTORY_ENABLED, value)
 
     # -- what a new tab opens -------------------------------------------
     @property

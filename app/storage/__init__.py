@@ -10,6 +10,7 @@ from app.storage.scheduled_tasks import ScheduledTaskStore
 from app.storage.watches import WatchStore
 from app.storage.mission_graph import MissionGraphStore
 from app.storage.mcp_server_store import McpServerAccessStore
+from app.storage.knowledge_store import KnowledgeStore
 
 __all__ = [
     "Database",
@@ -25,4 +26,5 @@ __all__ = [
     "WatchStore",
     "MissionGraphStore",
     "McpServerAccessStore",
+    "KnowledgeStore",
 ]

@@ -84,7 +84,7 @@ class MissionService(QObject):
     missions_changed = Signal(object)
 
     def __init__(self, store: MissionStore, controller=None, tabs=None,
-                 parent: QObject | None = None) -> None:
+                 parent: QObject | None = None, *, knowledge=None) -> None:
         """``controller`` is observed, never driven.
 
         The Mission system listens to BrowserController.action_completed to
@@ -92,11 +92,18 @@ class MissionService(QObject):
         happen: user-initiated opening and focusing go through the tab manager,
         the same path a click on a bookmark takes. That keeps the agent's
         audited action stream free of events the agent did not cause.
+
+        ``knowledge`` is a Phase 13 KnowledgeIndex (or None). MissionService
+        only ever calls its index_*/remove_* methods at the exact points a
+        finding/goal/result is written or a Mission is deleted - the actual
+        chunking/embedding/retrieval logic all lives in app/knowledge/, never
+        here.
         """
         super().__init__(parent)
         self._store = store
         self._controller = controller
         self._tabs = tabs
+        self._knowledge = knowledge
         self._active: Mission | None = None
         #: How many times a Mission has become active in this window. Runtime
         #: only - it exists to answer "is this the same activation the agent
@@ -610,6 +617,8 @@ class MissionService(QObject):
                 self._set_active(None)
             self._announce(mission_id, deleted=True)
             self.missions_changed.emit(None)
+            if self._knowledge is not None:
+                self._knowledge.remove_mission(mission_id)
         return removed
 
     def restore(self, mission_id: int) -> bool:
@@ -675,6 +684,9 @@ class MissionService(QObject):
             # handle the model is given, and the one it cites with.
             result["ref"] = finding.label
             result["source"] = finding.source_domain
+            if self._knowledge is not None:
+                self._knowledge.index_mission_finding(
+                    finding.id, mission.id, finding.text, title=mission.title)
         if outcome == self._store.TOO_LONG:
             result["limit"] = MAX_FINDING_CHARS
         if outcome == self._store.FULL:
@@ -712,6 +724,9 @@ class MissionService(QObject):
         if finding is not None:
             result["ref"] = finding.label
             result["source"] = finding.source_domain
+            if self._knowledge is not None:
+                self._knowledge.index_mission_finding(
+                    finding.id, mission.id, finding.text, title=mission.title)
         if outcome == self._store.TOO_LONG:
             result["limit"] = MAX_FINDING_CHARS
         if outcome == self._store.FULL:
@@ -905,6 +920,8 @@ class MissionService(QObject):
             return {"status": "too_long", "field": "text", "limit": MAX_RESULT_CHARS}
         self._refresh()
         self._announce(mission.id)
+        if self._knowledge is not None:
+            self._knowledge.index_mission(mission.id, mission.goal, text, title=mission.title)
         return {"status": "saved"}
 
     def save_constraints(self, constraints: list[str]) -> dict:
@@ -937,6 +954,8 @@ class MissionService(QObject):
         removed = self._store.remove_finding(finding_id)
         if removed:
             self._refresh()
+            if self._knowledge is not None:
+                self._knowledge.remove_mission_finding(finding_id)
         return removed
 
     def source_page(self, finding: MissionFinding) -> MissionPage | None:

@@ -25,7 +25,7 @@ import threading
 from pathlib import Path
 from typing import Any, Callable, Iterable, Sequence
 
-SCHEMA_VERSION = 21
+SCHEMA_VERSION = 22
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS history (
@@ -222,6 +222,31 @@ CREATE TABLE IF NOT EXISTS mcp_server_audit (
     created_at       TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_mcp_server_audit_created_at ON mcp_server_audit(created_at DESC);
+
+-- Semantic History / Local RAG (Phase 13) - see app/knowledge/. Off by
+-- default (settings.semantic_history_enabled); every row here comes from
+-- content the user already chose to keep (history, Missions, findings,
+-- highlights, PDFs/files explicitly added) - never a raw arbitrary page
+-- body. embedding is a JSON array from a local, dependency-free hashed
+-- bag-of-words vector (app/knowledge/embeddings.py) - nothing leaves the
+-- machine. content_hash lets re-indexing skip unchanged chunks.
+CREATE TABLE IF NOT EXISTS knowledge_chunks (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    source_type   TEXT NOT NULL,
+    source_id     TEXT NOT NULL,
+    parent_id     TEXT,
+    chunk_index   INTEGER NOT NULL DEFAULT 0,
+    title         TEXT NOT NULL DEFAULT '',
+    location      TEXT NOT NULL DEFAULT '',
+    text          TEXT NOT NULL,
+    content_hash  TEXT NOT NULL,
+    timestamp     TEXT NOT NULL,
+    embedding     TEXT NOT NULL,
+    created_at    TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_knowledge_chunks_source
+    ON knowledge_chunks(source_type, source_id);
+CREATE INDEX IF NOT EXISTS idx_knowledge_chunks_parent ON knowledge_chunks(parent_id);
 
 CREATE TABLE IF NOT EXISTS settings (
     key   TEXT PRIMARY KEY,
@@ -964,6 +989,25 @@ CREATE TABLE IF NOT EXISTS decision_alternatives (
     CREATE INDEX IF NOT EXISTS idx_mcp_server_audit_created_at ON mcp_server_audit(created_at DESC);
     """,
     20: _migrate_20_add_client_columns,
+    21: """
+    CREATE TABLE IF NOT EXISTS knowledge_chunks (
+        id            INTEGER PRIMARY KEY AUTOINCREMENT,
+        source_type   TEXT NOT NULL,
+        source_id     TEXT NOT NULL,
+        parent_id     TEXT,
+        chunk_index   INTEGER NOT NULL DEFAULT 0,
+        title         TEXT NOT NULL DEFAULT '',
+        location      TEXT NOT NULL DEFAULT '',
+        text          TEXT NOT NULL,
+        content_hash  TEXT NOT NULL,
+        timestamp     TEXT NOT NULL,
+        embedding     TEXT NOT NULL,
+        created_at    TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_knowledge_chunks_source
+        ON knowledge_chunks(source_type, source_id);
+    CREATE INDEX IF NOT EXISTS idx_knowledge_chunks_parent ON knowledge_chunks(parent_id);
+    """,
 }
 
 _STOP = object()

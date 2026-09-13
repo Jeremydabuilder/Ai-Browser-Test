@@ -43,6 +43,12 @@ MAX_COMPOSED_CHARS = 20000
 #: resolving to something already open.
 ACTION_FILE = "action:file"
 ACTION_IMAGE = "action:image"
+#: Phase 13 - selecting this does not open a picker; it marks that the
+#: message the user is about to type should also be used as a semantic-
+#: search query over the local knowledge index (history, Missions,
+#: findings, highlights, PDFs, files) at build() time - see
+#: ContextComposer.build's "knowledge" branch.
+ACTION_KNOWLEDGE = "action:knowledge"
 
 
 @dataclass(frozen=True)
@@ -84,7 +90,8 @@ class ContextComposer:
     than re-implementing them).
     """
 
-    def __init__(self, *, browser=None, missions=None, mcp=None, highlights=None) -> None:
+    def __init__(self, *, browser=None, missions=None, mcp=None, highlights=None,
+                 knowledge=None) -> None:
         self._browser = browser
         self._missions = missions
         self._mcp = mcp
@@ -92,6 +99,11 @@ class ContextComposer:
         #: no window context exists (a bare test), in which case @highlight
         #: simply lists nothing rather than failing.
         self._highlights = highlights
+        #: Phase 13 KnowledgeIndex, or None. The @knowledge candidate only
+        #: appears when both this is given AND the index is enabled - an
+        #: off-by-default feature should not even offer itself in the
+        #: composer while the user has not opted in.
+        self._knowledge = knowledge
         self._selected: dict[str, ContextItem] = {}
 
     # -- candidates --------------------------------------------------------
@@ -104,6 +116,11 @@ class ContextComposer:
         items.extend(self._mission_items())
         items.extend(self._mcp_items())
         items.extend(self._highlight_items())
+        if self._knowledge is not None and self._knowledge.enabled:
+            items.append(ContextItem(
+                id=ACTION_KNOWLEDGE, kind=ACTION_KNOWLEDGE,
+                title="Search Knowledge & History…",
+                subtitle="Retrieves relevant past pages/Missions/highlights for your question"))
         items.append(ContextItem(id=ACTION_FILE, kind=ACTION_FILE,
                                  title="Attach a local file…",
                                  subtitle="Opens a file picker"))
@@ -306,6 +323,8 @@ class ContextComposer:
                 if note:
                     payload["note"] = note
                 lines.append(wrap_untrusted(payload))
+            elif item.kind == ACTION_KNOWLEDGE:
+                lines.append(self._knowledge_block(user_text))
             elif item.kind == "image":
                 if not provider_supports_images:
                     lines.append(
@@ -325,6 +344,39 @@ class ContextComposer:
         combined = "\n".join(lines) + "\n\n" + user_text
         return combined, image
 
+    #: At most this many retrieved chunks are ever handed to the model -
+    #: "select only relevant chunks", never the whole index.
+    MAX_KNOWLEDGE_RESULTS = 5
+
+    def _knowledge_block(self, query: str) -> str:
+        """Retrieve relevant chunks for ``query`` (the message the user is
+        about to send) and fence them as untrusted, provenance-labeled
+        excerpts - never the raw index, never unlabeled text a model could
+        mistake for the user's own words or for current fact regardless of
+        age (see each result's ``stale`` flag)."""
+        if self._knowledge is None or not query.strip():
+            return "- @knowledge: no query text to search for."
+        from app.knowledge.retrieval import search
+        from app.knowledge.types import SourceType
+
+        chunks = self._knowledge.store.all_chunks()
+        results = search(chunks, query, limit=self.MAX_KNOWLEDGE_RESULTS)
+        if not results:
+            return "- @knowledge: no relevant local history/Mission/file content found."
+        lines = ["- Relevant local knowledge (your own browsing history, Missions, "
+                "findings, highlights, PDFs and files - fenced as untrusted data below):"]
+        for result in results:
+            chunk = result.chunk
+            label = SourceType.LABELS.get(chunk.source_type, chunk.source_type)
+            freshness = " (may be stale - indexed a while ago)" if result.stale else ""
+            payload = {
+                "source_type": label, "title": chunk.title, "location": chunk.location,
+                "timestamp": chunk.timestamp, "excerpt": result.excerpt,
+            }
+            lines.append(f"  {label}{freshness}:")
+            lines.append("  " + wrap_untrusted(payload))
+        return "\n".join(lines)
+
 
 def context_icon(kind: str) -> str:
     """A short plain-text glyph per kind, for a chip or a candidate row -
@@ -332,5 +384,5 @@ def context_icon(kind: str) -> str:
     return {
         "tab": "TAB", "pdf_tab": "PDF", "mission": "MISSION", "mcp_tool": "MCP",
         "file": "FILE", "image": "IMAGE", "highlight": "HIGHLIGHT",
-        ACTION_FILE: "+FILE", ACTION_IMAGE: "+IMAGE",
+        ACTION_FILE: "+FILE", ACTION_IMAGE: "+IMAGE", ACTION_KNOWLEDGE: "KNOWLEDGE",
     }.get(kind, "?")

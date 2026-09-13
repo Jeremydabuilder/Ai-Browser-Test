@@ -463,6 +463,22 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                                           "\"hard-court durability\" - not a "
                                           "sentence explaining it."}},
           ["constraints"]),
+
+    # Phase 13 - local, on-device only. Lets Mission research check what
+    # is already known (past Missions/findings/highlights/PDFs/files)
+    # before deciding whether fresh web research is even needed.
+    _tool("knowledge_search",
+          "Search the user's own local knowledge index - previously visited pages, "
+          "past Missions and their findings, saved highlights, PDFs and files the "
+          "user has added - for anything relevant to a query. Nothing here comes "
+          "from the web right now; use this BEFORE browsing when a query might "
+          "already be answered by something the user has read or found before. "
+          "Returns nothing if semantic history is disabled or nothing matches - "
+          "that is not an error, it just means proceed with fresh research.",
+          {"query": {"type": "string", "description": "What to look for, in plain words."},
+           "limit": {"type": "integer",
+                     "description": "Maximum results to return. Defaults to 5."}},
+          ["query"]),
 ]
 
 TOOL_NAMES = {schema["name"] for schema in TOOL_SCHEMAS}
@@ -519,7 +535,8 @@ LOCAL_WRITE_TOOLS = {"mission_save_finding", "mission_save_decision",
                      "mission_save_challenge", "mission_save_ghost_run",
                      "mission_set_progress", "mission_save_result",
                      "mission_save_question", "mission_resolve_question",
-                     "mission_note_source", "mission_save_constraints"}
+                     "mission_note_source", "mission_save_constraints",
+                     "knowledge_search"}
 
 #: Tools that only read. Used to skip confirmation checks entirely.
 READ_ONLY_TOOLS = {
@@ -827,7 +844,7 @@ class ToolRegistry:
 
     def __init__(self, browser: BrowserController, limits: ContextLimits | None = None,
                  missions=None, *, autonomy: str = Autonomy.STANDARD, mcp=None,
-                 allowed_tools: frozenset[str] | None = None) -> None:
+                 allowed_tools: frozenset[str] | None = None, knowledge=None) -> None:
         """``missions`` is the Mission service, or None when there is not one.
 
         Typed loosely on purpose: this class needs exactly one method from it,
@@ -865,6 +882,10 @@ class ToolRegistry:
         self._missions = missions
         self._mcp = mcp
         self._allowed_tools = allowed_tools
+        #: Phase 13 KnowledgeIndex, or None where semantic history is
+        #: unavailable/disabled - knowledge_search then simply reports no
+        #: results (see _run_search) rather than failing.
+        self._knowledge = knowledge
         self._autonomy = autonomy if autonomy in (
             Autonomy.READ_ONLY, Autonomy.ASK_ALWAYS, Autonomy.STANDARD) else Autonomy.STANDARD
 
@@ -1534,6 +1555,31 @@ class ToolRegistry:
         return ToolOutcome(immediate=_error(
             "NO_MISSION", "There is no active mission to record constraints for."),
             activity="Recording the mission's constraints")
+
+    def _run_search(self, args: dict) -> ToolOutcome:
+        """knowledge_search - local-only retrieval over the Phase 13
+        knowledge index. Never touches the web; an empty/disabled index
+        is a normal (not an error) result, since "nothing local matched"
+        is exactly the signal that fresh research is needed."""
+        query = self._string(args, "query", required=True)
+        limit = self._int(args, "limit", 5)
+        if self._knowledge is None or not self._knowledge.enabled:
+            return ToolOutcome(
+                immediate={"ok": True, "results": [],
+                          "note": "Semantic history is unavailable or disabled."},
+                activity="Searching local knowledge")
+        from app.knowledge.retrieval import search
+        from app.knowledge.types import SourceType
+
+        chunks = self._knowledge.store.all_chunks()
+        results = search(chunks, query, limit=max(1, min(limit, 20)))
+        payload = [{
+            "source_type": SourceType.LABELS.get(r.chunk.source_type, r.chunk.source_type),
+            "title": r.chunk.title, "location": r.chunk.location,
+            "timestamp": r.chunk.timestamp, "excerpt": r.excerpt, "stale": r.stale,
+        } for r in results]
+        return ToolOutcome(
+            immediate={"ok": True, "results": payload}, activity="Searching local knowledge")
 
     def _run_get_page(self, args: dict) -> ToolOutcome:
         return ToolOutcome(future=self._browser.get_page_structure(

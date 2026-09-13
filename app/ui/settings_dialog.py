@@ -52,7 +52,7 @@ class SettingsDialog(QDialog):
     saved = Signal()
 
     def __init__(self, settings: SettingsStore, parent: QWidget | None = None,
-                 *, mcp=None, mcp_server=None) -> None:
+                 *, mcp=None, mcp_server=None, knowledge=None) -> None:
         """``mcp`` is an McpConnectionManager (app.mcp.connection_manager), or
         None. When given, a "Connected Tools" tab is added alongside General -
         omitting it (rather than requiring every caller to pass one) keeps
@@ -61,7 +61,10 @@ class SettingsDialog(QDialog):
 
         ``mcp_server`` is a PyBrowserMcpServer (app.mcp_server.server), or
         None - the inbound counterpart to ``mcp``. When given, an "External
-        AI Access" tab is added the same optional way."""
+        AI Access" tab is added the same optional way.
+
+        ``knowledge`` is a Phase 13 KnowledgeIndex, or None - when given, a
+        "Privacy / Memory / Knowledge" tab is added the same optional way."""
         super().__init__(parent)
         self._settings = settings
         c = theme.palette_for(QApplication.instance())
@@ -73,7 +76,7 @@ class SettingsDialog(QDialog):
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(0)
 
-        if mcp is None and mcp_server is None:
+        if mcp is None and mcp_server is None and knowledge is None:
             general = QWidget(self)
             layout = QVBoxLayout(general)
             layout.setContentsMargins(m.space_5, m.space_5, m.space_5, m.space_4)
@@ -104,6 +107,20 @@ class SettingsDialog(QDialog):
                 access_layout.setContentsMargins(0, 0, 0, 0)
                 access_layout.addWidget(ExternalAiAccessPanel(mcp_server, access_tab))
                 tabs.addTab(access_tab, "External AI Access")
+
+            if knowledge is not None:
+                from app.ui.knowledge_settings import KnowledgeSettingsPanel
+
+                knowledge_tab = QWidget(self)
+                knowledge_layout = QVBoxLayout(knowledge_tab)
+                knowledge_layout.setContentsMargins(0, 0, 0, 0)
+                #: Exposed so the caller (MainWindow) can wire a Rebuild
+                #: callback that needs live store references this dialog
+                #: does not otherwise have - see KnowledgeSettingsPanel.
+                self.knowledge_panel = KnowledgeSettingsPanel(
+                    knowledge, settings, knowledge_tab)
+                knowledge_layout.addWidget(self.knowledge_panel)
+                tabs.addTab(knowledge_tab, "Privacy / Memory / Knowledge")
 
             outer.addWidget(tabs)
 

@@ -287,6 +287,7 @@ class AgentSession(QObject):
         parent: QObject | None = None,
         missions=None,
         mcp=None,
+        knowledge=None,
     ) -> None:
         super().__init__(parent)
         self.config = config or AgentConfig()
@@ -299,8 +300,11 @@ class AgentSession(QObject):
         # remember and re-supply them.
         self._missions = missions
         self._mcp = mcp
+        #: Phase 13 KnowledgeIndex, or None - same "kept here so
+        #: set_tool_allowlist can rebuild" reasoning as missions/mcp above.
+        self._knowledge = knowledge
         self._tools = ToolRegistry(browser, self.config.limits, missions,
-                                  autonomy=self.config.autonomy, mcp=mcp)
+                                  autonomy=self.config.autonomy, mcp=mcp, knowledge=knowledge)
 
         # -- agent state, deliberately separate from browser state -------
         self._messages: list[dict[str, Any]] = []
@@ -509,7 +513,7 @@ class AgentSession(QObject):
             return
         self._tools = ToolRegistry(self._browser, self.config.limits, self._missions,
                                    autonomy=self.config.autonomy, mcp=self._mcp,
-                                   allowed_tools=allowed_tools)
+                                   allowed_tools=allowed_tools, knowledge=self._knowledge)
 
     def cancel(self) -> None:
         """Stop the current task.
