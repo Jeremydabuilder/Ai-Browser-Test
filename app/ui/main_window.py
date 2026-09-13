@@ -270,6 +270,8 @@ class MainWindow(QMainWindow):
                          self._show_task_center)
         self._add_action(tools_menu, "&Watches…", "Ctrl+Shift+W",
                          self._show_watches)
+        self._add_action(tools_menu, "Run as &Multi-Agent Mission…", None,
+                         self._run_multi_agent_mission)
         self._teach_action = self._add_action(
             tools_menu, "&Teach Py", "Ctrl+Shift+T", self._toggle_teaching)
         self._teach_action.setCheckable(True)
@@ -1909,6 +1911,65 @@ class MainWindow(QMainWindow):
         ask = getattr(self._side_panel, "ask", None)
         if callable(ask):
             ask(prompt)
+
+    # ------------------------------------------------------------------
+    # Multi-Agent Missions (Phase 9)
+    # ------------------------------------------------------------------
+    def _build_worker_agent_session(self):
+        """Build one fresh, disposable AgentSession for a Multi-Agent
+        Mission worker - the exact same construction path as the window's
+        own interactive session (see _ensure_agent_session/build_session),
+        never a second kind of session. Unlike the interactive session,
+        this is never cached: MissionCoordinator calls this once per
+        worker and shuts each one down when that worker finishes.
+        """
+        from app.ui.agent_setup import build_session
+
+        session, reason = build_session(
+            self.controller, self, self.settings, self.missions, self.mcp)
+        if session is None:
+            self._show_status(f"A Multi-Agent worker could not start: {reason}")
+            return None
+        # Reuses the exact same Mission audit/blocked-label wiring the
+        # interactive session gets (see _ensure_agent_session) - a
+        # worker's actions land in the one shared Mission history, never
+        # a private log of their own.
+        session.step_changed.connect(self.missions.record_agent_step)
+        session.state_changed.connect(self.missions.on_agent_state_changed)
+        return session
+
+    def _run_multi_agent_mission(self) -> None:
+        from PySide6.QtWidgets import QInputDialog
+
+        from app.missions.coordinator import CoordinatorLimits, MissionCoordinator
+        from app.ui.workstreams_dialog import WorkstreamsDialog
+
+        goal, ok = QInputDialog.getMultiLineText(
+            self, "Multi-Agent Mission",
+            "What should Py's team work on? A goal that needs comparing or "
+            "researching several things at once benefits most from this.")
+        if not ok or not goal.strip():
+            return
+        goal = goal.strip()
+        if self.missions.active is None or self.missions.active.goal != goal:
+            self.missions.start(goal)
+
+        coordinator = MissionCoordinator(
+            self.missions, self._build_worker_agent_session, CoordinatorLimits(), self)
+        coordinator.result_ready.connect(self._on_multi_agent_result)
+        coordinator.failed.connect(self._on_multi_agent_failed)
+        dialog = WorkstreamsDialog(coordinator, self)
+        coordinator.run(goal)
+        dialog.exec()
+
+    def _on_multi_agent_result(self, result: str) -> None:
+        self.notice.show_message(
+            "Multi-Agent Mission finished - the result is recorded on the Mission.",
+            level="info")
+
+    def _on_multi_agent_failed(self, message: str) -> None:
+        self.notice.show_message(f"Multi-Agent Mission did not complete: {message}",
+                                 level="warning")
 
     def _fetch_page_text_for_watch(self, url: str, on_done) -> None:
         """Fetch a watched page's plain text via one dedicated background
