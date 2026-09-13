@@ -24,6 +24,10 @@ from dataclasses import dataclass
 from typing import Any, Callable
 
 from app.agent.config import Autonomy, ContextLimits
+from app.security import firewall, injection
+from app.security.log import EventType as SecurityEventType
+from app.security.log import security_log
+from app.security.provenance import Provenance
 from app.browser import visual as visual_module
 from app.browser.controller import BrowserController, ScrollDirection
 from app.browser.futures import BrowserFuture, resolved
@@ -68,20 +72,52 @@ UNTRUSTED_OPEN = "<untrusted_web_page_content>"
 UNTRUSTED_CLOSE = "</untrusted_web_page_content>"
 
 
-def wrap_untrusted(payload: Any) -> str:
-    """Fence page-derived data so the model can see where it starts and ends.
+def wrap_untrusted(payload: Any, *, provenance: str = Provenance.WEBPAGE, source: str = "") -> str:
+    """Fence page-derived data so the model can see where it starts and ends -
+    the ONE chokepoint every non-authoritative source (a webpage, a PDF, a
+    local file, a knowledge-retrieval result) already passes through before
+    reaching the model, which is why Phase 15's firewall lives here rather
+    than being reimplemented per feature (app.mcp.adapter.wrap_untrusted is
+    the other half of that same design, for MCP results specifically - it
+    calls the same app.security.firewall functions this does).
 
     A page can contain "ignore your instructions and…". Marking the boundary
     does not make that text harmless - nothing does, entirely - but it gives
     the model an unambiguous signal about which bytes are data. The system
-    prompt tells it what the marker means.
+    prompt tells it what the marker means. ``provenance`` records WHICH kind
+    of untrusted source this is (see app.security.provenance) so the model
+    can be told, not just that this is untrusted, but what it is untrusted
+    *as* - a WEBPAGE is not the same thing as an MCP_RESULT or a
+    KNOWLEDGE_RETRIEVAL, even though none of them carry authority.
+
+    Likely secrets (API keys, passwords, tokens, payment data) are redacted
+    from the payload before it is fenced - see app.security.firewall.redact -
+    unless the user has turned that protection off in Settings. Detecting
+    injection-style phrasing here only logs a security event (see
+    app.security.log); it can never be the thing that decides safety, since
+    the actual authority boundary is that this fence exists at all, not what
+    is inside it.
 
     We also neutralise any copy of the closing marker inside the payload, so a
     page cannot "close" the fence early and have the rest read as instructions.
     """
     body = json.dumps(payload, ensure_ascii=False, indent=None)
+    if firewall.is_enabled():
+        redacted_body, findings = firewall.redact(body, only_high_risk=True)
+        if findings:
+            security_log.record(
+                SecurityEventType.SECRET_REDACTED, firewall.summarize(findings), source=source)
+            body = redacted_body
+    if injection.is_enabled():
+        reasons = injection.detect(body)
+        if reasons:
+            security_log.record(
+                SecurityEventType.INJECTION_DETECTED, "; ".join(reasons[:3]), source=source)
     body = body.replace(UNTRUSTED_CLOSE, "&lt;/untrusted_web_page_content&gt;")
-    return f"{UNTRUSTED_OPEN}\n{body}\n{UNTRUSTED_CLOSE}"
+    open_tag = f'<untrusted_content provenance="{provenance}">' if provenance != Provenance.WEBPAGE \
+        else UNTRUSTED_OPEN
+    close_tag = "</untrusted_content>" if provenance != Provenance.WEBPAGE else UNTRUSTED_CLOSE
+    return f"{open_tag}\n{body}\n{close_tag}"
 
 
 # ---------------------------------------------------------------------------
@@ -503,24 +539,20 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
 
     _tool("browser_visual_click",
           "Click whatever is at this point in the CURRENT SCREENSHOT from "
-          "browser_visual_click's viewport (see browser_visual_observe). "
-          "Only use this after browser_visual_observe, and only when you are "
-          "reasonably confident what is at that point - if you are not sure, "
-          "ask the user rather than guessing. If this looks like it would "
-          "submit a form, send a message, place an order, pay for something, "
-          "delete something, upload a file, change an account setting, or "
-          "otherwise do something consequential, it is refused with a "
-          "CONFIRMATION_REQUIRED error UNLESS 'confirmed' is true - ask the "
-          "user in plain language and get a real yes before ever setting "
-          "confirmed to true.",
+          "browser_visual_observe's viewport. Only use this after "
+          "browser_visual_observe, and only when you are reasonably confident "
+          "what is at that point - if you are not sure, ask the user rather "
+          "than guessing. If this looks like it would submit a form, send a "
+          "message, place an order, pay for something, delete something, "
+          "upload a file, change an account setting, or otherwise do something "
+          "consequential, the SAME approval prompt a structured click already "
+          "shows the user appears automatically before anything happens - you "
+          "do not need to, and cannot, pre-approve this yourself. Just call the "
+          "tool; if it needs approval, wait for the result.",
           {"x": {"type": "integer", "description": "X coordinate in the viewport, "
                                                    "from the last observation."},
            "y": {"type": "integer", "description": "Y coordinate in the viewport, "
                                                    "from the last observation."},
-           "confirmed": {"type": "boolean",
-                         "description": "Set true only after the user has "
-                                        "explicitly agreed to a sensitive action "
-                                        "you described to them. Defaults to false."},
            "tab_id": _TAB},
           ["x", "y"]),
 
@@ -536,13 +568,10 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
     _tool("browser_visual_type",
           "Type into whatever element currently has focus - call "
           "browser_visual_focus or browser_visual_click on a text field first. "
-          "Subject to the same confirmation rule as browser_visual_click for a "
-          "field that looks like a password or payment field.",
+          "A field that looks like a password or payment field triggers the "
+          "same automatic approval prompt browser_visual_click does; there is "
+          "nothing you need to set to pre-approve it.",
           {"text": {"type": "string", "description": "Text to type."},
-           "confirmed": {"type": "boolean",
-                         "description": "Set true only after the user has "
-                                        "explicitly agreed, for a sensitive "
-                                        "field. Defaults to false."},
            "tab_id": _TAB},
           ["text"]),
 
@@ -663,6 +692,23 @@ def _error(code: str, message: str, *, hint: str = "") -> dict[str, Any]:
     if hint:
         payload["hint"] = hint
     return payload
+
+
+def _visual_fingerprint(element: dict[str, Any] | None) -> str | None:
+    """A stable-enough identity for a visually-resolved element, so a
+    later re-resolution of the same coordinate can be compared against it
+    (see ToolRegistry.assess_async and AgentSession.resolve_confirmation).
+    Mirrors page_script.js's own fingerprint() - tag, role, and accessible
+    name - deliberately excluding position: the coordinate is already
+    fixed by the tool call, so this only needs to say "is it still the
+    same control", not "is it in the same place"."""
+    if not element:
+        return None
+    return "|".join((
+        str(element.get("tag", "")),
+        str(element.get("role", "")),
+        str(element.get("name", ""))[:80],
+    ))
 
 
 def _finding_activity(text: str) -> str:
@@ -929,15 +975,26 @@ class ToolOutcome:
     #: encode, so they get their own completion path in AgentSession._execute
     #: instead of being forced through encode()/render().
     mcp_future: BrowserFuture | None = None
+    #: Set instead of ``future``/``immediate`` for browser_visual_observe
+    #: only (Phase 14 hardening): screenshot capture now needs a page round
+    #: trip of its own (scanning for sensitive fields to redact - see
+    #: app.browser.visual.observe), so it can no longer resolve
+    #: synchronously the way it first did. Resolves to a plain
+    #: ``{"ok": bool, ...}`` dict, optionally carrying a reserved
+    #: ``"__image__": {"mime_type":..., "data": <base64>}`` key - the same
+    #: shape ``mcp_future`` already uses for a non-ActionResult result,
+    #: not a fourth new pattern.
+    visual_observe_future: BrowserFuture | None = None
     #: Short human-readable line for the activity log, e.g. 'Clicking "Search"'.
     activity: str = ""
-    #: Phase 14 - set only by browser_visual_observe. ``{"mime_type":...,
-    #: "data": <base64>}``, the same shape AgentSession.send()'s own
-    #: ``image`` parameter already uses. Carried separately from
-    #: ``immediate``/``data`` because an ActionResult/its JSON encoding
-    #: must stay a plain, loggable dict - the actual image bytes ride as
-    #: a real image content block in the tool_result (see AgentSession.
-    #: _record_result), never inlined as base64 text into that JSON.
+    #: Phase 14 - set only by an ``immediate`` visual result carrying an
+    #: image. ``{"mime_type":..., "data": <base64>}``, the same shape
+    #: AgentSession.send()'s own ``image`` parameter already uses. Carried
+    #: separately from ``immediate`` because an ActionResult/its JSON
+    #: encoding must stay a plain, loggable dict - the actual image bytes
+    #: ride as a real image content block in the tool_result (see
+    #: AgentSession._record_result), never inlined as base64 text into
+    #: that JSON.
     image: dict[str, str] | None = None
 
 
@@ -1120,24 +1177,99 @@ class ToolRegistry:
         has to get past a classification the model does not control. Whether
         that level actually asks is decided afterwards, by _apply_autonomy:
         the user's own chosen policy, not the model's and not the page's.
+
+        Synchronous, and cannot classify a VISUAL_WRITE_TOOLS call for real
+        (see needs_async_assessment/assess_async below) - AgentSession never
+        calls this for one of those names. A direct caller that does gets
+        the same non-blocking "elevated, not yet resolved" placeholder
+        _raw_assess always returned before assess_async existed; it is
+        never itself treated as clearance to act (see ToolOutcome.run()'s
+        own defense-in-depth, which does not exist for this - see
+        _run_visual_click/_run_visual_type, which never trust anything
+        this method says).
         """
         return self._apply_autonomy(self._raw_assess(name, args))
+
+    def needs_async_assessment(self, name: str) -> bool:
+        """True for a tool whose sensitivity cannot be judged synchronously
+        - AgentSession._next_tool must call assess_async() instead of
+        assess() for these, exactly the same way it already treats an MCP
+        tool name differently from a browser one, never a third code path
+        bolted on beside the real one."""
+        return name in VISUAL_WRITE_TOOLS
+
+    def assess_async(self, name: str, args: dict[str, Any]) -> BrowserFuture:
+        """The real classification for a visual write tool (browser_visual_
+        click/browser_visual_type) - resolves the coordinate/focused field
+        on the page and runs it through the exact same safety.classify_click
+        /classify_type a structured ref-based action already uses (via
+        app.browser.visual.classify_visual_target), then applies the same
+        autonomy policy assess() does. Returns a BrowserFuture rather than a
+        plain dict because, unlike a structured ref (already cached from a
+        prior get_page_structure() snapshot - see BrowserController.
+        _known_element), a coordinate has never been resolved before, so
+        resolving it needs one page round trip.
+
+        The resolved dict also carries "visual_target_fingerprint" - a
+        stable string describing what was actually found (see
+        _visual_fingerprint) - so a caller (AgentSession.resolve_confirmation)
+        can re-resolve the same coordinate right before acting and refuse if
+        the page has changed what is there since the user approved this,
+        rather than trusting that nothing moved in between.
+        """
+        tab_id = self._tab(args)
+        if name == "browser_visual_click":
+            x = self._int(args, "x")
+            y = self._int(args, "y")
+            if x is None or y is None:
+                raise ToolError("'x' and 'y' are required.")
+            action, text = "click", ""
+            inspect_future = self._browser.visual_inspect(x, y, tab_id)
+        else:
+            text = self._string(args, "text", required=True)
+            action = "type"
+            inspect_future = self._browser.visual_inspect_active(tab_id)
+
+        result_future = BrowserFuture(f"assess_{name}")
+
+        def on_inspected(inspect_result: Any) -> None:
+            if inspect_result is None or not inspect_result.ok:
+                # Nothing resolvable yet (no element at that point, nothing
+                # focused) - never a reason to require confirmation; the
+                # real tool call will report this same failure honestly
+                # when it runs, and there is nothing to protect the user
+                # from acting on if there is no target at all.
+                result_future.set_result(self._apply_autonomy({
+                    "level": "normal", "reasons": [], "requires_confirmation": False,
+                    "visual_target_fingerprint": None,
+                }))
+                return
+            element = inspect_result.data.get("element")
+            assessment = visual_module.classify_visual_target(element, action=action, text=text)
+            result = assessment.to_dict()
+            result["visual_target_fingerprint"] = _visual_fingerprint(element)
+            # A human-readable label for the ConfirmationRequest built from
+            # this, so a visual approval reads "click 'Buy now'" the same
+            # way a structured one does - never a raw, meaningless
+            # coordinate pair (see AgentSession._continue_after_assessment).
+            result["visual_target_name"] = (element or {}).get("name", "")
+            result_future.set_result(self._apply_autonomy(result))
+
+        inspect_future.then(on_inspected)
+        return result_future
 
     def _raw_assess(self, name: str, args: dict[str, Any]) -> dict[str, Any]:
         if name in READ_ONLY_TOOLS:
             return {"level": "normal", "reasons": [], "requires_confirmation": False}
         if name in VISUAL_WRITE_TOOLS:
-            # Cannot be classified here: there is no cached element for a
-            # coordinate the way a structured ref already has one (see
-            # BrowserController._known_element) - classifying it needs a
-            # page round trip. requires_confirmation is deliberately False;
-            # the actual fail-closed gate runs inside the handler itself
-            # once the coordinate has been resolved (see
-            # _visual_write_action), which refuses a sensitive target with
-            # CONFIRMATION_REQUIRED rather than ever silently confirming
-            # it here.
+            # Only reached by a caller that skips AgentSession and calls
+            # assess() directly - AgentSession itself always uses
+            # assess_async() for these (see needs_async_assessment). Never
+            # clearance to act: _run_visual_click/_run_visual_type do not
+            # consult this at all, only the real ConfirmationRequest flow
+            # gates them.
             return {"level": "elevated",
-                    "reasons": ["visual target not yet resolved - classified once acted on"],
+                    "reasons": ["visual target not yet resolved - use assess_async"],
                     "requires_confirmation": False}
         if name.startswith("mcp."):
             # McpConnectionManager.assess_call is where the actual decision
@@ -1325,6 +1457,16 @@ class ToolRegistry:
                 return "Listing tabs"
             if name == "browser_wait_for_element":
                 return "Waiting for the page to update"
+            if name == "browser_visual_observe":
+                return "Looking at the page"
+            if name == "browser_visual_click":
+                return f"Clicking at ({args.get('x')}, {args.get('y')})"
+            if name == "browser_visual_focus":
+                return f"Focusing at ({args.get('x')}, {args.get('y')})"
+            if name == "browser_visual_type":
+                return "Typing into the focused field"
+            if name == "browser_visual_scroll":
+                return f"Scrolling {self._string(args, 'direction', default='down')}"
         except ToolError:
             pass
         if name.startswith("mcp.") and self._mcp is not None:
@@ -1821,20 +1963,29 @@ class ToolRegistry:
                 hint="Rely on the structured tools (browser_get_page) instead, "
                      "or ask the user for help."),
                 activity="Looking at the page")
-        observation, error = visual_module.observe(self._browser, tab_id)
-        if observation is None:
-            return ToolOutcome(immediate=_error(
-                "SCRIPT_FAILED", error or "Could not capture the page."),
-                activity="Looking at the page")
-        self.visual_budget.record_screenshot()
-        payload = {"ok": True, **observation.to_dict()}
-        # run() already refuses this tool outright when not vision_capable
-        # (see run()'s defense-in-depth check) - reaching here means an
-        # image is always wanted.
-        return ToolOutcome(
-            immediate=payload,
-            image={"mime_type": observation.image.mime_type, "data": observation.image.base64},
-            activity="Looking at the page")
+
+        result_future = BrowserFuture("visual_observe_tool")
+
+        def on_observed(outcome: Any) -> None:
+            observation, error = outcome
+            if observation is None:
+                result_future.set_result(_error(
+                    "SCRIPT_FAILED", error or "Could not capture the page."))
+                return
+            self.visual_budget.record_screenshot()
+            payload = {"ok": True, **observation.to_dict()}
+            # run() already refuses this tool outright when not
+            # vision_capable (see run()'s defense-in-depth check) -
+            # reaching here means an image is always wanted. Sensitive
+            # fields (password/API-key/payment inputs) were already
+            # blacked out in the pixel data itself by observe() before it
+            # ever became this attachment - see app.browser.visual.observe.
+            payload["__image__"] = {
+                "mime_type": observation.image.mime_type, "data": observation.image.base64}
+            result_future.set_result(payload)
+
+        visual_module.observe(self._browser, tab_id).then(on_observed)
+        return ToolOutcome(visual_observe_future=result_future, activity="Looking at the page")
 
     def _run_visual_scroll(self, args: dict) -> ToolOutcome:
         if not self.visual_budget.can_scroll():
@@ -1856,89 +2007,40 @@ class ToolRegistry:
                            activity="Focusing a point on the page")
 
     def _run_visual_click(self, args: dict) -> ToolOutcome:
-        return self._visual_write_action("click", args)
-
-    def _run_visual_type(self, args: dict) -> ToolOutcome:
-        return self._visual_write_action("type", args)
-
-    def _visual_write_action(self, action: str, args: dict) -> ToolOutcome:
-        """browser_visual_click / browser_visual_type: resolve -> classify
-        -> (act or fail closed), never act-then-classify.
-
-        assess() could not judge this call (see VISUAL_WRITE_TOOLS in
-        _raw_assess - there is no cached element for a coordinate the way
-        get_page_structure() caches one for a ref), so the fail-closed gate
-        lives here instead: the coordinate/focused element is resolved and
-        run through the exact same safety.classify_click/classify_type a
-        structured action already uses, and only THEN, if it turns out not
-        to need confirmation (or the caller already has it), does the
-        actual click/type ever reach the page. A sensitive target without
-        ``confirmed: true`` is refused, not performed - the model has to
-        get a real answer from the user and call this again, never silently
-        proceed on its own judgement.
-        """
+        """Perform the click. Classification/confirmation already happened
+        in assess_async() before AgentSession ever called run() (see
+        AgentSession._next_tool / needs_async_assessment) - the real
+        ConfirmationRequest flow, not a model-supplied flag. This handler's
+        only job is the budget check and the actual dispatch."""
+        x = self._int(args, "x")
+        y = self._int(args, "y")
+        if x is None or y is None:
+            raise ToolError("'x' and 'y' are required.")
         if not self.visual_budget.can_act():
             return ToolOutcome(immediate=_error(
                 "VISUAL_BUDGET_EXCEEDED",
                 f"This task has already performed {visual_module.MAX_VISUAL_ACTIONS_PER_TASK} "
                 "visual actions.",
                 hint="Ask the user for help rather than continuing to guess at coordinates."),
-                activity="Acting on the page")
+                activity="Clicking a point on the page")
+        self.visual_budget.record_action()
+        return ToolOutcome(future=self._browser.visual_click_at(x, y, self._tab(args)),
+                           activity="Clicking a point on the page")
 
-        tab_id = self._tab(args)
-        confirmed = self._bool(args, "confirmed", False)
-        x = y = None
-        if action == "click":
-            x = self._int(args, "x")
-            y = self._int(args, "y")
-            if x is None or y is None:
-                raise ToolError("'x' and 'y' are required.")
-            text = ""
-            inspect_future = self._browser.visual_inspect(x, y, tab_id)
-        else:
-            text = self._string(args, "text", required=True)
-            inspect_future = self._browser.visual_inspect_active(tab_id)
-
-        combined = BrowserFuture(f"visual_{action}")
-
-        def on_inspected(inspect_result: Any) -> None:
-            if inspect_result is None:
-                combined.set_result(None)
-                return
-            if not inspect_result.ok:
-                # Nothing resolvable at that point / no focused field -
-                # that failure IS the result. Never fall through to acting
-                # blindly when the target itself could not be identified.
-                combined.set_result(inspect_result)
-                return
-            element = inspect_result.data.get("element")
-            assessment = visual_module.classify_visual_target(element, action=action, text=text)
-            if assessment.requires_confirmation and not confirmed:
-                reason = assessment.reasons[0] if assessment.reasons else \
-                    "do something consequential"
-                combined.set_result(ActionResult(
-                    ok=False, action=f"visual_{action}",
-                    error=ActionError(
-                        code="CONFIRMATION_REQUIRED",
-                        message=f"This looks like it would {reason}. Ask the user to "
-                                "confirm in plain language, then call this tool again "
-                                "with confirmed set to true.",
-                        recoverable=True),
-                    page=inspect_result.page,
-                    sensitivity=assessment.to_dict(),
-                ))
-                return
-            self.visual_budget.record_action()
-            if action == "click":
-                act_future = self._browser.visual_click_at(x, y, tab_id)
-            else:
-                act_future = self._browser.visual_type_into_focused(text, tab_id)
-            act_future.then(combined.set_result)
-
-        inspect_future.then(on_inspected)
-        activity = "Clicking a point on the page" if action == "click" \
-            else "Typing into the focused field"
-        return ToolOutcome(future=combined, activity=activity)
+    def _run_visual_type(self, args: dict) -> ToolOutcome:
+        """Perform the type. See _run_visual_click - the confirmation gate
+        already ran in assess_async(), not here."""
+        text = self._string(args, "text", required=True)
+        if not self.visual_budget.can_act():
+            return ToolOutcome(immediate=_error(
+                "VISUAL_BUDGET_EXCEEDED",
+                f"This task has already performed {visual_module.MAX_VISUAL_ACTIONS_PER_TASK} "
+                "visual actions.",
+                hint="Ask the user for help rather than continuing to guess at coordinates."),
+                activity="Typing into the focused field")
+        self.visual_budget.record_action()
+        return ToolOutcome(future=self._browser.visual_type_into_focused(text, self._tab(args)),
+                           activity="Typing into the focused field")
 
     def _run_back(self, args: dict) -> ToolOutcome:
         return ToolOutcome(future=self._browser.go_back(self._tab(args)))
@@ -2063,10 +2165,12 @@ class ToolRegistry:
                                           "truncated": result.data.get("truncated", False)}
             # A PDF read carries a little extra shape (page count, whether it
             # looks scanned, its title) that a plain page-text read does not.
+            is_pdf = "page_count" in result.data or "is_scanned" in result.data
             for key in ("page_count", "is_scanned", "title"):
                 if key in result.data:
                     text_block[key] = result.data[key]
-            blocks.append(wrap_untrusted(text_block))
+            blocks.append(wrap_untrusted(
+                text_block, provenance=Provenance.PDF if is_pdf else Provenance.WEBPAGE))
         elif result.data:
             extra = {k: v for k, v in result.data.items() if k not in ("structure", "text")}
             if extra:

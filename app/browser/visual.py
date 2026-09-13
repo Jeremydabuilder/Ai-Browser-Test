@@ -33,6 +33,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from app.browser import safety
+from app.browser.futures import BrowserFuture
 from app.browser.image_context import ImageAttachment, ImageContextError, screenshot_attachment
 
 #: Longest side a visual observation's screenshot is downscaled to, in CSS
@@ -137,54 +138,107 @@ class VisualBudget:
         self.verification_retries = 0
 
 
-def observe(controller: Any, tab_id: int | None = None) -> tuple["VisualObservation | None", str]:
+def _is_sensitive_field(region: dict[str, Any]) -> bool:
+    """Would typing into this field be judged SENSITIVE by the exact same
+    classifier a structured browser_type call already goes through
+    (safety.classify_type)? Never a separate, screenshot-only heuristic -
+    a password/API-key/payment field is exactly as sensitive here as it is
+    anywhere else in the app."""
+    element = {
+        "input_type": region.get("input_type", ""),
+        "autocomplete": region.get("autocomplete", ""),
+        "field_name": region.get("field_name", ""),
+        "placeholder": region.get("placeholder", ""),
+    }
+    return safety.classify_type(element).level == safety.Sensitivity.SENSITIVE
+
+
+def _redact(pixmap: Any, rects: list[dict[str, int]]) -> Any:
+    """A copy of ``pixmap`` with every rect in ``rects`` painted solid
+    black. Rects are in the same viewport/CSS-pixel coordinates
+    grab_tab_pixmap's capture uses, so no scaling is needed before
+    painting - this always runs on the full-resolution capture, before
+    any later downscaling for token efficiency."""
+    from PySide6.QtGui import QColor, QPainter
+
+    redacted = pixmap.copy()
+    painter = QPainter(redacted)
+    try:
+        painter.setPen(QColor("black"))
+        painter.setBrush(QColor("black"))
+        for rect in rects:
+            painter.drawRect(rect["x"], rect["y"], rect["width"], rect["height"])
+    finally:
+        painter.end()
+    return redacted
+
+
+def observe(controller: Any, tab_id: int | None = None) -> BrowserFuture:
     """A visual observation: screenshot + viewport dims + URL + title +
     scroll position (if available) + timestamp.
 
-    Fully synchronous: the screenshot (BrowserController.grab_tab_pixmap,
-    the same primitive the existing manual "ask Py about this
-    screenshot" flow uses) and the URL/title (BrowserController.
-    get_current_page, which reads state Qt already holds rather than
-    touching the page) both are. Scroll position needs a page script
-    round trip this module deliberately does not make merely to fill in
-    one optional field - "if available" per the phase's own spec - so it
-    is always reported as None here; a caller that needs it can still ask
-    for it explicitly via BrowserController.visual_viewport.
+    Before the screenshot ever becomes an ImageAttachment, every visible
+    password/API-key/payment field on the page (as judged by the same
+    safety.classify_type every structured browser_type call already goes
+    through - see _is_sensitive_field) is painted over solid black in the
+    pixel data itself. This is deliberately NOT just "mask the DOM value" -
+    a screenshot shows whatever is actually rendered (a password manager's
+    autofilled text, a masked-but-still-visible PAN, a value entered by
+    JavaScript) regardless of what the DOM node's own value attribute
+    says, so the redaction has to happen on the pixels, not the text.
+
+    Returns a BrowserFuture (not a plain value) because finding those
+    fields needs one page round trip (BrowserController.
+    visual_sensitive_regions) - the screenshot itself and the URL/title
+    (BrowserController.grab_tab_pixmap / get_current_page) are still
+    synchronous, Qt-side reads. Resolves to ``(VisualObservation | None,
+    error_message)``.
     """
+    future = BrowserFuture("visual_observe")
     pixmap, error = controller.grab_tab_pixmap(tab_id)
     if pixmap is None:
-        return None, error or "The page could not be captured."
+        future.set_result((None, error or "The page could not be captured."))
+        return future
 
-    scaled = pixmap
-    longest = max(pixmap.width(), pixmap.height())
-    if longest > MAX_SCREENSHOT_DIMENSION:
-        from PySide6.QtCore import Qt
+    def on_regions(regions_result: Any) -> None:
+        regions = (regions_result.data.get("regions", [])
+                  if regions_result is not None and regions_result.ok else [])
+        sensitive_rects = [r["rect"] for r in regions if _is_sensitive_field(r)]
 
-        scaled = pixmap.scaled(
-            MAX_SCREENSHOT_DIMENSION, MAX_SCREENSHOT_DIMENSION,
-            Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+        working = _redact(pixmap, sensitive_rects) if sensitive_rects else pixmap
+        longest = max(working.width(), working.height())
+        if longest > MAX_SCREENSHOT_DIMENSION:
+            from PySide6.QtCore import Qt
 
-    page = controller.get_current_page(tab_id)
-    url = page.page.url if page.ok else ""
-    title = page.page.title if page.ok else ""
-    width, height = controller.viewport_size(tab_id)
+            working = working.scaled(
+                MAX_SCREENSHOT_DIMENSION, MAX_SCREENSHOT_DIMENSION,
+                Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
 
-    try:
-        attachment = screenshot_attachment(scaled, source=f"visual:{url}")
-    except ImageContextError as exc:
-        return None, str(exc)
+        page = controller.get_current_page(tab_id)
+        url = page.page.url if page.ok else ""
+        title = page.page.title if page.ok else ""
+        width, height = controller.viewport_size(tab_id)
 
-    observation = VisualObservation(
-        image=attachment,
-        viewport_width=width or scaled.width(),
-        viewport_height=height or scaled.height(),
-        url=url,
-        title=title,
-        scroll_x=None,
-        scroll_y=None,
-        timestamp=time.time(),
-    )
-    return observation, ""
+        try:
+            attachment = screenshot_attachment(working, source=f"visual:{url}")
+        except ImageContextError as exc:
+            future.set_result((None, str(exc)))
+            return
+
+        observation = VisualObservation(
+            image=attachment,
+            viewport_width=width or working.width(),
+            viewport_height=height or working.height(),
+            url=url,
+            title=title,
+            scroll_x=None,
+            scroll_y=None,
+            timestamp=time.time(),
+        )
+        future.set_result((observation, ""))
+
+    controller.visual_sensitive_regions(tab_id).then(on_regions)
+    return future
 
 
 def classify_visual_target(

@@ -80,7 +80,9 @@ class ContextComposerKnowledgeTests(unittest.TestCase):
         combined, image = composer.build("what did I learn about MCP permissions?",
                                          provider_supports_images=False)
         self.assertIn("MCP permissions are scoped per client", combined)
-        self.assertIn("<untrusted_web_page_content>", combined)
+        # Phase 15: knowledge-retrieval results carry their own explicit
+        # provenance marker rather than the page-content one.
+        self.assertIn('<untrusted_content provenance="KNOWLEDGE_RETRIEVAL">', combined)
         self.assertIsNone(image)
 
     def test_never_dumps_the_whole_index_only_relevant_chunks(self) -> None:
@@ -93,8 +95,8 @@ class ContextComposerKnowledgeTests(unittest.TestCase):
         composer.add(ContextItem(id=ACTION_KNOWLEDGE, kind=ACTION_KNOWLEDGE, title="x"))
         combined, _image = composer.build("MCP permission fact", provider_supports_images=False)
         # At most MAX_KNOWLEDGE_RESULTS chunks - not all 21 in the index.
-        self.assertLessEqual(combined.count("untrusted_web_page_content"),
-                            ContextComposer.MAX_KNOWLEDGE_RESULTS * 2)
+        self.assertLessEqual(combined.count("</untrusted_content>"),
+                            ContextComposer.MAX_KNOWLEDGE_RESULTS)
 
     def test_no_relevant_match_says_so_rather_than_inventing_one(self) -> None:
         from app.agent.context_items import ContextItem

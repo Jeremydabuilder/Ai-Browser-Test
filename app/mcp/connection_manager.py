@@ -26,6 +26,9 @@ from typing import Any, Callable
 from PySide6.QtCore import QObject, Signal
 
 from app.browser.futures import BrowserFuture, resolved
+from app.security import firewall
+from app.security.log import EventType as SecurityEventType
+from app.security.log import security_log
 from app.mcp import adapter
 from app.mcp.audit import (
     DECISION_ALLOWED_ONCE,
@@ -108,6 +111,40 @@ def _redact_arguments(args: dict[str, Any]) -> dict[str, Any]:
         key: ("•••" if str(key).lower() in SENSITIVE_SHAPED_FIELD_NAMES else value)
         for key, value in args.items()
     }
+
+
+def _redact_outbound_value(value: Any) -> Any:
+    if isinstance(value, str):
+        redacted, _ = firewall.redact(value, only_high_risk=True)
+        return redacted
+    if isinstance(value, dict):
+        return {key: _redact_outbound_value(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_redact_outbound_value(item) for item in value]
+    return value
+
+
+def _redact_outbound_args(args: dict[str, Any], *, server_id: str, tool_name: str) -> dict[str, Any]:
+    """Content-based redaction (not the field-name-based ``_redact_arguments``
+    above, which is display-only) - a value the model copied in from page
+    or file content could carry a secret regardless of what the argument
+    happens to be called. Only HIGH-risk categories (credentials, payment,
+    authentication data - see app.security.detectors.RiskLevel) are ever
+    silently redacted; nothing here blocks the call outright.
+    """
+    if not firewall.is_enabled() or not isinstance(args, dict):
+        return args
+    total_findings: list[Any] = []
+    for value in args.values():
+        if isinstance(value, str):
+            total_findings.extend(firewall.scan(value))
+    high_risk = [f for f in total_findings if f.risk == firewall.RiskLevel.HIGH]
+    if not high_risk:
+        return args
+    security_log.record(
+        SecurityEventType.SECRET_REDACTED, firewall.summarize(high_risk),
+        source=f"mcp:{server_id}.{tool_name}")
+    return {key: _redact_outbound_value(value) for key, value in args.items()}
 
 
 def _build_client(config: McpServerConfig) -> StdioMcpClient | HttpMcpClient:
@@ -610,6 +647,14 @@ class McpConnectionManager(QObject):
         decision = self._current_decision(server_id, tool_name, mission_id)
         sensitivity = tool.sensitivity
         start_time = time.monotonic()
+
+        # Phase 15 egress firewall: the same protection wrap_untrusted gives
+        # INBOUND MCP content applies OUTBOUND too - an argument the model
+        # filled in from page/file content it read could itself carry an
+        # API key or password that has no business leaving the browser for
+        # a third-party server. High-risk secrets are redacted before the
+        # call is ever sent, never merely logged after the fact.
+        args = _redact_outbound_args(args, server_id=server_id, tool_name=tool_name)
 
         future = BrowserFuture(f"mcp:{namespaced_name}")
         # A backstop only: the asyncio-level timeout inside call_tool()

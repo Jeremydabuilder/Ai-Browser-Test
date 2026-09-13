@@ -382,8 +382,10 @@ class BuildPromptTests(unittest.TestCase):
         composer.add(ContextItem(id="file:1", kind="file", title="notes.txt",
                                  ref={"text": "some file content", "truncated": False}))
         text, _ = composer.build("Read it", provider_supports_images=True)
-        self.assertIn(UNTRUSTED_OPEN, text)
-        self.assertIn(UNTRUSTED_CLOSE, text)
+        # Phase 15: a file's content is fenced with an explicit FILE
+        # provenance marker rather than the page-content one.
+        self.assertIn('<untrusted_content provenance="FILE">', text)
+        self.assertIn("</untrusted_content>", text)
 
 
 if __name__ == "__main__":

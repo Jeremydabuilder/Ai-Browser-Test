@@ -267,7 +267,7 @@ class VisualBudgetTests(unittest.TestCase):
 
 class ScreenshotObservationTests(VisualControllerTestCase):
     def test_observe_returns_metadata_and_an_image(self):
-        observation, error = visual.observe(self.browser, self.tab_id)
+        observation, error = visual.observe(self.browser, self.tab_id).wait()
         self.assertIsNotNone(observation, error)
         self.assertTrue(observation.url.endswith("/visual"))
         self.assertEqual(observation.title, "Visual Fallback Fixture")
@@ -277,10 +277,55 @@ class ScreenshotObservationTests(VisualControllerTestCase):
         self.assertEqual(observation.image.mime_type, "image/png")
 
     def test_observation_metadata_never_inlines_the_image_bytes(self):
-        observation, _ = visual.observe(self.browser, self.tab_id)
+        observation, _ = visual.observe(self.browser, self.tab_id).wait()
         payload = observation.to_dict()
         self.assertNotIn("image", payload)
         self.assertNotIn("data", payload)
+
+
+class SensitiveRegionRedactionTests(VisualControllerTestCase):
+    """Hardening: a password/API-key/payment field's visible contents must
+    never reach a vision provider - the screenshot itself is redacted
+    before it becomes an ImageAttachment, not just the DOM value."""
+
+    def _pixel(self, image_bytes: bytes, x: int, y: int):
+        from PySide6.QtGui import QImage
+
+        image = QImage()
+        self.assertTrue(image.loadFromData(image_bytes, "PNG"))
+        return image.pixelColor(x, y)
+
+    def test_a_filled_password_field_is_painted_black_in_the_provider_bound_image(self):
+        focus = self.browser.visual_focus_at(*PASSWORD_FIELD).wait()
+        self.assertTrue(focus.ok, focus.error)
+        typed = self.browser.visual_type_into_focused("SuperSecret123!").wait()
+        self.assertTrue(typed.ok, typed.error)
+
+        observation, error = visual.observe(self.browser, self.tab_id).wait()
+        self.assertIsNotNone(observation, error)
+        colour = self._pixel(observation.image.data, PASSWORD_FIELD[0], PASSWORD_FIELD[1])
+        self.assertEqual((colour.red(), colour.green(), colour.blue()), (0, 0, 0))
+
+    def test_an_ordinary_text_field_is_never_redacted(self):
+        focus = self.browser.visual_focus_at(*TEXT_FIELD).wait()
+        self.assertTrue(focus.ok, focus.error)
+        typed = self.browser.visual_type_into_focused("just some notes").wait()
+        self.assertTrue(typed.ok, typed.error)
+
+        observation, error = visual.observe(self.browser, self.tab_id).wait()
+        self.assertIsNotNone(observation, error)
+        colour = self._pixel(observation.image.data, TEXT_FIELD[0], TEXT_FIELD[1])
+        # The ordinary field's own white background survives, unlike the
+        # password field's solid black redaction above.
+        self.assertNotEqual((colour.red(), colour.green(), colour.blue()), (0, 0, 0))
+
+    def test_is_sensitive_field_reuses_the_shared_classifier(self):
+        self.assertTrue(visual._is_sensitive_field(
+            {"input_type": "password", "autocomplete": "current-password"}))
+        self.assertTrue(visual._is_sensitive_field(
+            {"input_type": "text", "field_name": "api_key"}))
+        self.assertFalse(visual._is_sensitive_field(
+            {"input_type": "text", "field_name": "notes"}))
 
 
 if __name__ == "__main__":

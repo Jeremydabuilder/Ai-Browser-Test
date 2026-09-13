@@ -121,9 +121,13 @@ class ToolDispatchTests(PdfToolTestCase):
         self.assertTrue(result.ok, result.error)
         payload = self.registry.encode(result)
         rendered = self.registry.render(result, payload)
-        self.assertIn(UNTRUSTED_OPEN, rendered)
-        self.assertIn(UNTRUSTED_CLOSE, rendered)
-        fenced = rendered.split(UNTRUSTED_OPEN, 1)[1].split(UNTRUSTED_CLOSE, 1)[0]
+        # Phase 15: PDF text carries an explicit PDF provenance marker
+        # rather than the generic page-content one.
+        open_tag = '<untrusted_content provenance="PDF">'
+        close_tag = "</untrusted_content>"
+        self.assertIn(open_tag, rendered)
+        self.assertIn(close_tag, rendered)
+        fenced = rendered.split(open_tag, 1)[1].split(close_tag, 1)[0]
         self.assertIn("Some real text on the tabs own PDF", fenced)
         self.assertIn("page_count", fenced)
 

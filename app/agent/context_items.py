@@ -29,6 +29,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from app.agent.tools import wrap_untrusted
+from app.security.provenance import Provenance
 from app.browser.pdf_context import is_pdf_url
 
 #: Selected items' fenced text is capped in total, not just per item - a
@@ -310,7 +311,7 @@ class ContextComposer:
                     text = text[:budget] + "\n[truncated to fit the context budget]"
                 budget = max(0, budget - len(text))
                 lines.append(f'- File "{item.title}" ({item.subtitle}):')
-                lines.append(wrap_untrusted({"file_text": text}))
+                lines.append(wrap_untrusted({"file_text": text}, provenance=Provenance.FILE))
             elif item.kind == "highlight":
                 text = item.ref.get("text", "")
                 if len(text) > budget:
@@ -374,7 +375,7 @@ class ContextComposer:
                 "timestamp": chunk.timestamp, "excerpt": result.excerpt,
             }
             lines.append(f"  {label}{freshness}:")
-            lines.append("  " + wrap_untrusted(payload))
+            lines.append("  " + wrap_untrusted(payload, provenance=Provenance.KNOWLEDGE_RETRIEVAL))
         return "\n".join(lines)
 
 

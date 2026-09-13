@@ -133,10 +133,14 @@ class VisualToolExecutionTests(unittest.TestCase):
         _app.processEvents()
 
     def test_observe_returns_an_image_when_vision_capable(self) -> None:
+        # Async since the hardening pass (Phase 14): capturing a screenshot
+        # now also scans the page for sensitive fields to redact first -
+        # see ToolOutcome.visual_observe_future / app.browser.visual.observe.
         outcome = self.registry.run("browser_visual_observe", {})
-        self.assertIsNotNone(outcome.image)
-        self.assertTrue(outcome.immediate["ok"])
-        self.assertIn("viewport_width", outcome.immediate)
+        payload = outcome.visual_observe_future.wait()
+        self.assertIsNotNone(payload.get("__image__"))
+        self.assertTrue(payload["ok"])
+        self.assertIn("viewport_width", payload)
 
     def test_observe_is_refused_outright_without_vision_support(self) -> None:
         registry = ToolRegistry(self.browser, vision_capable=False)
@@ -149,29 +153,41 @@ class VisualToolExecutionTests(unittest.TestCase):
         result = outcome.future.wait()
         self.assertTrue(result.ok, result.error)
 
-    def test_a_sensitive_looking_visual_click_is_refused_without_confirmation(self) -> None:
+    def test_assess_async_flags_a_sensitive_click_as_requiring_confirmation(self) -> None:
+        """The classification ToolRegistry.run() no longer performs itself
+        (see tests/test_visual_confirmation_flow.py for the real
+        AgentSession-level ConfirmationRequest flow this now feeds) - this
+        checks the classification primitive in isolation."""
+        future = self.registry.assess_async(
+            "browser_visual_click", {"x": BUY_BUTTON[0], "y": BUY_BUTTON[1]})
+        assessment = future.wait()
+        self.assertTrue(assessment["requires_confirmation"])
+        self.assertIn("spend money", " ".join(assessment["reasons"]))
+        self.assertIsNotNone(assessment["visual_target_fingerprint"])
+
+    def test_assess_async_does_not_flag_a_harmless_click(self) -> None:
+        future = self.registry.assess_async(
+            "browser_visual_click", {"x": NORMAL_BUTTON[0], "y": NORMAL_BUTTON[1]})
+        assessment = future.wait()
+        self.assertFalse(assessment["requires_confirmation"])
+
+    def test_run_no_longer_gates_a_sensitive_click_itself(self) -> None:
+        """Confirmation is no longer ToolRegistry.run()'s job at all (see
+        AgentSession._continue_after_assessment/resolve_confirmation) - by
+        the time run() is called, the real confirmation flow has already
+        decided whether this call should happen."""
         outcome = self.registry.run(
             "browser_visual_click", {"x": BUY_BUTTON[0], "y": BUY_BUTTON[1]})
         result = outcome.future.wait()
-        self.assertFalse(result.ok)
-        self.assertEqual(result.error.code, "CONFIRMATION_REQUIRED")
-        self.assertTrue(result.sensitivity.get("requires_confirmation"))
-
-    def test_the_same_sensitive_click_proceeds_once_confirmed(self) -> None:
-        outcome = self.registry.run(
-            "browser_visual_click",
-            {"x": BUY_BUTTON[0], "y": BUY_BUTTON[1], "confirmed": True})
-        result = outcome.future.wait()
         self.assertTrue(result.ok, result.error)
 
-    def test_typing_into_a_password_field_is_refused_without_confirmation(self) -> None:
+    def test_assess_async_flags_a_password_field_as_requiring_confirmation(self) -> None:
         focus = self.registry.run(
             "browser_visual_focus", {"x": PASSWORD_FIELD[0], "y": PASSWORD_FIELD[1]})
         focus.future.wait()
-        outcome = self.registry.run("browser_visual_type", {"text": "hunter2"})
-        result = outcome.future.wait()
-        self.assertFalse(result.ok)
-        self.assertEqual(result.error.code, "CONFIRMATION_REQUIRED")
+        future = self.registry.assess_async("browser_visual_type", {"text": "hunter2"})
+        assessment = future.wait()
+        self.assertTrue(assessment["requires_confirmation"])
 
     def test_typing_into_an_ordinary_field_needs_no_confirmation(self) -> None:
         focus = self.registry.run(

@@ -67,6 +67,12 @@ class MainWindow(QMainWindow):
         self._profile = profile
         self._db = database
         self.settings = SettingsStore(database)
+        # Phase 15: the firewall/injection-detection modules default to ON,
+        # but must still reflect a saved OFF choice from a previous run
+        # immediately - not only once Settings happens to be opened.
+        from app.ui.security_settings import sync_from_settings
+
+        sync_from_settings(self.settings)
         self.history = HistoryStore(database)
         self.bookmarks = BookmarkStore(database)
         self.highlights = HighlightStore(database)
@@ -1664,7 +1670,7 @@ class MainWindow(QMainWindow):
         from app.ui.settings_dialog import SettingsDialog
 
         dialog = SettingsDialog(self.settings, self, mcp=self.mcp, mcp_server=self.mcp_server,
-                                knowledge=self.knowledge_index)
+                                knowledge=self.knowledge_index, security=True)
         dialog.knowledge_panel.rebuild_callback = self._rebuild_knowledge_index
         dialog.saved.connect(self._apply_settings)
         dialog.exec()

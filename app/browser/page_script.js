@@ -428,6 +428,33 @@
       };
     }
 
+    if (op === "visual_sensitive_regions") {
+      // Every visible input/textarea's viewport rect plus the same field
+      // metadata describe()/classify_type already use - Python decides
+      // sensitivity (safety.classify_type, unchanged), this only supplies
+      // candidates and their on-screen position for pixel redaction (see
+      // app/browser/visual.py). Coordinates are viewport-relative, exactly
+      // matching what grab() captures, so no scaling is needed later.
+      var fields = deepQuery("input, textarea", 500);
+      var regions = [];
+      for (var fi = 0; fi < fields.length; fi++) {
+        var fel = fields[fi];
+        if (!isVisible(fel)) { continue; }
+        var frect = fel.getBoundingClientRect();
+        if (frect.width <= 0 || frect.height <= 0) { continue; }
+        var fdesc = describe(fel, null, null);
+        regions.push({
+          rect: { x: Math.round(frect.left), y: Math.round(frect.top),
+                  width: Math.round(frect.width), height: Math.round(frect.height) },
+          input_type: fdesc.input_type || "",
+          autocomplete: fel.autocomplete || "",
+          field_name: fdesc.field_name || "",
+          placeholder: fdesc.placeholder || ""
+        });
+      }
+      return { status: "ok", regions: regions };
+    }
+
     if (op === "visual_inspect_active") {
       var activeEl = document.activeElement;
       if (!activeEl || activeEl === document.body) { return { status: "no_element" }; }

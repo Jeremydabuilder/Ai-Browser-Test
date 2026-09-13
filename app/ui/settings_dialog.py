@@ -52,7 +52,7 @@ class SettingsDialog(QDialog):
     saved = Signal()
 
     def __init__(self, settings: SettingsStore, parent: QWidget | None = None,
-                 *, mcp=None, mcp_server=None, knowledge=None) -> None:
+                 *, mcp=None, mcp_server=None, knowledge=None, security=False) -> None:
         """``mcp`` is an McpConnectionManager (app.mcp.connection_manager), or
         None. When given, a "Connected Tools" tab is added alongside General -
         omitting it (rather than requiring every caller to pass one) keeps
@@ -64,7 +64,12 @@ class SettingsDialog(QDialog):
         AI Access" tab is added the same optional way.
 
         ``knowledge`` is a Phase 13 KnowledgeIndex, or None - when given, a
-        "Privacy / Memory / Knowledge" tab is added the same optional way."""
+        "Privacy / Memory / Knowledge" tab is added the same optional way.
+
+        ``security`` (bool) adds a "Privacy & Security" tab for Phase 15's
+        data-egress firewall / prompt-injection settings - needs nothing
+        beyond ``settings`` itself, so it is a plain flag rather than an
+        optional object like the others."""
         super().__init__(parent)
         self._settings = settings
         c = theme.palette_for(QApplication.instance())
@@ -76,7 +81,7 @@ class SettingsDialog(QDialog):
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(0)
 
-        if mcp is None and mcp_server is None and knowledge is None:
+        if mcp is None and mcp_server is None and knowledge is None and not security:
             general = QWidget(self)
             layout = QVBoxLayout(general)
             layout.setContentsMargins(m.space_5, m.space_5, m.space_5, m.space_4)
@@ -121,6 +126,15 @@ class SettingsDialog(QDialog):
                     knowledge, settings, knowledge_tab)
                 knowledge_layout.addWidget(self.knowledge_panel)
                 tabs.addTab(knowledge_tab, "Privacy / Memory / Knowledge")
+
+            if security:
+                from app.ui.security_settings import SecuritySettingsPanel
+
+                security_tab = QWidget(self)
+                security_layout = QVBoxLayout(security_tab)
+                security_layout.setContentsMargins(0, 0, 0, 0)
+                security_layout.addWidget(SecuritySettingsPanel(settings, security_tab))
+                tabs.addTab(security_tab, "Privacy & Security")
 
             outer.addWidget(tabs)
 

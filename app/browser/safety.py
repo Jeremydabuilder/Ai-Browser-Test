@@ -92,6 +92,15 @@ _FINANCIAL_FIELD = _phrases(
     "security code", "iban", "account number", "routing", "sort code",
     "ssn", "social security", "tax id", "passport",
 )
+#: Field names/placeholders that mean "this is a credential", not tied to
+#: any particular website's own wording - an API key or access token field
+#: is exactly as sensitive as a password field, even though the input type
+#: is usually plain "text" rather than "password".
+_CREDENTIAL_FIELD = _phrases(
+    r"api[\s_-]?key", "access token", "auth token",
+    "secret key", "private key", "client secret", "bearer token",
+    "session token", "refresh token",
+)
 
 # Extensions a browser should treat as "the user really must okay this".
 _RISKY_DOWNLOADS = {
@@ -146,10 +155,11 @@ def classify_type(element: dict[str, Any] | None, text: str = "") -> Sensitivity
         found.append((Sensitivity.SENSITIVE, "enters a password"))
     if str(element.get("autocomplete", "")).lower() in _SECRET_AUTOCOMPLETE:
         found.append((Sensitivity.SENSITIVE, "enters credentials or payment details"))
-    if _FINANCIAL_FIELD.search(" ".join(
-        str(element.get(key, "")) for key in ("name", "field_name", "placeholder")
-    )):
+    field_text = " ".join(str(element.get(key, "")) for key in ("name", "field_name", "placeholder"))
+    if _FINANCIAL_FIELD.search(field_text):
         found.append((Sensitivity.SENSITIVE, "enters financial or identity information"))
+    if _CREDENTIAL_FIELD.search(field_text):
+        found.append((Sensitivity.SENSITIVE, "enters an API key or access credential"))
     if looks_like_payment_card(text):
         found.append((Sensitivity.SENSITIVE, "the text looks like a payment card number"))
     if not found:

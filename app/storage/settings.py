@@ -30,6 +30,14 @@ KEY_MCP_SERVER_ENABLED = "mcp_server_enabled"
 #: explicitly opting in first.
 KEY_SEMANTIC_HISTORY_ENABLED = "semantic_history_enabled"
 
+#: Phase 15 - Privacy Firewall + Prompt-Injection Defense. All default ON:
+#: unlike semantic history (opt-in indexing of the user's own data), these
+#: are protective defaults for data already about to leave the browser -
+#: "off by default" would mean shipping with the firewall inert.
+KEY_REDACT_SECRETS_ENABLED = "redact_secrets_enabled"
+KEY_WARN_PERSONAL_INFO_ENABLED = "warn_personal_info_enabled"
+KEY_INJECTION_PROTECTION_ENABLED = "injection_protection_enabled"
+
 #: Pinned tabs kept across a restart - past this, remembering more starts
 #: looking less like "pin what matters" and more like a second session
 #: store, which is exactly what this feature is not meant to become.
@@ -75,6 +83,9 @@ _DEFAULTS = {
     KEY_VERTICAL_TABS_COLLAPSED: "0",
     KEY_MCP_SERVER_ENABLED: "0",
     KEY_SEMANTIC_HISTORY_ENABLED: "0",
+    KEY_REDACT_SECRETS_ENABLED: "1",
+    KEY_WARN_PERSONAL_INFO_ENABLED: "1",
+    KEY_INJECTION_PROTECTION_ENABLED: "1",
 }
 
 
@@ -135,6 +146,30 @@ class SettingsStore:
     @semantic_history_enabled.setter
     def semantic_history_enabled(self, value: bool) -> None:
         self.set_bool(KEY_SEMANTIC_HISTORY_ENABLED, value)
+
+    @property
+    def redact_secrets_enabled(self) -> bool:
+        return self.get_bool(KEY_REDACT_SECRETS_ENABLED, True)
+
+    @redact_secrets_enabled.setter
+    def redact_secrets_enabled(self, value: bool) -> None:
+        self.set_bool(KEY_REDACT_SECRETS_ENABLED, value)
+
+    @property
+    def warn_personal_info_enabled(self) -> bool:
+        return self.get_bool(KEY_WARN_PERSONAL_INFO_ENABLED, True)
+
+    @warn_personal_info_enabled.setter
+    def warn_personal_info_enabled(self, value: bool) -> None:
+        self.set_bool(KEY_WARN_PERSONAL_INFO_ENABLED, value)
+
+    @property
+    def injection_protection_enabled(self) -> bool:
+        return self.get_bool(KEY_INJECTION_PROTECTION_ENABLED, True)
+
+    @injection_protection_enabled.setter
+    def injection_protection_enabled(self, value: bool) -> None:
+        self.set_bool(KEY_INJECTION_PROTECTION_ENABLED, value)
 
     # -- what a new tab opens -------------------------------------------
     @property

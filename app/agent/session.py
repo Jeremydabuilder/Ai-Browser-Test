@@ -42,7 +42,7 @@ from app.agent.claude_client import AgentResponse, ClaudeError, ClaudeTransport,
 from app.agent.config import AgentConfig, provider_supports_images
 from app.agent.prompt import SYSTEM_PROMPT
 from app.agent import trace as tracing
-from app.agent.tools import ToolError, ToolRegistry
+from app.agent.tools import VISUAL_WRITE_TOOLS, ToolError, ToolRegistry
 from app.agent.usage import Usage
 from app.browser.controller import BrowserController
 from app.mcp.types import Permission, Scope
@@ -334,6 +334,12 @@ class AgentSession(QObject):
         self._assistant_content: Any = None
         self._confirmation: ConfirmationRequest | None = None
         self._confirming_call: ToolCall | None = None
+        #: Set only when the outstanding confirmation is a visual write
+        #: tool - see _continue_after_assessment/resolve_confirmation. The
+        #: target's identity at assessment time, re-checked against a
+        #: fresh resolution right before acting so an approval cannot be
+        #: replayed against whatever now happens to be at that coordinate.
+        self._confirming_visual_fingerprint: str | None = None
 
         #: Optional callable returning one line of context about what the user
         #: is working on - see `briefing_provider` below. The session knows
@@ -539,6 +545,7 @@ class AgentSession(QObject):
         self._results.clear()
         self._confirmation = None
         self._confirming_call = None
+        self._confirming_visual_fingerprint = None
         self._routine_mode = False
         self.activity.emit("Stopped.")
         self._finish()
@@ -566,6 +573,8 @@ class AgentSession(QObject):
         call, request = self._confirming_call, self._confirmation
         self._confirming_call = None
         self._confirmation = None
+        expected_visual_fingerprint = self._confirming_visual_fingerprint
+        self._confirming_visual_fingerprint = None
         if request.is_mcp and remember_scope != Scope.ONCE:
             self._tools.remember_mcp_permission(
                 call.name, Permission.ALLOW if allowed else Permission.DENY, remember_scope)
@@ -579,6 +588,9 @@ class AgentSession(QObject):
             label = "Approved (edited before running)" if edited else "Approved"
             self.activity.emit(f"{label}: {request.description}")
             self._set_state(AgentState.ACTING)
+            if call.name in VISUAL_WRITE_TOOLS:
+                self._reverify_visual_target_then_execute(call, expected_visual_fingerprint)
+                return
             self._execute(call, step=False)
             return
         self.trace.record(tracing.APPROVAL_DENIED, tool=call.name)
@@ -593,6 +605,52 @@ class AgentSession(QObject):
             'or ask the user how they would like to proceed."}'
         ), is_error=False)
         self._advance()
+
+    def _reverify_visual_target_then_execute(
+        self, call: ToolCall, expected_fingerprint: str | None,
+    ) -> None:
+        """Before acting on an approved visual write, resolve the same
+        coordinate/focused field again and refuse if the page no longer
+        shows what the user actually approved.
+
+        An approval binds to a specific target, identified at assessment
+        time (see _continue_after_assessment) - not to "whatever happens
+        to be at that coordinate by the time this finally runs". A page
+        can legitimately change between the approval prompt appearing and
+        the user answering it (a re-render, a new element sliding into
+        that exact spot); re-checking here is what makes that binding real
+        rather than aspirational, and it is also what stops a stale
+        approval from ever being reusable against a different target.
+        """
+        def on_reassessed(assessment: Any) -> None:
+            if self._cancelled:
+                return
+            if assessment is None:
+                self._record_result(call.id, self._tool_error(
+                    "TIMEOUT", "Could not re-check the page before acting."), is_error=True)
+                self._advance()
+                return
+            current_fingerprint = assessment.get("visual_target_fingerprint")
+            if expected_fingerprint is not None and current_fingerprint != expected_fingerprint:
+                self.trace.record(tracing.TOOL_REJECTED, tool=call.name, reason="target_changed")
+                self._update_step(StepState.FAILED, "target changed")
+                self._record_result(call.id, self._tool_error(
+                    "TARGET_CHANGED",
+                    "What is at that point changed since the user approved this action. "
+                    "Call browser_visual_observe again and re-assess before retrying."),
+                    is_error=True)
+                self._advance()
+                return
+            self._execute(call, step=False)
+
+        try:
+            future = self._tools.assess_async(call.name, call.arguments)
+        except Exception:  # noqa: BLE001 - fail closed, never execute blindly
+            self._record_result(call.id, self._tool_error(
+                "TARGET_CHANGED", "Could not re-check the page before acting."), is_error=True)
+            self._advance()
+            return
+        future.then(on_reassessed)
 
     def shutdown(self) -> None:
         """Stop the worker thread. Called when the window closes."""
@@ -818,6 +876,48 @@ class AgentSession(QObject):
 
         # 4. Classify before anything else, so a malformed call becomes a normal
         #    tool error the model can correct rather than an exception.
+        #
+        #    A visual write tool (browser_visual_click/browser_visual_type)
+        #    cannot be classified synchronously - unlike a structured ref,
+        #    a coordinate has no cached element to judge until the page is
+        #    asked what is actually there (see ToolRegistry.assess_async).
+        #    That is the ONLY thing that differs for these two tools: the
+        #    same refusal/confirmation/execute logic below runs either way,
+        #    from _continue_after_assessment, so there is no second,
+        #    visual-only approval pipeline - only a second way to obtain
+        #    the same assessment dict.
+        if self._tools.needs_async_assessment(call.name):
+            try:
+                assessment_future = self._tools.assess_async(call.name, call.arguments)
+            except ToolError as exc:
+                self.trace.record(tracing.TOOL_REJECTED, tool=call.name,
+                                  reason="invalid_arguments")
+                self._record_result(call.id, self._tool_error("INVALID_ARGUMENTS", str(exc)),
+                                    is_error=True)
+                self._advance()
+                return
+            except Exception as exc:  # noqa: BLE001
+                self.trace.record(tracing.TOOL_REJECTED, tool=call.name, reason="unknown_tool")
+                self._record_result(call.id, self._tool_error("TOOL_FAILED", str(exc)),
+                                    is_error=True)
+                self._advance()
+                return
+
+            def on_assessed(assessment: Any) -> None:
+                if self._cancelled:
+                    return
+                if assessment is None:
+                    self.trace.record(tracing.TOOL_REJECTED, tool=call.name, reason="timeout")
+                    self._record_result(call.id, self._tool_error(
+                        "TIMEOUT", "Could not read the page in time to assess this action."),
+                        is_error=True)
+                    self._advance()
+                    return
+                self._continue_after_assessment(call, assessment)
+
+            assessment_future.then(on_assessed)
+            return
+
         try:
             assessment = self._tools.assess(call.name, call.arguments)
         except ToolError as exc:
@@ -831,7 +931,15 @@ class AgentSession(QObject):
             self._record_result(call.id, self._tool_error("TOOL_FAILED", str(exc)), is_error=True)
             self._advance()
             return
+        self._continue_after_assessment(call, assessment)
 
+    def _continue_after_assessment(self, call: ToolCall, assessment: dict[str, Any]) -> None:
+        """Steps 5-7 of _next_tool, run either straight after a synchronous
+        assess() or (for a visual write tool) after assess_async()'s future
+        resolves - the exact same refusal/confirmation/execute logic either
+        way, so a visual click gets the identical approval experience a
+        structured click does, never a parallel, weaker one.
+        """
         # 5. Read-only autonomy - or, for an MCP tool, a permission the user
         #    has set to Deny - refuses outright rather than asking; there is
         #    nothing to confirm into. A clean tool error, the same shape as
@@ -857,13 +965,20 @@ class AgentSession(QObject):
         #    shape, same confirmation prompt, an additive "mcp" key.)
         if assessment.get("requires_confirmation"):
             self._confirming_call = call
+            # The exact target this assessment judged, for a visual write
+            # tool only - see resolve_confirmation, which re-resolves the
+            # same coordinate right before acting and refuses if the page
+            # no longer shows the same thing there. None for every other
+            # tool: a structured ref is re-validated by the browser layer
+            # itself (STALE_MUTATED/STALE_DETACHED) and needs no extra check.
+            self._confirming_visual_fingerprint = assessment.get("visual_target_fingerprint")
             submits, sensitive = self._describe_submission(call)
             editable_field, editable_value = self._editable_field(call, assessment)
             mcp_info = assessment.get("mcp")
             self._confirmation = ConfirmationRequest(
                 tool_call_id=call.id,
                 tool_name=call.name,
-                description=self._tools.describe_call_as_request(call.name, call.arguments),
+                description=self._describe_confirmation(call, assessment),
                 reasons=list(assessment.get("reasons", [])),
                 url="" if mcp_info else self._browser.get_current_page().page.url,
                 submits=submits,
@@ -984,6 +1099,45 @@ class AgentSession(QObject):
                                     is_error=not result.ok, tool_name=call.name)
             self._advance()
 
+        if outcome.visual_observe_future is not None:
+            import json
+
+            def on_visual_observed(payload: Any) -> None:
+                if self._cancelled:
+                    return
+                if payload is None:
+                    self.trace.record(tracing.TOOL_FAILED, tool=call.name, reason="timeout")
+                    self._update_step(StepState.FAILED, "timed out")
+                    self._record_result(call.id, self._tool_error(
+                        "TIMEOUT", "Could not capture the page in time."), is_error=True)
+                    self._advance()
+                    return
+                ok = bool(payload.get("ok", False))
+                image = payload.pop("__image__", None)
+                self.trace.record(tracing.TOOL_SUCCEEDED if ok else tracing.TOOL_FAILED,
+                                  tool=call.name)
+                if ok:
+                    self._update_step(StepState.DONE)
+                    self._record_step(call, description)
+                else:
+                    error = payload.get("error") or {}
+                    self._update_step(StepState.FAILED, str(error.get("code", "")).lower()
+                                      .replace("_", " ") or "refused")
+                text_payload = json.dumps(payload, ensure_ascii=False)
+                content: Any = text_payload
+                if image is not None and ok:
+                    content = [
+                        {"type": "text", "text": text_payload},
+                        {"type": "image", "source": {"type": "base64",
+                                                     "media_type": image["mime_type"],
+                                                     "data": image["data"]}},
+                    ]
+                self._record_result(call.id, content, is_error=not ok, tool_name=call.name)
+                self._advance()
+
+            outcome.visual_observe_future.then(on_visual_observed)
+            return
+
         if outcome.mcp_future is not None:
             def on_mcp_done(payload: Any) -> None:
                 if self._cancelled:
@@ -1091,6 +1245,21 @@ class AgentSession(QObject):
         if any(marker in reasons for marker in self._SECRET_VALUE_REASONS):
             return "", ""
         return "text", text
+
+    def _describe_confirmation(self, call: ToolCall, assessment: dict[str, Any]) -> str:
+        """The ConfirmationRequest's description - "click 'Buy now'", the
+        same phrasing a structured action's prompt already uses, not a raw
+        coordinate pair. For a visual write tool the resolved element's
+        accessible name came back on the assessment itself (see
+        ToolRegistry.assess_async's "visual_target_name"); falling back to
+        describe_call_as_request's coordinate-based wording only when
+        nothing was resolvable (no element at that point)."""
+        if call.name in VISUAL_WRITE_TOOLS:
+            name = assessment.get("visual_target_name")
+            if name:
+                verb = "type into" if call.name == "browser_visual_type" else "click"
+                return f'{verb} "{name}"'
+        return self._tools.describe_call_as_request(call.name, call.arguments)
 
     def _describe_submission(self, call: ToolCall) -> tuple[list[str], bool]:
         """Which fields a form submission would send. Names only, never values.

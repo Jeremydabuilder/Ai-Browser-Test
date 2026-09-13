@@ -843,6 +843,36 @@ class BrowserController(QObject):
         so a canvas app reading event coordinates sees a real click there."""
         return self._visual_op("visual_click", {"x": x, "y": y}, tab_id)
 
+    def visual_sensitive_regions(self, tab_id: int | None = None) -> BrowserFuture:
+        """Every visible input/textarea's viewport rect plus its field
+        metadata (input_type/autocomplete/field_name/placeholder) - the
+        candidates app.browser.visual.observe() runs through
+        safety.classify_type to decide which ones to black out in a
+        screenshot before it ever becomes a VisualObservation. Read-only;
+        never reports field values."""
+        started = time.monotonic()
+        tab = self._tab_for(tab_id)
+        if tab is None:
+            return resolved("visual_sensitive_regions", self._no_tab(
+                "visual_sensitive_regions", started))
+        future = BrowserFuture("visual_sensitive_regions", self)
+
+        def on_result(raw: Any) -> None:
+            if not isinstance(raw, dict) or raw.get("status") != "ok":
+                self._finish(future, self._failure(
+                    "visual_sensitive_regions", tab, started, ErrorCode.SCRIPT_FAILED,
+                    "Could not scan the page for sensitive fields."))
+                return
+            self._finish(future, self._success(
+                "visual_sensitive_regions", tab, started,
+                data={"regions": raw.get("regions", [])}))
+
+        self._call_page(tab, 'window.__pb.act({"op":"visual_sensitive_regions"})', on_result)
+        future.set_timeout(DEFAULT_TIMEOUT_MS, lambda: self._failure(
+            "visual_sensitive_regions", tab, started, ErrorCode.TIMEOUT,
+            "Timed out scanning the page for sensitive fields."))
+        return future
+
     def visual_inspect_active(self, tab_id: int | None = None) -> BrowserFuture:
         """What element currently has focus, in the same describe() shape
         - used to classify a visual_type_into_focused call BEFORE it runs,

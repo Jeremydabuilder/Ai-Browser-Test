@@ -429,6 +429,8 @@ VISUAL = """<!doctype html>
   <button id="counter-button" type="button">Clicked 0 times</button>
   <input id="text-field" name="notes" type="text" placeholder="Notes">
   <input id="password-field" name="password" type="password" autocomplete="current-password">
+  <button id="relabel-button" type="button" style="position:absolute;left:220px;top:140px;">
+    Relabel Buy</button>
 <script>
   var ctx = document.getElementById('canvas-btn').getContext('2d');
   ctx.fillStyle = '#3366cc';
@@ -440,6 +442,12 @@ VISUAL = """<!doctype html>
   document.getElementById('counter-button').onclick = function () {
     clicks++;
     this.textContent = 'Clicked ' + clicks + ' times';
+  };
+  // Simulates the page changing what is at the buy-button's coordinates
+  // between an approval prompt appearing and the user answering it - the
+  // fixture for the target-drift/approval-invalidation test.
+  document.getElementById('relabel-button').onclick = function () {
+    document.getElementById('buy-button').textContent = 'Say Hello Now';
   };
 </script>
 </body></html>"""

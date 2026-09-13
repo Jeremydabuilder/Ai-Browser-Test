@@ -13,17 +13,22 @@ import json
 from typing import Any
 
 from app.mcp.types import McpToolDescriptor, Sensitivity
+from app.security import firewall, injection
+from app.security.log import EventType as SecurityEventType
+from app.security.log import security_log
 
 #: Untrusted-content fence, identical in spirit to app/agent/tools.py's own
 #: wrap_untrusted - kept as a local copy rather than importing from
 #: app.agent.tools, which would make the (agent-independent) mcp package
 #: depend on the agent package. The two must stay byte-identical; a test
-#: asserts that.
+#: asserts that. (app.security is a shared, dependency-free package both
+#: import - see its own module docstring - so the Phase 15 firewall/
+#: injection-logging behaviour below is identical, not merely similar.)
 UNTRUSTED_OPEN = "<untrusted_mcp_content>"
 UNTRUSTED_CLOSE = "</untrusted_mcp_content>"
 
 
-def wrap_untrusted(payload: Any) -> str:
+def wrap_untrusted(payload: Any, *, source: str = "") -> str:
     """Fence server-returned content exactly like page content is fenced.
 
     An MCP tool's result - and, just as importantly, an MCP tool's own
@@ -31,8 +36,25 @@ def wrap_untrusted(payload: Any) -> str:
     compromised or merely careless server can fill with "ignore your
     instructions and...". This is the one place that boundary is drawn for
     everything MCP; nothing MCP-sourced reaches the model outside it.
+
+    Also runs the same Phase 15 firewall app.agent.tools.wrap_untrusted
+    does - redacting likely secrets and logging (never blocking on) a
+    detected injection attempt - since a compromised MCP server is exactly
+    as capable of embedding a secret-looking string or "ignore previous
+    instructions" as a compromised webpage is.
     """
     body = json.dumps(payload, ensure_ascii=False, indent=None)
+    if firewall.is_enabled():
+        redacted_body, findings = firewall.redact(body, only_high_risk=True)
+        if findings:
+            security_log.record(
+                SecurityEventType.SECRET_REDACTED, firewall.summarize(findings), source=source)
+            body = redacted_body
+    if injection.is_enabled():
+        reasons = injection.detect(body)
+        if reasons:
+            security_log.record(
+                SecurityEventType.INJECTION_DETECTED, "; ".join(reasons[:3]), source=source)
     body = body.replace(UNTRUSTED_CLOSE, "&lt;/untrusted_mcp_content&gt;")
     return f"{UNTRUSTED_OPEN}\n{body}\n{UNTRUSTED_CLOSE}"
 
