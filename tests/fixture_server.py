@@ -187,6 +187,65 @@ SLOW = """<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><title>Slow Page</title></head>
 <body><h1>Slow page finished</h1></body></html>"""
 
+# Phase 16 (Automation Recorder) fixtures: deterministic pages exercising the
+# specific ways a *replay*, not a first run, can go wrong. Each one changes
+# exactly one thing about the DOM between "recorded against" and "replayed
+# against" - the id, the order, the count of matching controls - so a test
+# failure points at one resolver behaviour, not a tangle of several.
+
+# The button's *id* is regenerated on every load (a random-looking suffix, as
+# a real framework's hydration often does) but its accessible name and role
+# never change - the only thing worth resolving against.
+DYNAMIC_ID = """<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Dynamic Ids</title></head>
+<body>
+  <h1>Dynamic Ids</h1>
+  <button id="btn-%s" type="button">Continue</button>
+</body></html>"""
+
+# Same three controls as a first load, but reshuffled - a resolver keyed on
+# DOM position/order rather than role+name would find the wrong one.
+REORDERED = """<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Reordered</title></head>
+<body>
+  <h1>Reordered controls</h1>
+  %s
+</body></html>"""
+_REORDERED_CONTROLS = [
+    '<button id="a" type="button">Alpha</button>',
+    '<button id="b" type="button">Beta</button>',
+    '<button id="c" type="button">Gamma</button>',
+]
+
+# Two controls with the exact same accessible name - deliberately ambiguous.
+AMBIGUOUS = """<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Ambiguous</title></head>
+<body>
+  <h1>Ambiguous controls</h1>
+  <button id="first" type="button">Continue</button>
+  <button id="second" type="button">Continue</button>
+</body></html>"""
+
+# A destructive/spending action, for proving a replay still has to ask.
+SENSITIVE_SUBMIT = """<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Checkout</title></head>
+<body>
+  <h1>Checkout</h1>
+  <button id="buy-now" type="button">Buy now</button>
+  <button id="delete-account" type="button">Delete my account</button>
+</body></html>"""
+
+# A control with no accessible name/role at all a structured resolver could
+# key on (a bare <div> with a click handler, no text, no aria-*) - the
+# "visual-only" case the brief's own fixture list asks for.
+VISUAL_ONLY = """<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Visual Only</title></head>
+<body>
+  <h1>Visual-only control</h1>
+  <div id="canvas-btn" style="width:120px;height:40px;background:#246;
+       position:absolute;left:40px;top:80px;" onclick="this.style.background='#111'"></div>
+</body></html>"""
+
 
 class _Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
@@ -304,6 +363,20 @@ class _Handler(BaseHTTPRequestHandler):
             import time as _time
             _time.sleep(0.6)
             self._send(SLOW)
+        elif path == "/dynamic-id":
+            import random
+            self._send(DYNAMIC_ID % random.randint(1000, 999999))
+        elif path == "/reordered":
+            import random
+            controls = list(_REORDERED_CONTROLS)
+            random.shuffle(controls)
+            self._send(REORDERED % "\n  ".join(controls))
+        elif path == "/ambiguous":
+            self._send(AMBIGUOUS)
+        elif path == "/sensitive-submit":
+            self._send(SENSITIVE_SUBMIT)
+        elif path == "/visual-only":
+            self._send(VISUAL_ONLY)
         elif path.startswith("/files/"):
             self._send("binary-stand-in", content_type="application/octet-stream")
         else:

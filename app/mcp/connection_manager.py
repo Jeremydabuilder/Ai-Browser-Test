@@ -418,6 +418,19 @@ class McpConnectionManager(QObject):
                 out.append(adapter.to_tool_schema(tool))
         return out
 
+    def current_fingerprint(self, namespaced_name: str) -> str:
+        """The connected tool's CURRENT schema_fingerprint, or "" if it is
+        unknown right now - used by the Phase 16 Automation Recorder/runner
+        to detect an MCP tool's shape changing between recording and replay
+        (see app/automation/runner.py), the same fingerprint permissions.py
+        already uses to invalidate a remembered approval."""
+        parts = adapter.split_namespaced(namespaced_name)
+        if parts is None:
+            return ""
+        server_id, tool_name = parts
+        tool = self.find_tool(server_id, tool_name)
+        return tool.schema_fingerprint if tool is not None else ""
+
     def describe_call(self, namespaced_name: str, args: dict[str, Any]) -> str:
         parts = adapter.split_namespaced(namespaced_name)
         if parts is None:

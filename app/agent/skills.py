@@ -20,6 +20,10 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, replace
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from app.automation.model import RecordedWorkflow
 
 #: Bumped only if a stored custom Skill's shape changes in a way that needs
 #: migrating old rows - see app/storage/database.py's schema migrations for
@@ -60,6 +64,18 @@ class Skill:
     default_context_kinds: tuple[str, ...] = ()
     builtin: bool = False
     version: int = SKILL_SCHEMA_VERSION
+    #: Phase 16: optional recorded-automation data. None for an ordinary
+    #: prompt-only Skill (still the overwhelming majority). See
+    #: app/automation/model.py's RecordedWorkflow - deliberately a field on
+    #: Skill rather than a second, parallel "Automation" entity, so a
+    #: recorded workflow is a Skill everywhere a Skill already works
+    #: (Skills Library, Mission steps, Scheduled Tasks) with no duplicated
+    #: plumbing.
+    workflow: "RecordedWorkflow | None" = None
+
+    @property
+    def is_recorded_workflow(self) -> bool:
+        return self.workflow is not None
 
     def as_dict(self) -> dict:
         return {
@@ -71,10 +87,13 @@ class Skill:
             "preferred_model": self.preferred_model,
             "default_context_kinds": list(self.default_context_kinds),
             "version": self.version,
+            "workflow": self.workflow.as_dict() if self.workflow is not None else None,
         }
 
     @classmethod
     def from_dict(cls, data: dict) -> "Skill":
+        from app.automation.model import RecordedWorkflow
+
         allowed = data.get("allowed_tools")
         return cls(
             id=data["id"], name=data.get("name", ""), description=data.get("description", ""),
@@ -86,6 +105,7 @@ class Skill:
             default_context_kinds=tuple(data.get("default_context_kinds") or ()),
             builtin=False,
             version=int(data.get("version", SKILL_SCHEMA_VERSION)),
+            workflow=RecordedWorkflow.from_dict(data.get("workflow")),
         )
 
     def duplicated(self, *, new_id: str, name: str | None = None) -> "Skill":

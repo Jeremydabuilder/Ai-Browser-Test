@@ -60,6 +60,11 @@ class SkillEditDialog(QDialog):
         self.resize(560, 620)
         m = theme.METRICS
         self._editing_id = skill.id if skill is not None else None
+        #: Preserved as-is: this dialog has no UI for a recorded workflow's
+        #: steps/parameters (that is CreateAutomationDialog's job, see
+        #: app/ui/workflow_recording.py) - editing name/description/tools
+        #: here must never silently drop an existing recording.
+        self._editing_workflow = skill.workflow if skill is not None else None
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(m.space_4, m.space_4, m.space_4, m.space_4)
@@ -181,6 +186,7 @@ class SkillEditDialog(QDialog):
             allowed_tools=allowed_tools, output_schema=output_schema,
             preferred_provider=self.provider_combo.currentData() or "",
             preferred_model=self.model_edit.text().strip(),
+            workflow=self._editing_workflow,
         )
         self.accept()
 
@@ -201,7 +207,10 @@ class _SkillRow(QFrame):
         layout.setContentsMargins(m.space_2, m.space_2, m.space_2, m.space_2)
         layout.setSpacing(2)
 
-        title = QLabel(f"<b>{skill.name}</b>" + ("" if not skill.builtin else " · built-in"), self)
+        badge = " · built-in" if skill.builtin else ""
+        if skill.is_recorded_workflow:
+            badge += " · <span style='color:#3a8bd6;'>Recorded workflow</span>"
+        title = QLabel(f"<b>{skill.name}</b>" + badge, self)
         layout.addWidget(title)
         if skill.description:
             desc = QLabel(skill.description, self)

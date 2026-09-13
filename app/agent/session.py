@@ -396,6 +396,14 @@ class AgentSession(QObject):
         return self._state != AgentState.IDLE
 
     @property
+    def tool_registry(self) -> "ToolRegistry":
+        """This session's ToolRegistry - the Phase 16 Automation Recorder/
+        runner need it (element_for_ref, mcp_current_fingerprint) to build
+        and re-resolve semantic targets. Exposed read-only: nothing outside
+        AgentSession should ever construct or swap this out."""
+        return self._tools
+
+    @property
     def task(self) -> str:
         return self._task
 

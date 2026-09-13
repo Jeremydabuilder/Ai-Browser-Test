@@ -25,7 +25,7 @@ import threading
 from pathlib import Path
 from typing import Any, Callable, Iterable, Sequence
 
-SCHEMA_VERSION = 22
+SCHEMA_VERSION = 23
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS history (
@@ -73,6 +73,10 @@ CREATE TABLE IF NOT EXISTS skills (
     preferred_model     TEXT NOT NULL DEFAULT '',
     default_context_kinds TEXT NOT NULL DEFAULT '[]',
     schema_version      INTEGER NOT NULL DEFAULT 1,
+    -- Phase 16: optional recorded-workflow data (JSON), see
+    -- app/automation/model.py's RecordedWorkflow.as_dict(). NULL for an
+    -- ordinary prompt-only Skill - most Skills never touch this column.
+    workflow_json       TEXT,
     created_at          TEXT NOT NULL,
     updated_at          TEXT NOT NULL
 );
@@ -545,6 +549,16 @@ def _migrate_20_add_client_columns(conn: sqlite3.Connection) -> None:
             conn.execute(f"ALTER TABLE mcp_server_clients ADD COLUMN {column} {definition}")
 
 
+def _migrate_22_add_skills_workflow_column(conn: sqlite3.Connection) -> None:
+    """Add skills.workflow_json (Phase 16: Automation Recorder), tolerating
+    a column that already exists - see _migrate_20_add_client_columns for
+    why this can't just be one more ALTER TABLE in a raw-SQL migration
+    string (a fresh test profile already has the current _SCHEMA shape)."""
+    existing = {row[1] for row in conn.execute("PRAGMA table_info(skills)")}
+    if "workflow_json" not in existing:
+        conn.execute("ALTER TABLE skills ADD COLUMN workflow_json TEXT")
+
+
 _MIGRATIONS: dict[int, str | Callable[[sqlite3.Connection], None]] = {
     # v1 -> v2: Missions. Identical to the block in _SCHEMA above, which is
     # what makes it safe to run on a profile that somehow already has them.
@@ -1008,6 +1022,7 @@ CREATE TABLE IF NOT EXISTS decision_alternatives (
         ON knowledge_chunks(source_type, source_id);
     CREATE INDEX IF NOT EXISTS idx_knowledge_chunks_parent ON knowledge_chunks(parent_id);
     """,
+    22: _migrate_22_add_skills_workflow_column,
 }
 
 _STOP = object()

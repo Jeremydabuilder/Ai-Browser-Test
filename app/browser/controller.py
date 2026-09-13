@@ -30,7 +30,7 @@ from __future__ import annotations
 import json
 import re
 import time
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Any, Callable
 
@@ -643,6 +643,18 @@ class BrowserController(QObject):
                  "match_score": item.get("match_score", 0)}
                 for item in raw.get("matches", [])
             ]
+            # Register every matched element the same way get_page_structure's
+            # own snapshot does, so a caller that resolves a ref THROUGH a
+            # search (rather than a full get_page_structure call - exactly
+            # what the Phase 16 Automation Recorder's replay does) still gets
+            # a real safety classification for it. Without this, describe_
+            # action()/assess() cannot find the element at all and silently
+            # falls back to "normal" for anything found only via search - a
+            # find-then-click sequence would have been able to click a
+            # "Buy now"/"Delete account" button with no confirmation prompt.
+            self._remember_elements(tab, [PageElement(**{k: v for k, v in item.items()
+                                                        if k in known})
+                                          for item in raw.get("matches", [])])
             self._finish(future, self._success(
                 "find_elements", tab, started,
                 data={"matches": matches,
@@ -1189,6 +1201,28 @@ class BrowserController(QObject):
             return None
         structure = self._structures.get(self._id_of(tab))
         return structure.by_ref(ref) if structure else None
+
+    def _remember_elements(self, tab: BrowserTab, elements: list[PageElement]) -> None:
+        """Make ``elements`` resolvable by describe_action()/_known_element,
+        the same way a get_page_structure() snapshot already is - see
+        find_elements(), whose search results are otherwise invisible to
+        assess()'s safety classification. Merges into whatever snapshot is
+        already cached for this tab rather than replacing it outright, so a
+        search does not blow away references a prior get_page_structure()
+        call already handed out."""
+        if not elements:
+            return
+        tab_id = self._id_of(tab)
+        existing = self._structures.get(tab_id)
+        by_ref = {e.ref: e for e in (existing.elements if existing else [])}
+        for element in elements:
+            by_ref[element.ref] = element
+        if existing is not None:
+            self._structures[tab_id] = replace(existing, elements=list(by_ref.values()))
+        else:
+            self._structures[tab_id] = PageStructure(
+                url=tab.url().toString(), title=tab.title(), tab_id=tab_id,
+                elements=list(by_ref.values()))
 
     def _fields_of_form(self, form_payload: dict[str, Any], tab_id: int | None) -> list[dict[str, Any]]:
         tab = self._tab_for(tab_id)

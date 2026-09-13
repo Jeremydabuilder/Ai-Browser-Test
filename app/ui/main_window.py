@@ -121,6 +121,17 @@ class MainWindow(QMainWindow):
         #: agent session, both of which are rebuilt.
         self.routines = RoutineService(RoutineStore(database))
 
+        #: Phase 16 Automation Recorder. Owned alongside Routines for the
+        #: same reason: it must outlive the panel and the agent session,
+        #: both of which are rebuilt (see _ensure_agent_session, which
+        #: attaches the live ToolRegistry via set_tools once one exists).
+        from app.automation.recorder import WorkflowRecorder
+        from app.automation.runner import WorkflowRunner
+
+        self.workflow_recorder = WorkflowRecorder()
+        self._workflow_runner: "WorkflowRunner | None" = None
+        self._recording_bar = None
+
         #: Scheduled Missions (Phase 7) - a scheduling layer on top of the
         #: same MissionService/AgentSession this window already owns, never
         #: a second one. See app/missions/task_runner.py.
@@ -171,6 +182,7 @@ class MainWindow(QMainWindow):
         content_layout = QVBoxLayout(content)
         content_layout.setContentsMargins(0, 0, 0, 0)
         content_layout.setSpacing(0)
+        self._content_layout = content_layout
         content_layout.addWidget(self.notice)
         content_layout.addWidget(self.tabs)
         self.find_bar = FindBar(self)
@@ -322,6 +334,8 @@ class MainWindow(QMainWindow):
                          self._show_skills_library)
         self._add_action(tools_menu, "&Task Center…", "Ctrl+Shift+J",
                          self._show_task_center)
+        self._add_action(tools_menu, "&Record Workflow", "Ctrl+Shift+R",
+                         self._toggle_workflow_recording)
         self._add_action(tools_menu, "&Watches…", "Ctrl+Shift+W",
                          self._show_watches)
         self._add_action(tools_menu, "Run as &Multi-Agent Mission…", None,
@@ -945,6 +959,125 @@ class MainWindow(QMainWindow):
             begin(routine.name)
         self._agent_session.run_routine(routine.resolve(overrides))
 
+    # ------------------------------------------------------------------
+    # Phase 16: Automation Recorder
+    # ------------------------------------------------------------------
+    def _on_agent_step_recorded(self, tool_name: str, args: dict, description: str = "") -> None:
+        """The one step_recorder AgentSession calls - fans out to whichever
+        of Routines (Phase 7's "Teach Py") and the Automation Recorder is
+        actually active. Both gate on their own is_recording, so this is
+        harmless when neither is - never a second execution path, just one
+        more listener on the same real tool-call stream."""
+        self.routines.record_step(tool_name, args, description)
+        self.workflow_recorder.record_step(tool_name, args, description)
+        if self.workflow_recorder.is_recording and self._recording_bar is not None:
+            self._recording_bar.set_step_count(self.workflow_recorder.step_count)
+
+    def _toggle_workflow_recording(self) -> None:
+        """Tools -> Record Workflow: start or stop recording the agent's
+        next actions as a reusable, parameterized automation (a Skill with
+        structured steps - see app/automation/model.py). Unlike Teach Py,
+        this needs no active Mission: a recorded workflow is Skill-scoped,
+        not Mission-scoped.
+        """
+        if self.workflow_recorder.is_recording:
+            self._finish_workflow_recording()
+            return
+        session = self._ensure_agent_session()
+        if session is None:
+            return
+        self.workflow_recorder.set_tools(session.tool_registry)
+        if not self.workflow_recorder.start():
+            return
+        if self._side_panel is None:
+            self._toggle_agent_panel()
+        self._show_recording_bar()
+        self._show_status("Recording workflow - ask Py to do the task, then Finish to save it.")
+
+    def _show_recording_bar(self) -> None:
+        from app.ui.workflow_recording import RecordingBar
+
+        if self._recording_bar is None:
+            self._recording_bar = RecordingBar(self)
+            self._recording_bar.finish_clicked.connect(self._finish_workflow_recording)
+            self._recording_bar.cancel_clicked.connect(self._cancel_workflow_recording)
+            self._content_layout.insertWidget(0, self._recording_bar)
+        self._recording_bar.set_step_count(self.workflow_recorder.step_count)
+        self._recording_bar.show()
+
+    def _hide_recording_bar(self) -> None:
+        if self._recording_bar is not None:
+            self._recording_bar.hide()
+
+    def _cancel_workflow_recording(self) -> None:
+        self.workflow_recorder.cancel()
+        self._hide_recording_bar()
+        self._show_status("Workflow recording cancelled.")
+
+    def _finish_workflow_recording(self) -> None:
+        """Tools -> Record Workflow while recording, or the bar's Finish
+        button: stop recording and open the Create Automation dialog (the
+        brief's own FINISH FLOW) so the user can name it, review detected
+        parameters, and edit/remove steps before it is ever saved."""
+        workflow = self.workflow_recorder.finish()
+        self._hide_recording_bar()
+        if workflow is None:
+            self._show_status("Nothing was recorded.")
+            return
+        from app.ui.workflow_recording import CreateAutomationDialog
+
+        dialog = CreateAutomationDialog(workflow, self)
+        if dialog.exec() != dialog.DialogCode.Accepted:
+            self._show_status("Recorded workflow discarded.")
+            return
+        result = dialog.result()
+        if result is None:
+            return
+        name, description, final_workflow = result
+        import uuid
+
+        from app.agent.skills import Skill
+
+        skill = Skill(id=f"workflow-{uuid.uuid4().hex[:12]}", name=name,
+                     description=description, instructions="", workflow=final_workflow)
+        self.skills.save(skill)
+        self._show_status(f"Automation saved: {name}")
+
+    def _run_recorded_workflow(self, skill) -> None:
+        """Run a recorded-workflow Skill: prompt for parameter values, then
+        replay it through WorkflowRunner - fresh semantic resolution and the
+        full approval/firewall pipeline every step, never a batch of
+        pre-approved actions. See app/automation/runner.py.
+        """
+        from app.automation.runner import WorkflowRunner
+        from app.ui.workflow_recording import RunWorkflowDialog
+
+        session = self._ensure_agent_session()
+        if session is None:
+            return
+        if session.busy:
+            self._show_status("Py is busy; cannot run an automation right now.")
+            return
+        workflow = skill.workflow
+        dialog = RunWorkflowDialog(skill.name, workflow.parameters, self)
+        if dialog.exec() != dialog.DialogCode.Accepted:
+            return
+        values = dialog.values()
+        if self._side_panel is None:
+            self._toggle_agent_panel()
+        if self._workflow_runner is None:
+            self._workflow_runner = WorkflowRunner(session, self.controller, session.tool_registry, self)
+            self._workflow_runner.paused.connect(self._on_workflow_paused)
+            self._workflow_runner.completed.connect(self._on_workflow_completed)
+        self._workflow_runner.run(workflow, values)
+        self._show_status(f"Running automation: {skill.name}")
+
+    def _on_workflow_paused(self, reason: str, message: str) -> None:
+        self._show_status(f"PyBrowser needs your help: {message}")
+
+    def _on_workflow_completed(self) -> None:
+        self._show_status("Automation finished.")
+
     def _branch_mission(self, mission_id: int) -> None:
         """Fork a Mission: an independent copy of its findings and decision.
 
@@ -1542,6 +1675,9 @@ class MainWindow(QMainWindow):
         """
         from PySide6.QtWidgets import QMessageBox
 
+        if skill.is_recorded_workflow:
+            self._run_recorded_workflow(skill)
+            return
         if self._agent_session is None:
             return
         if self._agent_session.busy:
@@ -1923,7 +2059,8 @@ class MainWindow(QMainWindow):
             else:
                 self._agent_unavailable = False
                 self._agent_session.briefing_provider = self.missions.briefing
-                self._agent_session.step_recorder = self.routines.record_step
+                self._agent_session.step_recorder = self._on_agent_step_recorded
+                self.workflow_recorder.set_tools(self._agent_session.tool_registry)
                 self._agent_session.step_changed.connect(self.missions.record_agent_step)
                 self._agent_session.state_changed.connect(self.missions.on_agent_state_changed)
                 credential = self._current_credential(self._agent_session.config.provider)

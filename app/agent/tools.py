@@ -1169,6 +1169,24 @@ class ToolRegistry:
         self._mcp.remember_permission_for(name, permission, scope,
                                           mission_id=self.active_mission_id())
 
+    def mcp_current_fingerprint(self, name: str) -> str:
+        """Passthrough for the Phase 16 Automation Recorder/runner - see
+        McpConnectionManager.current_fingerprint."""
+        if self._mcp is None or not name.startswith("mcp."):
+            return ""
+        return self._mcp.current_fingerprint(name)
+
+    def element_for_ref(self, ref: str, tab_id: int | None = None) -> dict[str, Any] | None:
+        """The full element descriptor a ``ref`` currently points at, or None.
+
+        Used only by the Phase 16 Automation Recorder to build a
+        SemanticTarget at record time (app/automation/recorder.py) - the
+        same lookup describe_call()/_element_name() already do to print a
+        human-readable step description, exposed here as data rather than a
+        formatted string."""
+        preview = self._browser.describe_action("inspect", ref=ref, tab_id=tab_id)
+        return preview.get("target")
+
     def assess(self, name: str, args: dict[str, Any]) -> dict[str, Any]:
         """What would this tool call do, and does it need the user's blessing?
 
