@@ -30,7 +30,10 @@ def _row_to_client(row) -> "PairedClient":
         id=row["id"], display_name=row["display_name"], token_hash=row["token_hash"],
         capabilities=tuple(json.loads(row["capabilities"] or "[]")),
         created_at=row["created_at"], last_used_at=row["last_used_at"],
-        revoked=bool(row["revoked"]),
+        revoked=bool(row["revoked"]), client_type=row["client_type"],
+        connection_method=row["connection_method"],
+        last_verified_at=row["last_verified_at"],
+        last_verified_status=row["last_verified_status"],
     )
 
 
@@ -57,11 +60,14 @@ class McpServerAccessStore:
     def create_client(
         self, client_id: str, *, display_name: str, token_hash: str,
         capabilities: list[str] | tuple[str, ...] = (),
+        client_type: str = "generic", connection_method: str = "",
     ) -> "PairedClient | None":
         self._db.execute(
             "INSERT INTO mcp_server_clients (id, display_name, token_hash, capabilities, "
-            "created_at, revoked) VALUES (?, ?, ?, ?, ?, 0)",
-            (client_id, display_name, token_hash, json.dumps(list(capabilities)), _now()))
+            "created_at, revoked, client_type, connection_method) "
+            "VALUES (?, ?, ?, ?, ?, 0, ?, ?)",
+            (client_id, display_name, token_hash, json.dumps(list(capabilities)), _now(),
+             client_type, connection_method))
         return self.get_client(client_id)
 
     def get_client(self, client_id: str) -> "PairedClient | None":
@@ -89,6 +95,19 @@ class McpServerAccessStore:
         self._db.execute(
             "UPDATE mcp_server_clients SET capabilities = ? WHERE id = ?",
             (json.dumps(list(capabilities)), client_id))
+
+    def record_verification(self, client_id: str, status: str) -> None:
+        """The ONE place a client's verification state changes - always the
+        outcome of a real check (app/mcp_server/verification.py), never a
+        side effect of pairing or config generation."""
+        self._db.execute(
+            "UPDATE mcp_server_clients SET last_verified_at = ?, last_verified_status = ? "
+            "WHERE id = ?", (_now(), status, client_id))
+
+    def set_connection_method(self, client_id: str, connection_method: str) -> None:
+        self._db.execute(
+            "UPDATE mcp_server_clients SET connection_method = ? WHERE id = ?",
+            (connection_method, client_id))
 
     # -- audit log -----------------------------------------------------------
 

@@ -31,16 +31,23 @@ def generate_token() -> str:
 
 def pair_client(
     store: "McpServerAccessStore", *, display_name: str, capabilities: list[str],
+    client_type: str = "generic", connection_method: str = "",
 ) -> tuple["PairedClient", str]:
     """Create a new client with the given capabilities (empty by default -
     a caller must actively opt a client into each one). Returns the stored
     client record and the plaintext token - the ONLY time the plaintext
-    token exists outside the user's clipboard."""
+    token exists outside the user's clipboard.
+
+    ``client_type``/``connection_method`` are Phase 12 descriptive metadata
+    only (which "Connect an AI" card this came from) - they never change
+    what auth/permission/audit machinery applies; every client type goes
+    through the exact same pairing, verification and revocation code."""
     token = generate_token()
     client_id = uuid.uuid4().hex
     client = store.create_client(
         client_id, display_name=display_name, token_hash=_hash_token(token),
-        capabilities=capabilities)
+        capabilities=capabilities, client_type=client_type,
+        connection_method=connection_method)
     return client, token
 
 

@@ -68,7 +68,7 @@ class ExternalAiAccessPanelTests(unittest.TestCase):
         self.panel._refresh()
         self.panel.table.selectRow(0)
         self.panel._on_revoke()
-        self.assertEqual(self.panel.table.item(0, 4).text(), "Revoked")
+        self.assertEqual(self.panel.table.item(0, 5).text(), "Revoked")
 
 
 class PairClientDialogTests(unittest.TestCase):

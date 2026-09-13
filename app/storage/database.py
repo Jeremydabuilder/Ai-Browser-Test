@@ -23,9 +23,9 @@ import queue
 import sqlite3
 import threading
 from pathlib import Path
-from typing import Any, Iterable, Sequence
+from typing import Any, Callable, Iterable, Sequence
 
-SCHEMA_VERSION = 20
+SCHEMA_VERSION = 21
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS history (
@@ -188,14 +188,25 @@ CREATE INDEX IF NOT EXISTS idx_mission_graph_nodes_mission ON mission_graph_node
 -- trail of what they did. token_hash is a SHA-256 hex digest - the plaintext
 -- pairing token is shown to the user exactly once and never persisted, see
 -- app/mcp_server/auth.py. capabilities is a JSON array of capability names.
+-- client_type/connection_method are Phase 12 (External AI Clients) metadata -
+-- which client card paired this client and how it connects. Purely
+-- descriptive: every client, regardless of type, uses the SAME auth/
+-- permission/audit machinery - see app/mcp_server/client_configs.py.
+-- last_verified_* records the outcome of the one shared verification
+-- engine (app/mcp_server/verification.py) - "token created" is never
+-- conflated with "connected".
 CREATE TABLE IF NOT EXISTS mcp_server_clients (
-    id             TEXT PRIMARY KEY,
-    display_name   TEXT NOT NULL,
-    token_hash     TEXT NOT NULL,
-    capabilities   TEXT NOT NULL DEFAULT '[]',
-    created_at     TEXT NOT NULL,
-    last_used_at   TEXT,
-    revoked        INTEGER NOT NULL DEFAULT 0
+    id                  TEXT PRIMARY KEY,
+    display_name        TEXT NOT NULL,
+    token_hash          TEXT NOT NULL,
+    capabilities        TEXT NOT NULL DEFAULT '[]',
+    created_at          TEXT NOT NULL,
+    last_used_at        TEXT,
+    revoked             INTEGER NOT NULL DEFAULT 0,
+    client_type         TEXT NOT NULL DEFAULT 'generic',
+    connection_method   TEXT NOT NULL DEFAULT '',
+    last_verified_at    TEXT,
+    last_verified_status TEXT NOT NULL DEFAULT 'not_configured'
 );
 
 -- detail is a short, redacted, human-readable summary - never a raw secret
@@ -479,7 +490,37 @@ CREATE INDEX IF NOT EXISTS idx_ghost_run_effects
 #: Rules: each step is idempotent, each runs inside one transaction, and a step
 #: is never edited once it has shipped - a mistake is fixed by adding the next
 #: step, because someone's profile has already run the old one.
-_MIGRATIONS: dict[int, str] = {
+def _migrate_20_add_client_columns(conn: sqlite3.Connection) -> None:
+    """Add mcp_server_clients' Phase 12 columns one at a time, tolerating
+    a column that already exists.
+
+    Ordinarily these are genuinely new columns on an existing Phase 11
+    profile. But a *test* profile built via a fresh ``Database(path)``
+    call already gets the current, final table shape (client_type and
+    friends included) from ``_SCHEMA`` - such a test then winds the file
+    back to an older ``user_version`` without necessarily dropping this
+    unrelated, newer table first (mcp_server_clients did not exist at all
+    at that older version, so a real profile from that era never has this
+    conflict). Replaying every migration from scratch then hits an
+    "ALTER TABLE ... ADD COLUMN" for a column that is already there.
+    SQLite's ADD COLUMN has no "IF NOT EXISTS" form (unlike CREATE TABLE),
+    so this is done in Python instead of a single executescript string -
+    every other migration in this dict either creates a table (naturally
+    idempotent via IF NOT EXISTS) or alters a table the wind-back tests
+    already restore to its older, column-less shape.
+    """
+    existing = {row[1] for row in conn.execute("PRAGMA table_info(mcp_server_clients)")}
+    for column, definition in (
+        ("client_type", "TEXT NOT NULL DEFAULT 'generic'"),
+        ("connection_method", "TEXT NOT NULL DEFAULT ''"),
+        ("last_verified_at", "TEXT"),
+        ("last_verified_status", "TEXT NOT NULL DEFAULT 'not_configured'"),
+    ):
+        if column not in existing:
+            conn.execute(f"ALTER TABLE mcp_server_clients ADD COLUMN {column} {definition}")
+
+
+_MIGRATIONS: dict[int, str | Callable[[sqlite3.Connection], None]] = {
     # v1 -> v2: Missions. Identical to the block in _SCHEMA above, which is
     # what makes it safe to run on a profile that somehow already has them.
     1: """
@@ -922,6 +963,7 @@ CREATE TABLE IF NOT EXISTS decision_alternatives (
     );
     CREATE INDEX IF NOT EXISTS idx_mcp_server_audit_created_at ON mcp_server_audit(created_at DESC);
     """,
+    20: _migrate_20_add_client_columns,
 }
 
 _STOP = object()
@@ -1044,7 +1086,11 @@ class Database:
                 return
             else:
                 for step in range(version, SCHEMA_VERSION):
-                    conn.executescript(_MIGRATIONS[step])
+                    migration = _MIGRATIONS[step]
+                    if callable(migration):
+                        migration(conn)
+                    else:
+                        conn.executescript(migration)
             conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
             conn.commit()
 

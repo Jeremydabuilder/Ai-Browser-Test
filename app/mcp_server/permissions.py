@@ -26,6 +26,40 @@ TOOL_REQUIRED_CAPABILITY: dict[str, Capability] = {
 }
 
 
+#: Least-privilege presets for the pairing UI (Phase 12, Part 7). "Full
+#: Access" is deliberately absent from the default preset list - see
+#: FULL_ACCESS below, offered only behind an explicit "Advanced" affordance.
+#: Order matters: it is the order presets are offered, least first.
+PERMISSION_PRESETS: dict[str, list[Capability]] = {
+    "read_only": [Capability.READ_PAGES, Capability.READ_TABS, Capability.READ_MISSIONS],
+    "research": [Capability.READ_PAGES, Capability.READ_TABS, Capability.OPEN_TABS,
+                Capability.NAVIGATE, Capability.READ_MISSIONS],
+    "mission_assistant": [Capability.READ_PAGES, Capability.READ_TABS, Capability.OPEN_TABS,
+                          Capability.NAVIGATE, Capability.READ_MISSIONS,
+                          Capability.CREATE_MISSION],
+}
+
+#: Every capability there is. Shown only under an "Advanced" disclosure in
+#: the pairing UI, and never the default selection for a new client.
+FULL_ACCESS: list[Capability] = list(Capability)
+
+PERMISSION_PRESET_LABELS: dict[str, str] = {
+    "read_only": "Read Only",
+    "research": "Research",
+    "mission_assistant": "Mission Assistant",
+    "full_access": "Full Access (advanced - grants everything)",
+}
+
+
+def preset_capabilities(preset: str) -> list[str]:
+    """Capability value strings for a named preset - what the pairing UI
+    actually checks off. Falls back to no capabilities for an unknown
+    preset name, never to Full Access."""
+    if preset == "full_access":
+        return [c.value for c in FULL_ACCESS]
+    return [c.value for c in PERMISSION_PRESETS.get(preset, [])]
+
+
 def required_capability(tool: str) -> Capability | None:
     return TOOL_REQUIRED_CAPABILITY.get(tool)
 
