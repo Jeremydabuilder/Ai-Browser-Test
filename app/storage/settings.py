@@ -21,6 +21,9 @@ KEY_VERTICAL_TABS_WIDTH = "vertical_tabs_width"
 KEY_VERTICAL_TABS_COLLAPSED = "vertical_tabs_collapsed"
 KEY_PINNED_TABS = "pinned_tabs"
 KEY_TAB_GROUPS = "tab_groups"
+#: Whether the PyBrowser MCP Server (Phase 11 - External AI Access) should
+#: be listening. Off by default: a brand-new profile must never expose it.
+KEY_MCP_SERVER_ENABLED = "mcp_server_enabled"
 
 #: Pinned tabs kept across a restart - past this, remembering more starts
 #: looking less like "pin what matters" and more like a second session
@@ -65,6 +68,7 @@ _DEFAULTS = {
     KEY_TAB_LAYOUT: TAB_LAYOUT_HORIZONTAL,
     KEY_VERTICAL_TABS_WIDTH: str(VERTICAL_TABS_DEFAULT_WIDTH),
     KEY_VERTICAL_TABS_COLLAPSED: "0",
+    KEY_MCP_SERVER_ENABLED: "0",
 }
 
 
@@ -109,6 +113,14 @@ class SettingsStore:
     @search_url.setter
     def search_url(self, value: str) -> None:
         self.set(KEY_SEARCH_URL, value)
+
+    @property
+    def mcp_server_enabled(self) -> bool:
+        return self.get_bool(KEY_MCP_SERVER_ENABLED, False)
+
+    @mcp_server_enabled.setter
+    def mcp_server_enabled(self, value: bool) -> None:
+        self.set_bool(KEY_MCP_SERVER_ENABLED, value)
 
     # -- what a new tab opens -------------------------------------------
     @property

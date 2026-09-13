@@ -52,12 +52,16 @@ class SettingsDialog(QDialog):
     saved = Signal()
 
     def __init__(self, settings: SettingsStore, parent: QWidget | None = None,
-                 *, mcp=None) -> None:
+                 *, mcp=None, mcp_server=None) -> None:
         """``mcp`` is an McpConnectionManager (app.mcp.connection_manager), or
         None. When given, a "Connected Tools" tab is added alongside General -
         omitting it (rather than requiring every caller to pass one) keeps
         every other SettingsDialog call site and every existing test working
-        unchanged."""
+        unchanged.
+
+        ``mcp_server`` is a PyBrowserMcpServer (app.mcp_server.server), or
+        None - the inbound counterpart to ``mcp``. When given, an "External
+        AI Access" tab is added the same optional way."""
         super().__init__(parent)
         self._settings = settings
         c = theme.palette_for(QApplication.instance())
@@ -69,7 +73,7 @@ class SettingsDialog(QDialog):
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(0)
 
-        if mcp is None:
+        if mcp is None and mcp_server is None:
             general = QWidget(self)
             layout = QVBoxLayout(general)
             layout.setContentsMargins(m.space_5, m.space_5, m.space_5, m.space_4)
@@ -83,13 +87,23 @@ class SettingsDialog(QDialog):
             layout.setSpacing(m.space_2)
             tabs.addTab(general, "General")
 
-            from app.ui.mcp_settings import ConnectedToolsPanel
+            if mcp is not None:
+                from app.ui.mcp_settings import ConnectedToolsPanel
 
-            tools_tab = QWidget(self)
-            tools_layout = QVBoxLayout(tools_tab)
-            tools_layout.setContentsMargins(m.space_5, m.space_4, m.space_5, m.space_4)
-            tools_layout.addWidget(ConnectedToolsPanel(mcp, tools_tab))
-            tabs.addTab(tools_tab, "Connected Tools")
+                tools_tab = QWidget(self)
+                tools_layout = QVBoxLayout(tools_tab)
+                tools_layout.setContentsMargins(m.space_5, m.space_4, m.space_5, m.space_4)
+                tools_layout.addWidget(ConnectedToolsPanel(mcp, tools_tab))
+                tabs.addTab(tools_tab, "Connected Tools")
+
+            if mcp_server is not None:
+                from app.ui.mcp_server_settings import ExternalAiAccessPanel
+
+                access_tab = QWidget(self)
+                access_layout = QVBoxLayout(access_tab)
+                access_layout.setContentsMargins(0, 0, 0, 0)
+                access_layout.addWidget(ExternalAiAccessPanel(mcp_server, access_tab))
+                tabs.addTab(access_tab, "External AI Access")
 
             outer.addWidget(tabs)
 

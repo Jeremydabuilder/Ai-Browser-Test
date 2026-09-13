@@ -25,7 +25,7 @@ import threading
 from pathlib import Path
 from typing import Any, Iterable, Sequence
 
-SCHEMA_VERSION = 19
+SCHEMA_VERSION = 20
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS history (
@@ -183,6 +183,34 @@ CREATE TABLE IF NOT EXISTS mission_graph_nodes (
     FOREIGN KEY (mission_id) REFERENCES missions(id) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS idx_mission_graph_nodes_mission ON mission_graph_nodes(mission_id);
+
+-- PyBrowser-as-MCP-Server (Phase 11): paired external clients and the audit
+-- trail of what they did. token_hash is a SHA-256 hex digest - the plaintext
+-- pairing token is shown to the user exactly once and never persisted, see
+-- app/mcp_server/auth.py. capabilities is a JSON array of capability names.
+CREATE TABLE IF NOT EXISTS mcp_server_clients (
+    id             TEXT PRIMARY KEY,
+    display_name   TEXT NOT NULL,
+    token_hash     TEXT NOT NULL,
+    capabilities   TEXT NOT NULL DEFAULT '[]',
+    created_at     TEXT NOT NULL,
+    last_used_at   TEXT,
+    revoked        INTEGER NOT NULL DEFAULT 0
+);
+
+-- detail is a short, redacted, human-readable summary - never a raw secret
+-- or a full page payload, see app/mcp_server/audit.py.
+CREATE TABLE IF NOT EXISTS mcp_server_audit (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    client_id        TEXT,
+    tool             TEXT NOT NULL,
+    outcome          TEXT NOT NULL,
+    duration_ms      INTEGER NOT NULL DEFAULT 0,
+    approval_result  TEXT,
+    detail           TEXT NOT NULL DEFAULT '',
+    created_at       TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_mcp_server_audit_created_at ON mcp_server_audit(created_at DESC);
 
 CREATE TABLE IF NOT EXISTS settings (
     key   TEXT PRIMARY KEY,
@@ -871,6 +899,28 @@ CREATE TABLE IF NOT EXISTS decision_alternatives (
         FOREIGN KEY (mission_id) REFERENCES missions(id) ON DELETE CASCADE
     );
     CREATE INDEX IF NOT EXISTS idx_mission_graph_nodes_mission ON mission_graph_nodes(mission_id);
+    """,
+    19: """
+    CREATE TABLE IF NOT EXISTS mcp_server_clients (
+        id             TEXT PRIMARY KEY,
+        display_name   TEXT NOT NULL,
+        token_hash     TEXT NOT NULL,
+        capabilities   TEXT NOT NULL DEFAULT '[]',
+        created_at     TEXT NOT NULL,
+        last_used_at   TEXT,
+        revoked        INTEGER NOT NULL DEFAULT 0
+    );
+    CREATE TABLE IF NOT EXISTS mcp_server_audit (
+        id               INTEGER PRIMARY KEY AUTOINCREMENT,
+        client_id        TEXT,
+        tool             TEXT NOT NULL,
+        outcome          TEXT NOT NULL,
+        duration_ms      INTEGER NOT NULL DEFAULT 0,
+        approval_result  TEXT,
+        detail           TEXT NOT NULL DEFAULT '',
+        created_at       TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_mcp_server_audit_created_at ON mcp_server_audit(created_at DESC);
     """,
 }
 

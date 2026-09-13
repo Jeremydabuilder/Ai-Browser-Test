@@ -375,6 +375,14 @@ class BrowserController(QObject):
     def tab_count(self) -> int:
         return self._tabs.count()
 
+    def get_selected_text(self, tab_id: int | None = None) -> str:
+        """The tab's current text selection, synchronously - Chromium keeps
+        this up to date as the user selects, so there is nothing to await."""
+        tab = self._tab_for(tab_id)
+        if tab is None:
+            return ""
+        return tab.page.selectedText().strip()
+
     # -- public: navigation ----------------------------------------------
     def navigate(self, url: str, tab_id: int | None = None) -> BrowserFuture:
         """Load ``url``; the future resolves when the page finishes loading."""

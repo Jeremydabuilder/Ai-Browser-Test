@@ -132,6 +132,21 @@ class MainWindow(QMainWindow):
 
         self._recovered_graph_nodes = recover_after_restart(self.mission_graph)
 
+        #: PyBrowser as an MCP Server (Phase 11) - a safe, authenticated
+        #: subset of this same controller/missions/graph exposed to external
+        #: MCP clients. Negligible cost while disabled: start() is only
+        #: called when the user has actually turned it on.
+        from app.mcp_server.server import PyBrowserMcpServer
+        from app.storage import McpServerAccessStore
+
+        self.mcp_server = PyBrowserMcpServer(
+            store=McpServerAccessStore(database), browser=self.controller,
+            missions=self.missions, graph_store=self.mission_graph)
+        if self.settings.mcp_server_enabled:
+            self.mcp_server.start()
+        self.mcp_server.status_changed.connect(
+            lambda running: setattr(self.settings, "mcp_server_enabled", running))
+
         # A dismissible strip above the tabs for things the status bar is too
         # quiet for: blocked certificates, failed loads, crashed renderers.
         self.notice = NoticeBar(self)
@@ -1579,7 +1594,7 @@ class MainWindow(QMainWindow):
     def _show_settings(self) -> None:
         from app.ui.settings_dialog import SettingsDialog
 
-        dialog = SettingsDialog(self.settings, self, mcp=self.mcp)
+        dialog = SettingsDialog(self.settings, self, mcp=self.mcp, mcp_server=self.mcp_server)
         dialog.saved.connect(self._apply_settings)
         dialog.exec()
 
@@ -2222,6 +2237,7 @@ class MainWindow(QMainWindow):
             self._agent_session.shutdown()
             self._agent_session = None
         self.mcp.shutdown()
+        self.mcp_server.stop()
         # Tear down render processes explicitly; otherwise Qt can emit warnings
         # about pages outliving their profile during interpreter shutdown.
         for tab in self.tabs.tabs():
