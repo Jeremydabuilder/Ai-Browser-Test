@@ -8,6 +8,7 @@ from app.storage.skills import SkillStore
 from app.storage.settings import SettingsStore
 from app.storage.scheduled_tasks import ScheduledTaskStore
 from app.storage.watches import WatchStore
+from app.storage.mission_graph import MissionGraphStore
 
 __all__ = [
     "Database",
@@ -21,4 +22,5 @@ __all__ = [
     "SettingsStore",
     "ScheduledTaskStore",
     "WatchStore",
+    "MissionGraphStore",
 ]

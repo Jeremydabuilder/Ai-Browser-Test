@@ -39,6 +39,7 @@ from app.storage import (
     Database,
     HighlightStore,
     HistoryStore,
+    MissionGraphStore,
     ScheduledTaskStore,
     SettingsStore,
     SkillStore,
@@ -121,6 +122,16 @@ class MainWindow(QMainWindow):
         self.watch_runner = WatchRunner(self.watches, self._fetch_page_text_for_watch, self)
         self.watch_runner.attach_to(self.task_runner.timer)
 
+        #: Mission Execution Graph (Phase 10) - the persisted, restart-safe
+        #: shape of the plan MissionCoordinator builds. Recovered once at
+        #: startup (see _restore_pinned_tabs below for where startup work
+        #: like this already happens) - never auto-resumed, only corrected:
+        #: see app/storage/mission_graph.recover_after_restart.
+        self.mission_graph = MissionGraphStore(database)
+        from app.storage.mission_graph import recover_after_restart
+
+        self._recovered_graph_nodes = recover_after_restart(self.mission_graph)
+
         # A dismissible strip above the tabs for things the status bar is too
         # quiet for: blocked certificates, failed loads, crashed renderers.
         self.notice = NoticeBar(self)
@@ -187,6 +198,16 @@ class MainWindow(QMainWindow):
                 f"marked failed for review: {names}",
                 level="warning", action_text="Task Center", action=self._show_task_center)
         self.task_runner.start()
+
+        if self._recovered_graph_nodes:
+            needing_review = sum(
+                1 for n in self._recovered_graph_nodes if n.write_attempted)
+            self.notice.show_message(
+                f"A Multi-Agent Mission was interrupted by a restart: "
+                f"{len(self._recovered_graph_nodes)} step(s) recovered"
+                + (f", {needing_review} needing your review before retrying" if needing_review
+                   else "") + ".",
+                level="warning")
 
     # ------------------------------------------------------------------
     # construction helpers
@@ -1941,7 +1962,8 @@ class MainWindow(QMainWindow):
     def _run_multi_agent_mission(self) -> None:
         from PySide6.QtWidgets import QInputDialog
 
-        from app.missions.coordinator import CoordinatorLimits, MissionCoordinator
+        from app.missions.coordinator import CoordinatorLimits, MissionCoordinator, should_delegate
+        from app.ui.mission_plan_preview_dialog import MissionPlanPreviewDialog
         from app.ui.workstreams_dialog import WorkstreamsDialog
 
         goal, ok = QInputDialog.getMultiLineText(
@@ -1951,16 +1973,32 @@ class MainWindow(QMainWindow):
         if not ok or not goal.strip():
             return
         goal = goal.strip()
+        if not should_delegate(goal):
+            QMessageBox.information(
+                self, "No delegation needed",
+                "This goal does not need a team - ask Py directly instead.")
+            return
         if self.missions.active is None or self.missions.active.goal != goal:
             self.missions.start(goal)
 
+        # Persisted via self.mission_graph (Phase 10) - restart-safe, and
+        # what the Mission Plan view and recover_after_restart both read.
+        # Large plans are previewed ("Py plans to do N steps") before
+        # anything runs; a plan that turns out not to need delegation at
+        # all (should_delegate said no) never reaches that preview.
         coordinator = MissionCoordinator(
-            self.missions, self._build_worker_agent_session, CoordinatorLimits(), self)
+            self.missions, self._build_worker_agent_session, CoordinatorLimits(), self,
+            graph_store=self.mission_graph, require_plan_approval=True)
         coordinator.result_ready.connect(self._on_multi_agent_result)
         coordinator.failed.connect(self._on_multi_agent_failed)
-        dialog = WorkstreamsDialog(coordinator, self)
+
+        plan_dialog = MissionPlanPreviewDialog(coordinator, self)
+        workstreams_dialog = WorkstreamsDialog(coordinator, self)
+        coordinator.finished.connect(workstreams_dialog.accept)
         coordinator.run(goal)
-        dialog.exec()
+        if plan_dialog.exec() != plan_dialog.DialogCode.Accepted:
+            return   # the user cancelled the plan before anything ran
+        workstreams_dialog.exec()
 
     def _on_multi_agent_result(self, result: str) -> None:
         self.notice.show_message(

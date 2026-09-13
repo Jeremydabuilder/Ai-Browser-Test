@@ -25,7 +25,7 @@ import threading
 from pathlib import Path
 from typing import Any, Iterable, Sequence
 
-SCHEMA_VERSION = 18
+SCHEMA_VERSION = 19
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS history (
@@ -156,6 +156,33 @@ CREATE TABLE IF NOT EXISTS watch_history (
     FOREIGN KEY (watch_id) REFERENCES watches(id) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS idx_watch_history_watch ON watch_history(watch_id, observed_at DESC);
+
+-- Mission Execution Graph (Phase 10): the persisted, restart-safe shape of
+-- the plan MissionCoordinator builds - see app/missions/graph.py and
+-- app/missions/coordinator.py. dependencies is a JSON array of other node
+-- ids in this same table; resolving "is a node ready" is a live scheduling
+-- question the coordinator answers itself, never computed here.
+CREATE TABLE IF NOT EXISTS mission_graph_nodes (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    mission_id      INTEGER NOT NULL,
+    node_type       TEXT NOT NULL,
+    role            TEXT NOT NULL,
+    title           TEXT NOT NULL,
+    instructions    TEXT NOT NULL,
+    dependencies    TEXT NOT NULL DEFAULT '[]',
+    state           TEXT NOT NULL DEFAULT 'pending',
+    attempt_count   INTEGER NOT NULL DEFAULT 0,
+    write_attempted INTEGER NOT NULL DEFAULT 0,
+    result_summary  TEXT NOT NULL DEFAULT '',
+    error           TEXT NOT NULL DEFAULT '',
+    findings_added  INTEGER NOT NULL DEFAULT 0,
+    plan_round      INTEGER NOT NULL DEFAULT 0,
+    created_at      TEXT NOT NULL,
+    started_at      TEXT,
+    completed_at    TEXT,
+    FOREIGN KEY (mission_id) REFERENCES missions(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_mission_graph_nodes_mission ON mission_graph_nodes(mission_id);
 
 CREATE TABLE IF NOT EXISTS settings (
     key   TEXT PRIMARY KEY,
@@ -821,6 +848,29 @@ CREATE TABLE IF NOT EXISTS decision_alternatives (
         FOREIGN KEY (watch_id) REFERENCES watches(id) ON DELETE CASCADE
     );
     CREATE INDEX IF NOT EXISTS idx_watch_history_watch ON watch_history(watch_id, observed_at DESC);
+    """,
+    18: """
+    CREATE TABLE IF NOT EXISTS mission_graph_nodes (
+        id              INTEGER PRIMARY KEY AUTOINCREMENT,
+        mission_id      INTEGER NOT NULL,
+        node_type       TEXT NOT NULL,
+        role            TEXT NOT NULL,
+        title           TEXT NOT NULL,
+        instructions    TEXT NOT NULL,
+        dependencies    TEXT NOT NULL DEFAULT '[]',
+        state           TEXT NOT NULL DEFAULT 'pending',
+        attempt_count   INTEGER NOT NULL DEFAULT 0,
+        write_attempted INTEGER NOT NULL DEFAULT 0,
+        result_summary  TEXT NOT NULL DEFAULT '',
+        error           TEXT NOT NULL DEFAULT '',
+        findings_added  INTEGER NOT NULL DEFAULT 0,
+        plan_round      INTEGER NOT NULL DEFAULT 0,
+        created_at      TEXT NOT NULL,
+        started_at      TEXT,
+        completed_at    TEXT,
+        FOREIGN KEY (mission_id) REFERENCES missions(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_mission_graph_nodes_mission ON mission_graph_nodes(mission_id);
     """,
 }
 
