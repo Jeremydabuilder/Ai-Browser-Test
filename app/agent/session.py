@@ -293,7 +293,12 @@ class AgentSession(QObject):
         self._browser = browser
         # `missions` and `mcp` are passed straight through to the registry,
         # which needs a handful of methods from each. The session itself
-        # stays Mission- and MCP-ignorant.
+        # stays Mission- and MCP-ignorant. Kept here too (not only inside
+        # the registry) so set_tool_allowlist can rebuild an equivalent
+        # registry later, scoped differently, without the caller having to
+        # remember and re-supply them.
+        self._missions = missions
+        self._mcp = mcp
         self._tools = ToolRegistry(browser, self.config.limits, missions,
                                   autonomy=self.config.autonomy, mcp=mcp)
 
@@ -487,6 +492,24 @@ class AgentSession(QObject):
         self._task = ""
         self.usage_updated.emit(self.task_usage)
         self.cleared.emit()
+
+    def set_tool_allowlist(self, allowed_tools: frozenset[str] | None) -> None:
+        """Scope this session's tools to exactly ``allowed_tools`` (None =
+        unrestricted, the ordinary-conversation default) for whatever task
+        runs next - the mechanism a Skill (app/agent/skills.py) uses to
+        enforce its tool scope, without a second execution path: this
+        rebuilds the same ToolRegistry class with the same browser/
+        missions/mcp, just a narrower (or, passing None, unrestricted)
+        allowlist. Refused while a task is running, the same guard clear()
+        uses, since swapping the registry out from under an in-flight
+        request could hand a mid-flight tool_result to a registry that no
+        longer recognises the call it answers.
+        """
+        if self.busy:
+            return
+        self._tools = ToolRegistry(self._browser, self.config.limits, self._missions,
+                                   autonomy=self.config.autonomy, mcp=self._mcp,
+                                   allowed_tools=allowed_tools)
 
     def cancel(self) -> None:
         """Stop the current task.

@@ -34,7 +34,14 @@ from app.routines import RoutineService, RoutineStore
 from app.browser.load_error import ErrorCategory, LoadError
 from app.browser.profile import BrowserProfile
 from app.browser.tab_manager import TabManager
-from app.storage import BookmarkStore, Database, HighlightStore, HistoryStore, SettingsStore
+from app.storage import (
+    BookmarkStore,
+    Database,
+    HighlightStore,
+    HistoryStore,
+    SettingsStore,
+    SkillStore,
+)
 from app.ui.dialogs import BookmarksDialog, HistoryDialog, confirm_destructive
 from app.ui.find_bar import FindBar
 from app.ui.navigation_bar import NavigationBar
@@ -60,6 +67,7 @@ class MainWindow(QMainWindow):
         self.history = HistoryStore(database)
         self.bookmarks = BookmarkStore(database)
         self.highlights = HighlightStore(database)
+        self.skills = SkillStore(database)
 
         self.nav_bar = NavigationBar(self)
         self.addToolBar(self.nav_bar)
@@ -223,6 +231,8 @@ class MainWindow(QMainWindow):
                          self._show_mission_library)
         self._add_action(tools_menu, "&Highlights Library", "Ctrl+Shift+H",
                          self._show_highlights_library)
+        self._add_action(tools_menu, "&Skills Library", "Ctrl+Shift+S",
+                         self._show_skills_library)
         self._teach_action = self._add_action(
             tools_menu, "&Teach Py", "Ctrl+Shift+T", self._toggle_teaching)
         self._teach_action.setCheckable(True)
@@ -1365,6 +1375,131 @@ class MainWindow(QMainWindow):
             on_add_to_mission=lambda h: self._add_selection_to_mission(h.url, h.title, h.text))
         dialog.exec()
 
+    def _show_skills_library(self) -> None:
+        from app.ui.skills_library import SkillsLibraryDialog
+
+        dialog = SkillsLibraryDialog(self.skills, self, on_run=self._run_skill)
+        dialog.exec()
+
+    def _run_skill(self, skill) -> None:
+        """Run a Skill: reuses the exact same AgentSession/ToolRegistry/
+        Missions/MCP/approval machinery every other task in this window
+        already goes through - see AgentSession.set_tool_allowlist() and
+        app/agent/skills.py's module docstring. Never a second execution
+        path, never a bypass.
+        """
+        from PySide6.QtWidgets import QMessageBox
+
+        if self._agent_session is None:
+            return
+        if self._agent_session.busy:
+            QMessageBox.information(
+                self, "Py is busy",
+                "Wait for the current task to finish before running a Skill.")
+            return
+
+        from app.agent.config import describe_provider
+
+        # The session's own live config, not one re-derived from settings:
+        # they can disagree (a session built directly, or settings changed
+        # after the session was constructed), and a Skill's preference must
+        # be checked against what is actually about to run the task.
+        current_provider = self._agent_session.config.provider
+        if skill.preferred_provider and skill.preferred_provider != current_provider:
+            preferred_label = describe_provider(skill.preferred_provider).label
+            current_label = describe_provider(current_provider).label
+            choice = QMessageBox.question(
+                self, "Different provider preferred",
+                f'"{skill.name}" prefers {preferred_label}, but Py is currently '
+                f"configured to use {current_label}. Continue with {current_label}?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+                QMessageBox.StandardButton.Cancel)
+            if choice != QMessageBox.StandardButton.Yes:
+                return
+
+        if self._side_panel is None:
+            self._toggle_agent_panel()
+        panel = self._side_panel
+        composer = getattr(panel, "_composer", None)
+
+        prompt = skill.instructions
+        if skill.output_schema:
+            import json
+
+            prompt += ("\n\nReply with a single JSON object matching this schema, "
+                      "and nothing else:\n" + json.dumps(skill.output_schema))
+
+        image = None
+        combined = prompt
+        if composer is not None:
+            self._auto_select_skill_context(composer, skill)
+            provider_supports_images = getattr(panel, "_provider_supports_images", None)
+            combined, image = composer.build(
+                prompt,
+                provider_supports_images=provider_supports_images()
+                if callable(provider_supports_images) else False)
+            composer.clear()
+
+        allowed = frozenset(skill.allowed_tools) if skill.allowed_tools is not None else None
+        self._agent_session.set_tool_allowlist(allowed)
+
+        def _reset_allowlist() -> None:
+            self._agent_session.set_tool_allowlist(None)
+            try:
+                self._agent_session.finished.disconnect(_reset_allowlist)
+            except (TypeError, RuntimeError):
+                pass
+        self._agent_session.finished.connect(_reset_allowlist)
+
+        if skill.output_schema:
+            def _validate_output(text: str) -> None:
+                from app.agent.skills import OutputValidationError, validate_output
+
+                try:
+                    validate_output(skill.output_schema, text)
+                except OutputValidationError as exc:
+                    QMessageBox.warning(
+                        self, "Skill output did not match its schema",
+                        f'"{skill.name}" expected structured output, but the answer '
+                        f"did not match: {exc}")
+                try:
+                    self._agent_session.assistant_message.disconnect(_validate_output)
+                except (TypeError, RuntimeError):
+                    pass
+            self._agent_session.assistant_message.connect(_validate_output)
+
+        ask = getattr(panel, "ask", None)
+        if callable(ask):
+            ask(combined, image=image)
+
+    def _auto_select_skill_context(self, composer, skill) -> None:
+        """A Skill's default_context_kinds are only ever a *default* -
+        never override an explicit selection the user already made in the
+        same @-context composer every other flow uses (see
+        app/agent/context_items.py). No Skill-specific context plumbing:
+        this builds the exact same ContextItem shape _tab_items()/
+        _mission_items() already would.
+        """
+        if composer.selected:
+            return
+        from app.agent.context_items import ContextItem
+        from app.browser.pdf_context import is_pdf_url
+
+        if "tab" in skill.default_context_kinds:
+            active = next((row for row in self.controller.list_tabs() if row["active"]), None)
+            if active is not None:
+                url = active.get("url", "")
+                composer.add(ContextItem(
+                    id=f"tab:{active['tab_id']}", kind="pdf_tab" if is_pdf_url(url) else "tab",
+                    title=active.get("title") or "Untitled tab", subtitle=url,
+                    ref={"tab_id": active["tab_id"], "url": url}))
+        if "mission" in skill.default_context_kinds and self.missions.active is not None:
+            mission = self.missions.active
+            composer.add(ContextItem(
+                id=f"mission:{mission.id}", kind="mission",
+                title=mission.title or "Untitled Mission", subtitle="Active Mission",
+                ref={"mission_id": mission.id}))
+
     def _ask_py_about_highlight(self, highlight) -> None:
         """Hand a saved highlight to Py, fenced as untrusted the same way
         a live page's text or a local file's content already is."""
@@ -1529,6 +1664,7 @@ class MainWindow(QMainWindow):
         ("Finding things", (
             ("Ctrl+H", "History"), ("Ctrl+Shift+O", "Bookmarks"),
             ("Ctrl+Shift+H", "Highlights Library"),
+            ("Ctrl+Shift+S", "Skills Library"),
             ("Ctrl+D", "Bookmark this page"),
             ("Ctrl+F", "Find in page"),
             ("Ctrl+G / Ctrl+Shift+G", "Find next / previous"),

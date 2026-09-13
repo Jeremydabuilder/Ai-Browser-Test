@@ -826,7 +826,8 @@ class ToolRegistry:
     """Validates tool arguments and calls BrowserController."""
 
     def __init__(self, browser: BrowserController, limits: ContextLimits | None = None,
-                 missions=None, *, autonomy: str = Autonomy.STANDARD, mcp=None) -> None:
+                 missions=None, *, autonomy: str = Autonomy.STANDARD, mcp=None,
+                 allowed_tools: frozenset[str] | None = None) -> None:
         """``missions`` is the Mission service, or None when there is not one.
 
         Typed loosely on purpose: this class needs exactly one method from it,
@@ -846,11 +847,24 @@ class ToolRegistry:
         registry asks it for exactly what it needs (``schemas()``,
         ``knows()``, ``describe_call()``, ``run_tool()``) and holds nothing
         else - app.mcp itself never imports anything from app.agent.
+
+        ``allowed_tools`` is a Skill's tool allowlist (app.agent.skills), or
+        None for the ordinary unrestricted conversation every prior phase
+        already built. Entries are exactly the names schemas() and run()
+        already use - a builtin tool's plain name, or an MCP tool's full
+        namespaced name ("mcp.<server_id>.<tool_name>"), so scoping to one
+        specific tool on one specific server needs no new naming scheme.
+        This is enforced in exactly two places: schemas() (the model is
+        never even offered a disallowed tool) and knows() (a hallucinated or
+        provider-quirk call to one is refused with the same clean
+        UNKNOWN_TOOL result AgentSession already gives a truly nonexistent
+        tool - not a new error shape, not a special case in session.py).
         """
         self._browser = browser
         self._limits = limits or ContextLimits()
         self._missions = missions
         self._mcp = mcp
+        self._allowed_tools = allowed_tools
         self._autonomy = autonomy if autonomy in (
             Autonomy.READ_ONLY, Autonomy.ASK_ALWAYS, Autonomy.STANDARD) else Autonomy.STANDARD
 
@@ -889,7 +903,17 @@ class ToolRegistry:
 
     # -- the sensitivity question ----------------------------------------
     def knows(self, name: str) -> bool:
-        """Is this a tool that exists? Asked before anything is announced."""
+        """Is this a tool that exists, and (when a Skill is running) one it
+        actually allows? Asked before anything is announced - a disallowed
+        tool is refused exactly like a nonexistent one, the same
+        UNKNOWN_TOOL result and the same "never even gets a step announced"
+        property AgentSession already gives a hallucinated tool name. There
+        is deliberately no separate "not permitted by this Skill" error
+        shape: from the model's perspective a tool outside its Skill's
+        allowlist simply does not exist right now.
+        """
+        if self._allowed_tools is not None and name not in self._allowed_tools:
+            return False
         if name in TOOL_NAMES:
             return True
         return bool(self._mcp is not None and name.startswith("mcp.") and self._mcp.knows(name))
@@ -1151,10 +1175,18 @@ class ToolRegistry:
         read-only MCP tools are currently connected and enabled. Called
         instead of the module-level TOOL_SCHEMAS wherever a session builds
         its request, so MCP tools appear and disappear as servers connect
-        and disconnect without any other code needing to know MCP exists."""
-        if self._mcp is None:
-            return list(TOOL_SCHEMAS)
-        return list(TOOL_SCHEMAS) + self._mcp.schemas()
+        and disconnect without any other code needing to know MCP exists.
+
+        When a Skill has an allowlist, this is where it actually takes
+        effect for the model: a disallowed tool is not merely refused if
+        called, it is never offered in the first place.
+        """
+        all_schemas = list(TOOL_SCHEMAS)
+        if self._mcp is not None:
+            all_schemas += self._mcp.schemas()
+        if self._allowed_tools is None:
+            return all_schemas
+        return [schema for schema in all_schemas if schema["name"] in self._allowed_tools]
 
     # -- running ---------------------------------------------------------
     def run(self, name: str, args: dict[str, Any]) -> ToolOutcome:
@@ -1167,7 +1199,15 @@ class ToolRegistry:
         division of responsibility a browser_click already has between
         assess() and _run_click. A write-classified MCP tool executes here
         precisely because getting here already means it was permitted.
+
+        The one exception is a Skill's tool allowlist: checked again here,
+        not only in knows(), so a direct run() call (this method is public,
+        and tests and any future caller may reach it without going through
+        AgentSession's knows()-then-assess()-then-run() sequence at all)
+        can never execute a tool outside the active Skill's scope either.
         """
+        if self._allowed_tools is not None and name not in self._allowed_tools:
+            raise ToolError(f"'{name}' is not permitted by the active Skill.")
         if name.startswith("mcp."):
             if self._mcp is None or not self._mcp.knows(name):
                 raise ToolError(f"Unknown tool '{name}'.")

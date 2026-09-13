@@ -25,7 +25,7 @@ import threading
 from pathlib import Path
 from typing import Any, Iterable, Sequence
 
-SCHEMA_VERSION = 15
+SCHEMA_VERSION = 16
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS history (
@@ -56,6 +56,26 @@ CREATE TABLE IF NOT EXISTS highlights (
     created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_highlights_created_at ON highlights(created_at DESC);
+
+-- Custom Skills only - a built-in Skill (app/agent/skills.py's
+-- BUILTIN_SKILLS) is a Python constant and never has a row here. That is
+-- the entire "built-in Skills are immutable" guarantee: there is nothing
+-- in this table to edit or delete for one, only to duplicate into a new
+-- custom row.
+CREATE TABLE IF NOT EXISTS skills (
+    id                  TEXT PRIMARY KEY,
+    name                TEXT NOT NULL,
+    description         TEXT NOT NULL DEFAULT '',
+    instructions        TEXT NOT NULL DEFAULT '',
+    allowed_tools       TEXT,                 -- JSON list, or NULL = unrestricted
+    output_schema       TEXT,                 -- JSON object, or NULL
+    preferred_provider  TEXT NOT NULL DEFAULT '',
+    preferred_model     TEXT NOT NULL DEFAULT '',
+    default_context_kinds TEXT NOT NULL DEFAULT '[]',
+    schema_version      INTEGER NOT NULL DEFAULT 1,
+    created_at          TEXT NOT NULL,
+    updated_at          TEXT NOT NULL
+);
 
 CREATE TABLE IF NOT EXISTS settings (
     key   TEXT PRIMARY KEY,
@@ -630,6 +650,22 @@ CREATE TABLE IF NOT EXISTS decision_alternatives (
         created_at TEXT NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_highlights_created_at ON highlights(created_at DESC);
+    """,
+    15: """
+    CREATE TABLE IF NOT EXISTS skills (
+        id                  TEXT PRIMARY KEY,
+        name                TEXT NOT NULL,
+        description         TEXT NOT NULL DEFAULT '',
+        instructions        TEXT NOT NULL DEFAULT '',
+        allowed_tools       TEXT,
+        output_schema       TEXT,
+        preferred_provider  TEXT NOT NULL DEFAULT '',
+        preferred_model     TEXT NOT NULL DEFAULT '',
+        default_context_kinds TEXT NOT NULL DEFAULT '[]',
+        schema_version      INTEGER NOT NULL DEFAULT 1,
+        created_at          TEXT NOT NULL,
+        updated_at          TEXT NOT NULL
+    );
     """,
 }
 
