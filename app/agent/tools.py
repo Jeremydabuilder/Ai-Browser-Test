@@ -24,9 +24,11 @@ from dataclasses import dataclass
 from typing import Any, Callable
 
 from app.agent.config import Autonomy, ContextLimits
+from app.browser import visual as visual_module
 from app.browser.controller import BrowserController, ScrollDirection
 from app.browser.futures import BrowserFuture, resolved
-from app.browser.results import ActionResult
+from app.browser.results import ActionError, ActionResult
+from app.browser.visual import VisualBudget
 # Data only - model.py holds no Qt, no database and no browser. The limit is
 # imported rather than restated so the schema the model reads and the rule the
 # store enforces can never drift apart.
@@ -479,7 +481,88 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
            "limit": {"type": "integer",
                      "description": "Maximum results to return. Defaults to 5."}},
           ["query"]),
+
+    # Phase 14 - visual computer-use FALLBACK. Only offered when a
+    # vision-capable provider is configured (see ToolRegistry.schemas) -
+    # never a default path. Use the structured tools above (browser_get_page,
+    # browser_click, browser_type by ref) first; reach for these only when
+    # structured element lookup has failed, the page is canvas/custom-
+    # rendered, or you have already decided structured tools cannot reach
+    # the control you need. Every coordinate is relative to the current
+    # page's own viewport only - there is no way to reach anything outside
+    # it (no Settings, no OS dialogs, no other application).
+    _tool("browser_visual_observe",
+          "See the current page as a screenshot, when structured tools cannot "
+          "reliably describe what is on it. Returns the image plus viewport "
+          "dimensions, the current URL and title, and a timestamp. Use this "
+          "FIRST in visual mode, before choosing coordinates to act on - never "
+          "guess coordinates from a structured snapshot instead. Screenshots "
+          "are not kept after this turn; call this again if you need a fresh "
+          "look after something changes.",
+          {"tab_id": _TAB}),
+
+    _tool("browser_visual_click",
+          "Click whatever is at this point in the CURRENT SCREENSHOT from "
+          "browser_visual_click's viewport (see browser_visual_observe). "
+          "Only use this after browser_visual_observe, and only when you are "
+          "reasonably confident what is at that point - if you are not sure, "
+          "ask the user rather than guessing. If this looks like it would "
+          "submit a form, send a message, place an order, pay for something, "
+          "delete something, upload a file, change an account setting, or "
+          "otherwise do something consequential, it is refused with a "
+          "CONFIRMATION_REQUIRED error UNLESS 'confirmed' is true - ask the "
+          "user in plain language and get a real yes before ever setting "
+          "confirmed to true.",
+          {"x": {"type": "integer", "description": "X coordinate in the viewport, "
+                                                   "from the last observation."},
+           "y": {"type": "integer", "description": "Y coordinate in the viewport, "
+                                                   "from the last observation."},
+           "confirmed": {"type": "boolean",
+                         "description": "Set true only after the user has "
+                                        "explicitly agreed to a sensitive action "
+                                        "you described to them. Defaults to false."},
+           "tab_id": _TAB},
+          ["x", "y"]),
+
+    _tool("browser_visual_focus",
+          "Focus (without clicking) whatever is at this viewport point - use "
+          "before browser_visual_type when you need to place the cursor in a "
+          "field a structured reference could not describe.",
+          {"x": {"type": "integer", "description": "X coordinate in the viewport."},
+           "y": {"type": "integer", "description": "Y coordinate in the viewport."},
+           "tab_id": _TAB},
+          ["x", "y"]),
+
+    _tool("browser_visual_type",
+          "Type into whatever element currently has focus - call "
+          "browser_visual_focus or browser_visual_click on a text field first. "
+          "Subject to the same confirmation rule as browser_visual_click for a "
+          "field that looks like a password or payment field.",
+          {"text": {"type": "string", "description": "Text to type."},
+           "confirmed": {"type": "boolean",
+                         "description": "Set true only after the user has "
+                                        "explicitly agreed, for a sensitive "
+                                        "field. Defaults to false."},
+           "tab_id": _TAB},
+          ["text"]),
+
+    _tool("browser_visual_scroll",
+          "Scroll the page while in visual mode. Same effect as browser_scroll "
+          "- call browser_visual_observe again afterwards to see the result.",
+          {"direction": {"type": "string", "enum": ["up", "down", "top", "bottom"],
+                         "description": "Defaults to down."},
+           "amount": {"type": "integer", "description": "Pixels. Defaults to about one screen."},
+           "tab_id": _TAB}),
 ]
+
+#: Visual-fallback tools (Phase 14). Exposed only when the active provider
+#: is vision-capable (see ToolRegistry.schemas) - an agent talking to a
+#: text-only model is never offered a tool whose whole point is reading a
+#: screenshot it cannot process.
+VISUAL_TOOL_NAMES = frozenset({
+    "browser_visual_observe", "browser_visual_click", "browser_visual_focus",
+    "browser_visual_type", "browser_visual_scroll",
+})
 
 TOOL_NAMES = {schema["name"] for schema in TOOL_SCHEMAS}
 
@@ -518,7 +601,12 @@ _HANDLERS = _handler_map()
 #: Tools that change only which tab is in front - no page effect, nothing to
 #: confirm. Listed explicitly so `assess` can fail closed on anything else.
 _UNCLASSIFIED_SAFE = {"browser_select_tab", "browser_close_tab",
-                      "browser_back", "browser_forward", "browser_reload"}
+                      "browser_back", "browser_forward", "browser_reload",
+                      # Moving focus without clicking or typing does nothing a
+                      # user would need to approve - same reasoning as the
+                      # structured API, which has no confirmable "focus" tool
+                      # at all.
+                      "browser_visual_focus"}
 
 #: Tools that write to the user's own local records and touch no web page.
 #:
@@ -538,10 +626,20 @@ LOCAL_WRITE_TOOLS = {"mission_save_finding", "mission_save_decision",
                      "mission_note_source", "mission_save_constraints",
                      "knowledge_search"}
 
+#: Tools whose sensitivity cannot be known until the coordinate is
+#: resolved on the page (Phase 14). assess() cannot classify these ahead
+#: of time - only run() can, once it has resolved what is actually at
+#: that point - so they are exempted from assess()'s classification here
+#: and instead fail closed inside their own handler (see
+#: _visual_write_action): a sensitive target is refused with
+#: CONFIRMATION_REQUIRED unless the model passes confirmed=true, which it
+#: may only do after the user has actually agreed.
+VISUAL_WRITE_TOOLS = {"browser_visual_click", "browser_visual_type"}
+
 #: Tools that only read. Used to skip confirmation checks entirely.
 READ_ONLY_TOOLS = {
     "browser_get_page", "browser_get_page_text", "browser_get_pdf_text", "browser_list_tabs",
-    "browser_find_elements",
+    "browser_find_elements", "browser_visual_observe", "browser_visual_scroll",
     "browser_wait_for_element", "browser_scroll", "browser_scroll_to_element",
 }
 
@@ -833,6 +931,14 @@ class ToolOutcome:
     mcp_future: BrowserFuture | None = None
     #: Short human-readable line for the activity log, e.g. 'Clicking "Search"'.
     activity: str = ""
+    #: Phase 14 - set only by browser_visual_observe. ``{"mime_type":...,
+    #: "data": <base64>}``, the same shape AgentSession.send()'s own
+    #: ``image`` parameter already uses. Carried separately from
+    #: ``immediate``/``data`` because an ActionResult/its JSON encoding
+    #: must stay a plain, loggable dict - the actual image bytes ride as
+    #: a real image content block in the tool_result (see AgentSession.
+    #: _record_result), never inlined as base64 text into that JSON.
+    image: dict[str, str] | None = None
 
 
 class ToolError(ValueError):
@@ -844,7 +950,8 @@ class ToolRegistry:
 
     def __init__(self, browser: BrowserController, limits: ContextLimits | None = None,
                  missions=None, *, autonomy: str = Autonomy.STANDARD, mcp=None,
-                 allowed_tools: frozenset[str] | None = None, knowledge=None) -> None:
+                 allowed_tools: frozenset[str] | None = None, knowledge=None,
+                 vision_capable: bool = False) -> None:
         """``missions`` is the Mission service, or None when there is not one.
 
         Typed loosely on purpose: this class needs exactly one method from it,
@@ -886,6 +993,19 @@ class ToolRegistry:
         #: unavailable/disabled - knowledge_search then simply reports no
         #: results (see _run_search) rather than failing.
         self._knowledge = knowledge
+        #: Phase 14 - whether the configured provider can process images
+        #: (see app.agent.config.provider_supports_images). Gates whether
+        #: the visual-fallback tools are even offered: a text-only
+        #: provider is never handed a tool whose entire point is reading a
+        #: screenshot it cannot see. Never overridden per-call - the model
+        #: cannot ask its way into visual tools a text-only provider can't
+        #: use.
+        self._vision_capable = vision_capable
+        #: Phase 14 per-task budget (see app.browser.visual.VisualBudget) -
+        #: bounds visual actions/screenshots/scrolls so a stuck agent
+        #: cannot turn "occasional fallback" into a runaway click loop.
+        #: Reset by whoever starts a new task (AgentSession.send).
+        self.visual_budget = VisualBudget()
         self._autonomy = autonomy if autonomy in (
             Autonomy.READ_ONLY, Autonomy.ASK_ALWAYS, Autonomy.STANDARD) else Autonomy.STANDARD
 
@@ -934,6 +1054,13 @@ class ToolRegistry:
         allowlist simply does not exist right now.
         """
         if self._allowed_tools is not None and name not in self._allowed_tools:
+            return False
+        if name in VISUAL_TOOL_NAMES and not self._vision_capable:
+            # Same rule schemas() applies - a visual tool is never even
+            # offered to a text-only provider, so it must not be "known"
+            # either (a model cannot be talked into calling a tool it was
+            # never told about, but run() also refuses it directly - see
+            # run() below - as defense in depth).
             return False
         if name in TOOL_NAMES:
             return True
@@ -999,6 +1126,19 @@ class ToolRegistry:
     def _raw_assess(self, name: str, args: dict[str, Any]) -> dict[str, Any]:
         if name in READ_ONLY_TOOLS:
             return {"level": "normal", "reasons": [], "requires_confirmation": False}
+        if name in VISUAL_WRITE_TOOLS:
+            # Cannot be classified here: there is no cached element for a
+            # coordinate the way a structured ref already has one (see
+            # BrowserController._known_element) - classifying it needs a
+            # page round trip. requires_confirmation is deliberately False;
+            # the actual fail-closed gate runs inside the handler itself
+            # once the coordinate has been resolved (see
+            # _visual_write_action), which refuses a sensitive target with
+            # CONFIRMATION_REQUIRED rather than ever silently confirming
+            # it here.
+            return {"level": "elevated",
+                    "reasons": ["visual target not yet resolved - classified once acted on"],
+                    "requires_confirmation": False}
         if name.startswith("mcp."):
             # McpConnectionManager.assess_call is where the actual decision
             # is made: PyBrowser's own classification (never the server's
@@ -1203,6 +1343,12 @@ class ToolRegistry:
         called, it is never offered in the first place.
         """
         all_schemas = list(TOOL_SCHEMAS)
+        if not self._vision_capable:
+            # Never offered to a text-only provider - there is nothing it
+            # could do with a tool whose entire point is reading a
+            # screenshot it cannot process (see the phase's provider-
+            # capability requirement).
+            all_schemas = [s for s in all_schemas if s["name"] not in VISUAL_TOOL_NAMES]
         if self._mcp is not None:
             all_schemas += self._mcp.schemas()
         if self._allowed_tools is None:
@@ -1229,6 +1375,10 @@ class ToolRegistry:
         """
         if self._allowed_tools is not None and name not in self._allowed_tools:
             raise ToolError(f"'{name}' is not permitted by the active Skill.")
+        if name in VISUAL_TOOL_NAMES and not self._vision_capable:
+            raise ToolError(
+                f"'{name}' requires a vision-capable provider. Visual interaction is not "
+                "available with the currently configured provider.")
         if name.startswith("mcp."):
             if self._mcp is None or not self._mcp.knows(name):
                 raise ToolError(f"Unknown tool '{name}'.")
@@ -1657,6 +1807,138 @@ class ToolRegistry:
     def _run_scroll_to_element(self, args: dict) -> ToolOutcome:
         return ToolOutcome(future=self._browser.scroll_to_element(
             self._string(args, "ref", required=True), self._tab(args)))
+
+    # -- Phase 14: visual computer-use fallback ---------------------------
+    # A screenshot never counts against the write-action budget below (it
+    # is read-only), but does count against its own MAX_SCREENSHOTS_PER_TASK.
+    def _run_visual_observe(self, args: dict) -> ToolOutcome:
+        tab_id = self._tab(args)
+        if not self.visual_budget.can_screenshot():
+            return ToolOutcome(immediate=_error(
+                "VISUAL_BUDGET_EXCEEDED",
+                f"This task has already taken {visual_module.MAX_SCREENSHOTS_PER_TASK} "
+                "visual observations.",
+                hint="Rely on the structured tools (browser_get_page) instead, "
+                     "or ask the user for help."),
+                activity="Looking at the page")
+        observation, error = visual_module.observe(self._browser, tab_id)
+        if observation is None:
+            return ToolOutcome(immediate=_error(
+                "SCRIPT_FAILED", error or "Could not capture the page."),
+                activity="Looking at the page")
+        self.visual_budget.record_screenshot()
+        payload = {"ok": True, **observation.to_dict()}
+        # run() already refuses this tool outright when not vision_capable
+        # (see run()'s defense-in-depth check) - reaching here means an
+        # image is always wanted.
+        return ToolOutcome(
+            immediate=payload,
+            image={"mime_type": observation.image.mime_type, "data": observation.image.base64},
+            activity="Looking at the page")
+
+    def _run_visual_scroll(self, args: dict) -> ToolOutcome:
+        if not self.visual_budget.can_scroll():
+            return ToolOutcome(immediate=_error(
+                "VISUAL_BUDGET_EXCEEDED",
+                f"This task has already scrolled {visual_module.MAX_SCROLLS_PER_TASK} "
+                "times in visual mode.",
+                hint="Ask the user for help if more scrolling is needed."),
+                activity="Scrolling")
+        self.visual_budget.record_scroll()
+        return self._run_scroll(args)
+
+    def _run_visual_focus(self, args: dict) -> ToolOutcome:
+        x = self._int(args, "x")
+        y = self._int(args, "y")
+        if x is None or y is None:
+            raise ToolError("'x' and 'y' are required.")
+        return ToolOutcome(future=self._browser.visual_focus_at(x, y, self._tab(args)),
+                           activity="Focusing a point on the page")
+
+    def _run_visual_click(self, args: dict) -> ToolOutcome:
+        return self._visual_write_action("click", args)
+
+    def _run_visual_type(self, args: dict) -> ToolOutcome:
+        return self._visual_write_action("type", args)
+
+    def _visual_write_action(self, action: str, args: dict) -> ToolOutcome:
+        """browser_visual_click / browser_visual_type: resolve -> classify
+        -> (act or fail closed), never act-then-classify.
+
+        assess() could not judge this call (see VISUAL_WRITE_TOOLS in
+        _raw_assess - there is no cached element for a coordinate the way
+        get_page_structure() caches one for a ref), so the fail-closed gate
+        lives here instead: the coordinate/focused element is resolved and
+        run through the exact same safety.classify_click/classify_type a
+        structured action already uses, and only THEN, if it turns out not
+        to need confirmation (or the caller already has it), does the
+        actual click/type ever reach the page. A sensitive target without
+        ``confirmed: true`` is refused, not performed - the model has to
+        get a real answer from the user and call this again, never silently
+        proceed on its own judgement.
+        """
+        if not self.visual_budget.can_act():
+            return ToolOutcome(immediate=_error(
+                "VISUAL_BUDGET_EXCEEDED",
+                f"This task has already performed {visual_module.MAX_VISUAL_ACTIONS_PER_TASK} "
+                "visual actions.",
+                hint="Ask the user for help rather than continuing to guess at coordinates."),
+                activity="Acting on the page")
+
+        tab_id = self._tab(args)
+        confirmed = self._bool(args, "confirmed", False)
+        x = y = None
+        if action == "click":
+            x = self._int(args, "x")
+            y = self._int(args, "y")
+            if x is None or y is None:
+                raise ToolError("'x' and 'y' are required.")
+            text = ""
+            inspect_future = self._browser.visual_inspect(x, y, tab_id)
+        else:
+            text = self._string(args, "text", required=True)
+            inspect_future = self._browser.visual_inspect_active(tab_id)
+
+        combined = BrowserFuture(f"visual_{action}")
+
+        def on_inspected(inspect_result: Any) -> None:
+            if inspect_result is None:
+                combined.set_result(None)
+                return
+            if not inspect_result.ok:
+                # Nothing resolvable at that point / no focused field -
+                # that failure IS the result. Never fall through to acting
+                # blindly when the target itself could not be identified.
+                combined.set_result(inspect_result)
+                return
+            element = inspect_result.data.get("element")
+            assessment = visual_module.classify_visual_target(element, action=action, text=text)
+            if assessment.requires_confirmation and not confirmed:
+                reason = assessment.reasons[0] if assessment.reasons else \
+                    "do something consequential"
+                combined.set_result(ActionResult(
+                    ok=False, action=f"visual_{action}",
+                    error=ActionError(
+                        code="CONFIRMATION_REQUIRED",
+                        message=f"This looks like it would {reason}. Ask the user to "
+                                "confirm in plain language, then call this tool again "
+                                "with confirmed set to true.",
+                        recoverable=True),
+                    page=inspect_result.page,
+                    sensitivity=assessment.to_dict(),
+                ))
+                return
+            self.visual_budget.record_action()
+            if action == "click":
+                act_future = self._browser.visual_click_at(x, y, tab_id)
+            else:
+                act_future = self._browser.visual_type_into_focused(text, tab_id)
+            act_future.then(combined.set_result)
+
+        inspect_future.then(on_inspected)
+        activity = "Clicking a point on the page" if action == "click" \
+            else "Typing into the focused field"
+        return ToolOutcome(future=combined, activity=activity)
 
     def _run_back(self, args: dict) -> ToolOutcome:
         return ToolOutcome(future=self._browser.go_back(self._tab(args)))

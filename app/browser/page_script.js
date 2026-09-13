@@ -383,9 +383,113 @@
     return null;
   }
 
-  /* --------------------------------------------------------------- action */
+  /* A form index computed straight from document.forms - the same shape
+     capture()'s formIndexOf produces from its own per-snapshot formNodes
+     array, but usable outside a snapshot. Visual targets (resolved by
+     coordinate, not by ref) have no snapshot to look their form up in. */
+  function formIndexOfEl(el) {
+    var owner = el.form || (el.closest ? el.closest("form") : null);
+    if (!owner) { return null; }
+    var forms = document.forms;
+    for (var i = 0; i < forms.length; i++) {
+      if (forms[i] === owner) { return i; }
+    }
+    return null;
+  }
+
+  /* ---------------------------------------------------------- visual ops
+     Coordinate-based fallback for pages structured tools cannot reliably
+     target (canvas, custom widgets, poor DOM semantics) - see
+     app/browser/visual.py. Deliberately reuses describe() unchanged: a
+     visually-resolved element is described in exactly the same shape a
+     structured ref is, so BrowserController can feed it into the same
+     safety.classify_click/classify_type Python already uses for every
+     other action. There is no separate, weaker classification path for
+     coordinates - that is the whole point.
+
+     Every one of these dispatches through the page's own JS execution
+     context (elementFromPoint, dispatchEvent, .focus(), a value setter) -
+     never through any OS-level input mechanism - so by construction this
+     cannot reach anything outside the current document: no Settings
+     dialog, no password prompt, no other application, no desktop chrome. */
   function act(request) {
     var op = request.op;
+
+    if (op === "visual_viewport") {
+      return {
+        status: "ok",
+        url: location.href,
+        title: document.title || "",
+        scroll_x: Math.round(window.scrollX),
+        scroll_y: Math.round(window.scrollY),
+        viewport_width: window.innerWidth,
+        viewport_height: window.innerHeight,
+        scroll_height: Math.round(document.documentElement.scrollHeight)
+      };
+    }
+
+    if (op === "visual_inspect_active") {
+      var activeEl = document.activeElement;
+      if (!activeEl || activeEl === document.body) { return { status: "no_element" }; }
+      return { status: "ok", element: describe(activeEl, null, formIndexOfEl(activeEl)) };
+    }
+
+    if (op === "visual_inspect" || op === "visual_click" || op === "visual_focus") {
+      var vx = request.x, vy = request.y;
+      var vel = document.elementFromPoint(vx, vy);
+      if (!vel) { return { status: "no_element" }; }
+      var vinfo = describe(vel, null, formIndexOfEl(vel));
+
+      if (op === "visual_inspect") {
+        return { status: "ok", element: vinfo, dom_revision: state.domRevision };
+      }
+      if (op === "visual_focus") {
+        if (typeof vel.focus === "function") {
+          try { vel.focus(); } catch (e) { /* not focusable - not fatal */ }
+        }
+        return { status: "ok", element: vinfo, dom_revision: state.domRevision };
+      }
+
+      // visual_click: synthetic pointer/mouse events carrying the exact
+      // viewport coordinates, so a canvas app reading event.clientX/Y sees a
+      // real click at that point - el.click() alone would not tell it where.
+      var clickOpts = { bubbles: true, cancelable: true, view: window, clientX: vx, clientY: vy };
+      ["pointerdown", "mousedown", "pointerup", "mouseup", "click"].forEach(function (type) {
+        try {
+          var EventCtor = (type.indexOf("pointer") === 0 && window.PointerEvent)
+            ? window.PointerEvent : MouseEvent;
+          vel.dispatchEvent(new EventCtor(type, clickOpts));
+        } catch (e) { /* some element/type combinations reject synthetic events */ }
+      });
+      if (typeof vel.focus === "function") {
+        try { vel.focus(); } catch (e) { /* not focusable - not fatal */ }
+      }
+      return { status: "ok", element: vinfo, dom_revision: state.domRevision };
+    }
+
+    if (op === "visual_type") {
+      var active = document.activeElement;
+      if (!active || active === document.body) { return { status: "no_element" }; }
+      var activeEditable = active.isContentEditable ||
+        ["input", "textarea"].indexOf(active.tagName.toLowerCase()) !== -1;
+      if (!activeEditable) { return { status: "not_editable", element: describe(active, null, null) }; }
+      var typedValue = request.text == null ? "" : String(request.text);
+      if (active.isContentEditable) {
+        active.textContent = typedValue;
+      } else {
+        var activeProto = active.tagName.toLowerCase() === "textarea"
+          ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;
+        var activeSetter = Object.getOwnPropertyDescriptor(activeProto, "value");
+        if (activeSetter && activeSetter.set) { activeSetter.set.call(active, typedValue); }
+        else { active.value = typedValue; }
+      }
+      active.dispatchEvent(new Event("input", { bubbles: true }));
+      active.dispatchEvent(new Event("change", { bubbles: true }));
+      return {
+        status: "ok", element: describe(active, null, formIndexOfEl(active)),
+        dom_revision: state.domRevision
+      };
+    }
 
     if (op === "scroll") {
       var before = window.scrollY;

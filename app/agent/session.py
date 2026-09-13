@@ -39,7 +39,7 @@ from typing import Any
 from PySide6.QtCore import QObject, QThread, QTimer, Signal, Slot
 
 from app.agent.claude_client import AgentResponse, ClaudeError, ClaudeTransport, ToolCall
-from app.agent.config import AgentConfig
+from app.agent.config import AgentConfig, provider_supports_images
 from app.agent.prompt import SYSTEM_PROMPT
 from app.agent import trace as tracing
 from app.agent.tools import ToolError, ToolRegistry
@@ -304,7 +304,8 @@ class AgentSession(QObject):
         #: set_tool_allowlist can rebuild" reasoning as missions/mcp above.
         self._knowledge = knowledge
         self._tools = ToolRegistry(browser, self.config.limits, missions,
-                                  autonomy=self.config.autonomy, mcp=mcp, knowledge=knowledge)
+                                  autonomy=self.config.autonomy, mcp=mcp, knowledge=knowledge,
+                                  vision_capable=provider_supports_images(self.config.provider))
 
         # -- agent state, deliberately separate from browser state -------
         self._messages: list[dict[str, Any]] = []
@@ -513,7 +514,8 @@ class AgentSession(QObject):
             return
         self._tools = ToolRegistry(self._browser, self.config.limits, self._missions,
                                    autonomy=self.config.autonomy, mcp=self._mcp,
-                                   allowed_tools=allowed_tools, knowledge=self._knowledge)
+                                   allowed_tools=allowed_tools, knowledge=self._knowledge,
+                                   vision_capable=provider_supports_images(self.config.provider))
 
     def cancel(self) -> None:
         """Stop the current task.
@@ -935,8 +937,17 @@ class AgentSession(QObject):
             else:
                 self._update_step(StepState.DONE)
                 self._record_step(call, description)
-            self._record_result(call.id, json.dumps(outcome.immediate, ensure_ascii=False),
-                                tool_name=call.name)
+            text_payload = json.dumps(outcome.immediate, ensure_ascii=False)
+            content: Any = text_payload
+            if outcome.image is not None and not refused:
+                # browser_visual_observe (Phase 14) only - see ToolOutcome.image.
+                content = [
+                    {"type": "text", "text": text_payload},
+                    {"type": "image", "source": {"type": "base64",
+                                                 "media_type": outcome.image["mime_type"],
+                                                 "data": outcome.image["data"]}},
+                ]
+            self._record_result(call.id, content, tool_name=call.name)
             self._advance()
             return
 
@@ -1137,8 +1148,16 @@ class AgentSession(QObject):
         return list(self._steps)
 
     # -- helpers ----------------------------------------------------------
-    def _record_result(self, tool_use_id: str, content: str, *,
+    def _record_result(self, tool_use_id: str, content: str | list, *,
                        is_error: bool = False, tool_name: str = "") -> None:
+        """``content`` is usually the plain JSON string every tool result
+        has always been. Phase 14's browser_visual_observe is the one
+        exception: when the provider is vision-capable, its content is a
+        list ``[{"type": "text", ...}, {"type": "image", ...}]`` - the same
+        image content-block shape AgentSession.send()'s own ``image``
+        parameter already puts in a user turn - so the screenshot actually
+        rides as an image the model can see, not as a base64 string typed
+        for it to read as text."""
         block: dict[str, Any] = {
             "type": "tool_result", "tool_use_id": tool_use_id, "content": content,
         }

@@ -144,13 +144,27 @@ _BROWSER_WRITE_TOOLS = frozenset({
     "browser_click", "browser_type", "browser_submit", "browser_select",
     "browser_set_checked",
 })
+#: Phase 14 - the visual computer-use FALLBACK tools. Only ever granted to
+#: the Browser Operator: it is the one role that browses and acts on
+#: pages at all, so it is the only role for which "structured tools
+#: failed, fall back to a screenshot" can ever be a sensible thing to do.
+#: A Researcher only reads; an Analyst/Writer/Critic never touch a page -
+#: none of them has any legitimate reason to click at a coordinate, and
+#: none is granted the tool that would let them. Still gated a second time
+#: by ToolRegistry.schemas() on the provider actually supporting vision -
+#: this allowlist alone does not turn visual tools on for a worker whose
+#: session was built against a text-only provider.
+_BROWSER_VISUAL_TOOLS = frozenset({
+    "browser_visual_observe", "browser_visual_click", "browser_visual_focus",
+    "browser_visual_type", "browser_visual_scroll",
+})
 
 ROLE_ALLOWED_TOOLS: dict[str, frozenset[str]] = {
     WorkerRole.PLANNER: frozenset(),
     WorkerRole.RESEARCHER: _BROWSER_READ_TOOLS | {
         "mission_save_finding", "mission_note_source", "mission_save_question"},
-    WorkerRole.BROWSER_OPERATOR: _BROWSER_READ_TOOLS | _BROWSER_WRITE_TOOLS | {
-        "mission_save_finding"},
+    WorkerRole.BROWSER_OPERATOR: _BROWSER_READ_TOOLS | _BROWSER_WRITE_TOOLS
+        | _BROWSER_VISUAL_TOOLS | {"mission_save_finding"},
     WorkerRole.ANALYST: frozenset({"mission_save_finding", "mission_save_question"}),
     WorkerRole.WRITER: frozenset({"mission_save_result"}),
     WorkerRole.CRITIC: frozenset({"mission_save_question"}),

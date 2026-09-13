@@ -146,6 +146,44 @@ class MainWindowWiringTests(unittest.TestCase):
         self.assertNotIn("browser_click", researcher_tools)
         self.assertIn("browser_get_page_text", researcher_tools)
 
+    def test_a_researcher_worker_is_never_offered_visual_fallback_tools(self) -> None:
+        """Phase 14: visual computer-use fallback is scoped to the Browser
+        Operator role only - a Researcher (or Analyst/Writer/Critic) has no
+        legitimate reason to click at a screen coordinate, and the same
+        ROLE_ALLOWED_TOOLS allowlist this class already enforces for
+        browser_click keeps it from ever being offered one."""
+        from app.agent.config import AgentConfig
+        from app.agent.tools import VISUAL_TOOL_NAMES, ToolRegistry
+        from app.missions.coordinator import ROLE_ALLOWED_TOOLS, WorkerRole
+
+        registry = ToolRegistry(
+            self.window.controller, allowed_tools=ROLE_ALLOWED_TOOLS[WorkerRole.RESEARCHER],
+            vision_capable=True)
+        names = {s["name"] for s in registry.schemas()}
+        self.assertFalse(names & VISUAL_TOOL_NAMES)
+
+    def test_a_browser_operator_worker_can_be_offered_visual_fallback_tools(self) -> None:
+        """The counterpart to the test above: the one role that browses
+        and acts on pages at all is the one role whose allowlist actually
+        includes the visual tools - still gated a second time on the
+        session's own vision_capable flag, not turned on unconditionally."""
+        from app.agent.tools import VISUAL_TOOL_NAMES, ToolRegistry
+        from app.missions.coordinator import ROLE_ALLOWED_TOOLS, WorkerRole
+
+        registry = ToolRegistry(
+            self.window.controller, allowed_tools=ROLE_ALLOWED_TOOLS[WorkerRole.BROWSER_OPERATOR],
+            vision_capable=True)
+        names = {s["name"] for s in registry.schemas()}
+        self.assertTrue(VISUAL_TOOL_NAMES.issubset(names))
+
+        # And without a vision-capable provider, the same role still gets
+        # none of them - the allowlist alone never turns visual tools on.
+        registry_no_vision = ToolRegistry(
+            self.window.controller, allowed_tools=ROLE_ALLOWED_TOOLS[WorkerRole.BROWSER_OPERATOR],
+            vision_capable=False)
+        names_no_vision = {s["name"] for s in registry_no_vision.schemas()}
+        self.assertFalse(names_no_vision & VISUAL_TOOL_NAMES)
+
     def test_worker_activity_lands_in_the_same_shared_mission_history(self) -> None:
         """Reuses MissionService.record_agent_step - never a private,
         worker-only activity log the user cannot see."""

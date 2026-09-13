@@ -51,6 +51,10 @@ class ErrorCode:
     SCRIPT_FAILED = "SCRIPT_FAILED"          # page script unavailable
     UNSUPPORTED = "UNSUPPORTED"
 
+    # Visual fallback (Phase 14).
+    CONFIRMATION_REQUIRED = "CONFIRMATION_REQUIRED"  # sensitive visual target; ask the user first
+    NO_ELEMENT_AT_POINT = "NO_ELEMENT_AT_POINT"
+
     # PDF context.
     NOT_A_PDF = "NOT_A_PDF"                  # tab is not showing a .pdf address
     PDF_EXTRACTION_FAILED = "PDF_EXTRACTION_FAILED"

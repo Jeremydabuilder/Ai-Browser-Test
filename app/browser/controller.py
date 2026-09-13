@@ -781,6 +781,140 @@ class BrowserController(QObject):
             return None, "The page could not be captured."
         return image, ""
 
+    # -- visual fallback ---------------------------------------------------
+    # A small, deliberately narrow coordinate-based vocabulary for pages
+    # structured tools cannot reliably reach (canvas apps, custom controls).
+    # See app/browser/visual.py, which is the only caller meant to use these
+    # directly - the agent-facing tools go through it, never through
+    # BrowserController by name. Every op dispatches through window.__pb (the
+    # same isolated-world script every structured action already uses), so
+    # there is no separate, weaker code path and no OS-level input mechanism
+    # anywhere in this call chain.
+
+    def visual_viewport(self, tab_id: int | None = None) -> BrowserFuture:
+        """URL, title, scroll position and dimensions - the metadata half of
+        a visual observation (see app.browser.visual.observe). Read-only."""
+        started = time.monotonic()
+        tab = self._tab_for(tab_id)
+        if tab is None:
+            return resolved("visual_viewport", self._no_tab("visual_viewport", started))
+        future = BrowserFuture("visual_viewport", self)
+
+        def on_result(raw: Any) -> None:
+            if not isinstance(raw, dict) or raw.get("status") != "ok":
+                self._finish(future, self._failure(
+                    "visual_viewport", tab, started, ErrorCode.SCRIPT_FAILED,
+                    "Could not read the page's current state."))
+                return
+            data = {key: raw.get(key) for key in (
+                "url", "title", "scroll_x", "scroll_y",
+                "viewport_width", "viewport_height", "scroll_height")}
+            self._finish(future, self._success("visual_viewport", tab, started, data=data))
+
+        self._call_page(tab, 'window.__pb.act({"op":"visual_viewport"})', on_result)
+        future.set_timeout(DEFAULT_TIMEOUT_MS, lambda: self._failure(
+            "visual_viewport", tab, started, ErrorCode.TIMEOUT,
+            "Timed out reading the page's state."))
+        return future
+
+    def viewport_size(self, tab_id: int | None = None) -> tuple[int, int]:
+        """The tab's rendered size in CSS pixels - available synchronously
+        from Qt, so a coordinate can be bounds-checked before it ever
+        reaches the page. Returns (0, 0) if there is no tab."""
+        tab = self._tab_for(tab_id)
+        if tab is None:
+            return (0, 0)
+        try:
+            size = tab.view.size()
+            return size.width(), size.height()
+        except Exception:  # noqa: BLE001
+            return (0, 0)
+
+    def visual_inspect(self, x: int, y: int, tab_id: int | None = None) -> BrowserFuture:
+        """What is at this viewport coordinate, in the same element-dict
+        shape a structured reference already produces - so its sensitivity
+        can be judged (safety.classify_click/classify_type) before anything
+        is done to it. Read-only: never clicks, focuses or types."""
+        return self._visual_op("visual_inspect", {"x": x, "y": y}, tab_id)
+
+    def visual_click_at(self, x: int, y: int, tab_id: int | None = None) -> BrowserFuture:
+        """Click whatever is at this viewport coordinate via synthetic
+        pointer/mouse events carrying that exact position - not el.click(),
+        so a canvas app reading event coordinates sees a real click there."""
+        return self._visual_op("visual_click", {"x": x, "y": y}, tab_id)
+
+    def visual_inspect_active(self, tab_id: int | None = None) -> BrowserFuture:
+        """What element currently has focus, in the same describe() shape
+        - used to classify a visual_type_into_focused call BEFORE it runs,
+        since typing (unlike click/focus) has no coordinate of its own to
+        resolve against."""
+        return self._visual_op("visual_inspect_active", {}, tab_id)
+
+    def visual_focus_at(self, x: int, y: int, tab_id: int | None = None) -> BrowserFuture:
+        """Focus whatever is at this viewport coordinate, without clicking
+        it - used ahead of visual_type_into_focused."""
+        return self._visual_op("visual_focus", {"x": x, "y": y}, tab_id, watch_effects=False)
+
+    def visual_type_into_focused(self, text: str, tab_id: int | None = None) -> BrowserFuture:
+        """Type into whatever element currently has focus - there is no
+        coordinate here by design: typing always follows a prior
+        visual_focus_at/visual_click_at, exactly like the structured
+        type tool follows a prior click/focus by ref."""
+        return self._visual_op("visual_type", {"text": text}, tab_id, watch_effects=False)
+
+    def _visual_op(
+        self, op: str, payload: dict[str, Any], tab_id: int | None, *, watch_effects: bool = True,
+    ) -> BrowserFuture:
+        started = time.monotonic()
+        tab = self._tab_for(tab_id)
+        if tab is None:
+            return resolved(op, self._no_tab(op, started))
+        if "x" in payload:
+            width, height = self.viewport_size(tab_id)
+            x, y = payload["x"], payload["y"]
+            if width and height and not (0 <= x < width and 0 <= y < height):
+                return resolved(op, self._failure(
+                    op, tab, started, ErrorCode.INVALID_REF,
+                    f"({x}, {y}) is outside the visible page area ({width}x{height}). "
+                    "Visual actions are confined to the current page's viewport.",
+                    recoverable=False))
+
+        future = BrowserFuture(op, self)
+        url_before = tab.url().toString()
+        request = {"op": op, **payload}
+        payload_json = json.dumps(request)
+
+        def on_result(raw: Any) -> None:
+            if not isinstance(raw, dict):
+                self._finish(future, self._failure(
+                    op, tab, started, ErrorCode.SCRIPT_FAILED,
+                    "The page could not be reached for this action. It may still be loading."))
+                return
+            status = raw.get("status", "")
+            if status == "no_element":
+                self._finish(future, self._failure(
+                    op, tab, started, ErrorCode.UNKNOWN_REF,
+                    "There is nothing at that point on the page.", recoverable=True))
+                return
+            if status == "not_editable":
+                self._finish(future, self._failure(
+                    op, tab, started, ErrorCode.ELEMENT_NOT_EDITABLE,
+                    "The currently focused element cannot accept typed text.",
+                    recoverable=True))
+                return
+            if status != "ok":
+                self._finish(future, self._failure(
+                    op, tab, started, ErrorCode.SCRIPT_FAILED, "The visual action failed."))
+                return
+            data = {"element": raw["element"]} if "element" in raw else {}
+            effects = Effects(url_before=url_before, url_after=tab.url().toString())
+            self._finish(future, self._success(op, tab, started, effects=effects, data=data))
+
+        self._call_page(tab, f"window.__pb.act({payload_json})", on_result)
+        future.set_timeout(DEFAULT_TIMEOUT_MS, lambda: self._failure(
+            op, tab, started, ErrorCode.TIMEOUT, "The visual action did not complete in time."))
+        return future
+
     # -- public: waiting --------------------------------------------------
     def wait_for_load(self, tab_id: int | None = None, *, timeout_ms: int = DEFAULT_TIMEOUT_MS) -> BrowserFuture:
         """Resolve when the tab is not loading (immediately if it already isn't)."""
