@@ -91,22 +91,28 @@ class MissionStore:
         self._db = db
 
     # -- missions --------------------------------------------------------
-    def create(self, title: str, goal: str) -> Mission | None:
-        """Insert a Mission. Returns it, or None if the goal was empty."""
+    def create(self, title: str, goal: str, *, workspace_id: str | None = None) -> Mission | None:
+        """Insert a Mission. Returns it, or None if the goal was empty.
+
+        ``workspace_id`` is a preference for where this Mission shows up
+        by default (see app/workspaces/) - None means global, visible
+        everywhere, exactly a pre-Phase-17 Mission's only possible state.
+        """
         goal = clean_goal(goal)
         title = clean_title(title)
         if not goal or not title:
             return None
         stamp = now()
         cursor = self._db.execute(
-            "INSERT INTO missions (title, goal, status, created_at, updated_at) "
-            "VALUES (?, ?, ?, ?, ?)",
-            (title, goal, MissionStatus.ACTIVE, stamp, stamp),
+            "INSERT INTO missions (title, goal, status, created_at, updated_at, workspace_id) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (title, goal, MissionStatus.ACTIVE, stamp, stamp, workspace_id),
         )
         if cursor is None:                     # database closed during shutdown
             return None
         return Mission(id=int(cursor.lastrowid), title=title, goal=goal,
-                       status=MissionStatus.ACTIVE, created_at=stamp, updated_at=stamp)
+                       status=MissionStatus.ACTIVE, created_at=stamp, updated_at=stamp,
+                       workspace_id=workspace_id)
 
     # -- branching --------------------------------------------------------
     #
@@ -182,7 +188,7 @@ class MissionStore:
     #: the failure mode of soft delete everywhere it has ever been done badly.
     _MISSION_COLUMNS = ("SELECT id, title, goal, status, created_at, updated_at, "
                         "parent_id, branch_name, progress, result, follow_ups, "
-                        "constraints "
+                        "constraints, workspace_id "
                         "FROM missions ")
     _ALIVE = "deleted_at = ''"
 
@@ -232,11 +238,27 @@ class MissionStore:
                        decision=decision, challenges=challenges, actions=actions,
                        questions=asked)
 
-    def recent(self, limit: int = 20, *, with_pages: bool = False) -> list[Mission]:
-        """Missions, most recently touched first."""
+    def recent(self, limit: int = 20, *, with_pages: bool = False,
+              workspace_id: str | None = None, include_global: bool = True) -> list[Mission]:
+        """Missions, most recently touched first.
+
+        ``workspace_id=None`` (the default) is unfiltered - every Mission,
+        exactly the only behaviour that existed before Phase 17. Passing a
+        workspace id scopes the list to Missions that belong to it, plus
+        (unless ``include_global=False``) global ones - see
+        app/workspaces/ and Mission.workspace_id.
+        """
+        where = f"WHERE {self._ALIVE}"
+        params: list = []
+        if workspace_id is not None:
+            if include_global:
+                where += " AND (workspace_id = ? OR workspace_id IS NULL)"
+            else:
+                where += " AND workspace_id = ?"
+            params.append(workspace_id)
         rows = self._db.query(
-            self._MISSION_COLUMNS + f"WHERE {self._ALIVE} "
-            "ORDER BY updated_at DESC, id DESC LIMIT ?", (limit,))
+            self._MISSION_COLUMNS + where +
+            " ORDER BY updated_at DESC, id DESC LIMIT ?", (*params, limit))
         return [
             Mission(**self._mission_kwargs(row),
                     pages=tuple(self.pages(row["id"])) if with_pages else (),

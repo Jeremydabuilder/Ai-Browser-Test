@@ -11,6 +11,7 @@ from typing import Callable
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
+    QCheckBox,
     QDialog,
     QHBoxLayout,
     QLabel,
@@ -35,11 +36,17 @@ class KnowledgeSearchDialog(QDialog):
     Mission Library, ...); this dialog only ever picks a result."""
 
     def __init__(self, knowledge_index, parent: QWidget | None = None, *,
-                 on_open: Callable[[object], None] | None = None) -> None:
+                 on_open: Callable[[object], None] | None = None,
+                 current_workspace_id: str | None = None,
+                 current_workspace_name: str = "this workspace") -> None:
         super().__init__(parent)
         self._knowledge = knowledge_index
         self._on_open = on_open
         self._results: list = []
+        #: Phase 17: which Workspace to scope the "this workspace only"
+        #: checkbox to - None (no workspaces feature in play) just hides
+        #: the checkbox rather than scoping to nothing.
+        self._current_workspace_id = current_workspace_id
         self.setWindowTitle("Search History & Knowledge")
         self.resize(640, 440)
         m = theme.METRICS
@@ -59,6 +66,14 @@ class KnowledgeSearchDialog(QDialog):
         self.search_box.setPlaceholderText("Search your history and knowledge…")
         self.search_box.textChanged.connect(self._on_query_changed)
         layout.addWidget(self.search_box)
+
+        self.workspace_only_checkbox = None
+        if self._current_workspace_id is not None:
+            self.workspace_only_checkbox = QCheckBox(
+                f"Search only {current_workspace_name}", self)
+            self.workspace_only_checkbox.toggled.connect(
+                lambda _checked: self._on_query_changed(self.search_box.text()))
+            layout.addWidget(self.workspace_only_checkbox)
 
         self.list_widget = QListWidget(self)
         self.list_widget.itemActivated.connect(self._on_activated)
@@ -84,7 +99,10 @@ class KnowledgeSearchDialog(QDialog):
         if not text.strip():
             return
         chunks = self._knowledge.store.all_chunks()
-        self._results = search(chunks, text, limit=20)
+        workspace_ids = None
+        if self.workspace_only_checkbox is not None and self.workspace_only_checkbox.isChecked():
+            workspace_ids = (self._current_workspace_id, None)
+        self._results = search(chunks, text, limit=20, workspace_ids=workspace_ids)
         for result in self._results:
             chunk = result.chunk
             label = SourceType.LABELS.get(chunk.source_type, chunk.source_type)

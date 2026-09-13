@@ -44,6 +44,12 @@ class Chunk:
     parent_id: str | None = None
     title: str = ""
     location: str = ""
+    #: Phase 17: which Workspace this was indexed under, or None for
+    #: content with no particular workspace (everything indexed before
+    #: Phase 17, and anything indexed while no workspace was current) -
+    #: see app/workspaces/. A scoping hint for search, never a security
+    #: boundary - all indexed content still lives in one local database.
+    workspace_id: str | None = None
 
 
 @dataclass(frozen=True)

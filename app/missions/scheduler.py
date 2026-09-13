@@ -68,6 +68,12 @@ class ScheduledTask:
     write_attempted: bool
     created_at: str
     updated_at: str
+    #: Phase 17: which Workspace this scheduled task fires in - see
+    #: app/workspaces/. None = global (every scheduled task before
+    #: Workspaces existed). A firing TaskRunner run must never silently
+    #: execute in the wrong workspace/session just because a different one
+    #: happens to be active when the timer goes off - see TaskRunner.
+    workspace_id: str | None = None
 
 
 def _parse_time_of_day(value: str) -> tuple[int, int]:

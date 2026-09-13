@@ -25,7 +25,7 @@ import threading
 from pathlib import Path
 from typing import Any, Callable, Iterable, Sequence
 
-SCHEMA_VERSION = 23
+SCHEMA_VERSION = 24
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS history (
@@ -77,6 +77,16 @@ CREATE TABLE IF NOT EXISTS skills (
     -- app/automation/model.py's RecordedWorkflow.as_dict(). NULL for an
     -- ordinary prompt-only Skill - most Skills never touch this column.
     workflow_json       TEXT,
+    -- Phase 17: the workspace a recorded workflow was captured in (NULL
+    -- for an ordinary Skill, or a workflow recorded before workspaces
+    -- existed) - see app/workspaces/. Purely a "remembers where it was
+    -- taught" fact, checked at run time so a workflow never silently
+    -- replays in the wrong cookie/session context; never a hard lock.
+    workflow_workspace_id TEXT,
+    -- Phase 17: optional visibility scoping - NULL/absent = global (every
+    -- workspace sees this Skill, today's default and by far the common
+    -- case). A JSON list of workspace ids restricts it to just those.
+    workspace_ids_json  TEXT,
     created_at          TEXT NOT NULL,
     updated_at          TEXT NOT NULL
 );
@@ -101,6 +111,10 @@ CREATE TABLE IF NOT EXISTS scheduled_tasks (
     last_duration_s     REAL,
     last_error          TEXT,
     write_attempted     INTEGER NOT NULL DEFAULT 0,
+    -- Phase 17: which workspace this scheduled task runs in - NULL = the
+    -- workspace active when it was scheduled is no longer known (an
+    -- upgraded profile) and it runs globally. See app/workspaces/.
+    workspace_id        TEXT,
     created_at          TEXT NOT NULL,
     updated_at          TEXT NOT NULL,
     FOREIGN KEY (mission_id) REFERENCES missions(id) ON DELETE SET NULL
@@ -142,6 +156,8 @@ CREATE TABLE IF NOT EXISTS watches (
     state                 TEXT NOT NULL DEFAULT 'active',
     failure_count         INTEGER NOT NULL DEFAULT 0,
     mission_id            INTEGER,
+    -- Phase 17: see scheduled_tasks.workspace_id above - same meaning.
+    workspace_id          TEXT,
     created_at            TEXT NOT NULL,
     updated_at            TEXT NOT NULL,
     FOREIGN KEY (mission_id) REFERENCES missions(id) ON DELETE SET NULL
@@ -246,6 +262,12 @@ CREATE TABLE IF NOT EXISTS knowledge_chunks (
     content_hash  TEXT NOT NULL,
     timestamp     TEXT NOT NULL,
     embedding     TEXT NOT NULL,
+    -- Phase 17: which workspace this chunk's source was visited/created
+    -- in - NULL for anything indexed before workspaces existed, which
+    -- reads as "no particular workspace" rather than a guess. Lets a
+    -- search scope itself to "just this workspace" without silently
+    -- mixing in unrelated context - see app/knowledge/retrieval.py.
+    workspace_id  TEXT,
     created_at    TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_knowledge_chunks_source
@@ -295,7 +317,11 @@ CREATE TABLE IF NOT EXISTS missions (
     progress   TEXT NOT NULL DEFAULT '',
     result     TEXT NOT NULL DEFAULT '',
     follow_ups TEXT NOT NULL DEFAULT '[]',
-    constraints TEXT NOT NULL DEFAULT '[]'
+    constraints TEXT NOT NULL DEFAULT '[]',
+    -- Phase 17: NULL = global (visible/relevant everywhere, the default
+    -- and the only value every pre-Phase-17 Mission has); a workspace id
+    -- scopes a Mission to just that workspace. See app/workspaces/.
+    workspace_id TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_missions_updated ON missions(updated_at DESC);
 
@@ -505,6 +531,20 @@ CREATE TABLE IF NOT EXISTS ghost_run_effects (
 );
 CREATE INDEX IF NOT EXISTS idx_ghost_run_effects
     ON ghost_run_effects(ghost_run_id, position);
+
+-- Phase 17: Browser Workspaces. One row is one Workspace; almost everything
+-- about it (icon/color, homepage, provider preference, MCP visibility,
+-- isolated-profile flag, and its whole serialized tab/session state) lives
+-- in data_json (see app/workspaces/model.py's Workspace.as_dict()) rather
+-- than one column each - id/name/created_at/last_used_at are pulled out
+-- only because they are what a workspace list actually queries by.
+CREATE TABLE IF NOT EXISTS workspaces (
+    id            TEXT PRIMARY KEY,
+    name          TEXT NOT NULL,
+    created_at    REAL NOT NULL,
+    last_used_at  REAL NOT NULL,
+    data_json     TEXT NOT NULL
+);
 """
 
 #: How a profile at version N becomes a profile at version N+1.
@@ -557,6 +597,35 @@ def _migrate_22_add_skills_workflow_column(conn: sqlite3.Connection) -> None:
     existing = {row[1] for row in conn.execute("PRAGMA table_info(skills)")}
     if "workflow_json" not in existing:
         conn.execute("ALTER TABLE skills ADD COLUMN workflow_json TEXT")
+
+
+def _migrate_23_add_workspace_columns(conn: sqlite3.Connection) -> None:
+    """Phase 17: Workspaces. Creates the ``workspaces`` table (idempotent,
+    IF NOT EXISTS is fine even replayed) and adds every table's new
+    ``workspace_id`` (or, for skills, ``workflow_workspace_id`` +
+    ``workspace_ids_json``) column the same tolerant way
+    _migrate_20_add_client_columns already established: ALTER TABLE ADD
+    COLUMN has no IF NOT EXISTS, and a test profile built via a fresh
+    Database(path) already has the current _SCHEMA shape before being
+    wound back to an older user_version, so this must survive being
+    replayed against a table that already has the column."""
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS workspaces (
+            id            TEXT PRIMARY KEY,
+            name          TEXT NOT NULL,
+            created_at    REAL NOT NULL,
+            last_used_at  REAL NOT NULL,
+            data_json     TEXT NOT NULL
+        )
+    """)
+    for table, column in (
+        ("missions", "workspace_id"), ("scheduled_tasks", "workspace_id"),
+        ("watches", "workspace_id"), ("knowledge_chunks", "workspace_id"),
+        ("skills", "workflow_workspace_id"), ("skills", "workspace_ids_json"),
+    ):
+        existing = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+        if column not in existing:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} TEXT")
 
 
 _MIGRATIONS: dict[int, str | Callable[[sqlite3.Connection], None]] = {
@@ -1023,6 +1092,7 @@ CREATE TABLE IF NOT EXISTS decision_alternatives (
     CREATE INDEX IF NOT EXISTS idx_knowledge_chunks_parent ON knowledge_chunks(parent_id);
     """,
     22: _migrate_22_add_skills_workflow_column,
+    23: _migrate_23_add_workspace_columns,
 }
 
 _STOP = object()

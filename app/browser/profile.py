@@ -44,6 +44,7 @@ class BrowserProfile(QObject):
         # Naming the profile (rather than using the default off-the-record one)
         # is what makes cookies and local storage survive a restart.
         self._profile = QWebEngineProfile(storage_name, self)
+        self._storage_name = storage_name
         self._configure_storage()
         self._configure_identity()
         self._configure_settings()
@@ -83,8 +84,23 @@ class BrowserProfile(QObject):
     # -- storage ---------------------------------------------------------
     def _configure_storage(self) -> None:
         profile = self._profile
-        profile.setPersistentStoragePath(str(profile_storage_path()))
-        profile.setCachePath(str(cache_path()))
+        # "default" keeps the exact, historical path - existing installs'
+        # cookies/history must not appear to vanish under a new subfolder
+        # the moment Phase 17 (Workspaces) shipped. Any OTHER storage name
+        # (an isolated-profile Workspace - see app/workspaces/profiles.py)
+        # gets its own subdirectory: two QWebEngineProfile instances must
+        # never be pointed at the same on-disk persistent-storage path at
+        # once, or "isolated" would be a lie and Chromium's own storage
+        # backing files could contend with each other.
+        storage_root = profile_storage_path()
+        cache_root = cache_path()
+        if self._storage_name != "default":
+            storage_root = storage_root / "workspaces" / self._storage_name
+            storage_root.mkdir(parents=True, exist_ok=True)
+            cache_root = cache_root / "workspaces" / self._storage_name
+            cache_root.mkdir(parents=True, exist_ok=True)
+        profile.setPersistentStoragePath(str(storage_root))
+        profile.setCachePath(str(cache_root))
         profile.setDownloadPath(str(downloads_path()))
         profile.setHttpCacheType(QWebEngineProfile.HttpCacheType.DiskHttpCache)
 

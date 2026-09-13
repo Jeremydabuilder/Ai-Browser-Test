@@ -21,6 +21,8 @@ KEY_VERTICAL_TABS_WIDTH = "vertical_tabs_width"
 KEY_VERTICAL_TABS_COLLAPSED = "vertical_tabs_collapsed"
 KEY_PINNED_TABS = "pinned_tabs"
 KEY_TAB_GROUPS = "tab_groups"
+#: Phase 17: which Workspace to restore on launch - see app/workspaces/.
+KEY_CURRENT_WORKSPACE_ID = "current_workspace_id"
 #: Whether the PyBrowser MCP Server (Phase 11 - External AI Access) should
 #: be listening. Off by default: a brand-new profile must never expose it.
 KEY_MCP_SERVER_ENABLED = "mcp_server_enabled"
@@ -267,6 +269,17 @@ class SettingsStore:
     def pinned_tab_urls(self, urls: list[str]) -> None:
         clean = [url for url in urls if isinstance(url, str) and url][:MAX_PINNED_TABS]
         self.set(KEY_PINNED_TABS, json.dumps(clean))
+
+    # -- workspaces -----------------------------------------------------------
+    @property
+    def current_workspace_id(self) -> str:
+        from app.workspaces.model import DEFAULT_WORKSPACE_ID
+
+        return self.get(KEY_CURRENT_WORKSPACE_ID, "") or DEFAULT_WORKSPACE_ID
+
+    @current_workspace_id.setter
+    def current_workspace_id(self, workspace_id: str) -> None:
+        self.set(KEY_CURRENT_WORKSPACE_ID, workspace_id)
 
     # -- tab groups -----------------------------------------------------------
     @property

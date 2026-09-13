@@ -29,6 +29,7 @@ def _row_to_chunk(row) -> "Chunk":
         location=row["location"], text=row["text"], content_hash=row["content_hash"],
         timestamp=row["timestamp"], embedding=tuple(json.loads(row["embedding"])),
         created_at=row["created_at"],
+        workspace_id=row["workspace_id"] if "workspace_id" in row.keys() else None,
     )
 
 
@@ -45,6 +46,7 @@ class KnowledgeStore:
         self, *, source_type: str, source_id: str, chunk_index: int, text: str,
         content_hash: str, embedding: tuple[float, ...], timestamp: str,
         parent_id: str | None = None, title: str = "", location: str = "",
+        workspace_id: str | None = None,
     ) -> None:
         """Replace the chunk at (source_type, source_id, chunk_index) if
         one exists, else insert. This is what makes re-indexing the same
@@ -58,17 +60,19 @@ class KnowledgeStore:
         if existing is not None:
             self._db.execute(
                 "UPDATE knowledge_chunks SET text = ?, content_hash = ?, embedding = ?, "
-                "timestamp = ?, parent_id = ?, title = ?, location = ? WHERE id = ?",
+                "timestamp = ?, parent_id = ?, title = ?, location = ?, workspace_id = ? "
+                "WHERE id = ?",
                 (text[:MAX_TEXT_CHARS], content_hash, embedding_json, timestamp, parent_id,
-                 title[:MAX_TITLE_CHARS], location[:MAX_LOCATION_CHARS], existing["id"]))
+                 title[:MAX_TITLE_CHARS], location[:MAX_LOCATION_CHARS], workspace_id,
+                 existing["id"]))
         else:
             self._db.execute(
                 "INSERT INTO knowledge_chunks (source_type, source_id, parent_id, "
                 "chunk_index, title, location, text, content_hash, timestamp, embedding, "
-                "created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "workspace_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (source_type, source_id, parent_id, chunk_index, title[:MAX_TITLE_CHARS],
                  location[:MAX_LOCATION_CHARS], text[:MAX_TEXT_CHARS], content_hash,
-                 timestamp, embedding_json, _now()))
+                 timestamp, embedding_json, workspace_id, _now()))
 
     def existing_hash(self, source_type: str, source_id: str, chunk_index: int) -> str | None:
         row = self._db.query_one(

@@ -49,6 +49,10 @@ from app.ui.dialogs import BookmarksDialog, HistoryDialog, confirm_destructive
 from app.ui.find_bar import FindBar
 from app.ui.navigation_bar import NavigationBar
 from app.utils import urls as url_utils
+from app.workspaces import TabRecord, TabState, Workspace, WorkspaceStore
+from app.workspaces.model import new_workspace
+from app.workspaces.profiles import WorkspaceProfileManager
+from app.workspaces.reassign import reassign_recorded_workflows, reassign_workspace_data
 
 
 class MainWindow(QMainWindow):
@@ -77,6 +81,16 @@ class MainWindow(QMainWindow):
         self.bookmarks = BookmarkStore(database)
         self.highlights = HighlightStore(database)
         self.skills = SkillStore(database)
+        #: Phase 17: Workspaces - see app/workspaces/. Built before the tab
+        #: strip below so the very first tabs opened can already be scoped
+        #: to whichever workspace is being restored.
+        self.workspaces = WorkspaceStore(database)
+        self._workspace_profiles = WorkspaceProfileManager(profile)
+        self._current_workspace_id = self.settings.current_workspace_id
+        if self.workspaces.get(self._current_workspace_id) is None:
+            from app.workspaces.model import DEFAULT_WORKSPACE_ID
+
+            self._current_workspace_id = DEFAULT_WORKSPACE_ID
         #: Semantic History / Local RAG (Phase 13) - off until the user
         #: opts in (self.settings.semantic_history_enabled); see
         #: app/knowledge/index.py, which no-ops every indexing call while
@@ -89,6 +103,12 @@ class MainWindow(QMainWindow):
 
         self.nav_bar = NavigationBar(self)
         self.addToolBar(self.nav_bar)
+        from app.ui.workspace_switcher import WorkspaceSwitcher
+
+        self.workspace_switcher = WorkspaceSwitcher(
+            self, on_select=self.switch_workspace,
+            on_new=self._new_workspace, on_manage=self._manage_workspaces)
+        self.nav_bar.addWidget(self.workspace_switcher)
 
         self.tabs = TabManager(profile, self.settings.new_tab_url(), self)
         # The new-tab page reads history and bookmarks through this callback;
@@ -139,7 +159,8 @@ class MainWindow(QMainWindow):
         from app.missions.task_runner import TaskRunner
 
         self.task_runner = TaskRunner(
-            self.scheduled_tasks, self.missions, self._ensure_agent_session, self)
+            self.scheduled_tasks, self.missions, self._ensure_agent_session, self,
+            workspace_switcher=self.switch_workspace)
 
         #: Page Watches (Phase 8) - reuses the TaskRunner's own timer (see
         #: TaskRunner.timer) rather than a second background timing system.
@@ -219,12 +240,28 @@ class MainWindow(QMainWindow):
         self._connect_signals()
         self._install_shortcuts()
 
-        self._restore_pinned_tabs()
+        _current_workspace = self.workspaces.get(self._current_workspace_id)
+        if _current_workspace is not None:
+            self._apply_workspace_environment(_current_workspace)
 
-        for url in start_urls or [self.settings.new_tab_url()]:
-            self.tabs.new_tab(url)
+        if (start_urls is None and _current_workspace is not None
+                and not _current_workspace.tab_state.is_empty):
+            # A workspace remembers its own tabs/pinned/groups in full (see
+            # app/workspaces/model.py's TabState) - once it has actually
+            # captured a session, that supersedes the older, global pinned-
+            # tabs/tab-groups Settings below for restoring it. A profile
+            # that pre-dates Phase 17 (or simply has not switched/closed
+            # with a workspace active yet) has an empty TabState here and
+            # falls straight through to the exact old behaviour, unchanged.
+            self._restore_tab_state(_current_workspace.tab_state)
+        else:
+            self._restore_pinned_tabs()
 
-        self._restore_groups()
+            for url in start_urls or [self.settings.new_tab_url()]:
+                self.tabs.new_tab(url)
+
+            self._restore_groups()
+        self._refresh_workspace_switcher()
         self._apply_tab_layout()
         self._tabs_splitter.splitterMoved.connect(self._on_tabs_splitter_moved)
 
@@ -395,13 +432,15 @@ class MainWindow(QMainWindow):
         self.tabs.page_visited.connect(self.history.add_visit)
         self.tabs.page_title_resolved.connect(self.history.update_title)
         self.tabs.page_visited.connect(
-            lambda url, title: self.knowledge_index.index_history_visit(url, title))
+            lambda url, title: self.knowledge_index.index_history_visit(
+                url, title, workspace_id=self._current_workspace_id))
         # A title often resolves after page_visited already fired with a
         # placeholder - re-index once the real one lands so history search
         # is not stuck matching only the URL. Same content_hash-based
         # dedup as everywhere else makes a redundant call here harmless.
         self.tabs.page_title_resolved.connect(
-            lambda url, title: self.knowledge_index.index_history_visit(url, title))
+            lambda url, title: self.knowledge_index.index_history_visit(
+                url, title, workspace_id=self._current_workspace_id))
         self.tabs.page_visited.connect(self._index_pdf_visit)
         # Closing the last tab closes the window, like Chrome.
         self.tabs.all_tabs_closed.connect(self.close)
@@ -607,8 +646,19 @@ class MainWindow(QMainWindow):
                         parent=self.missions.parent_of(mission.id),
                         ghost_runs=self.missions.ghost_runs(mission.id)),
                     total=self.missions.store.count())
-            found = self.missions.search(query)
             store = self.missions.store
+            # Phase 17: "workspace:current" / "workspace:mine" scopes the
+            # list to this workspace (plus global Missions) - the Mission
+            # Library's existing search box doubles as the "current
+            # workspace / all workspaces" toggle the brief asks for,
+            # rather than a second control bolted onto the page template.
+            normalized = query.strip().lower()
+            if normalized in ("workspace:current", "workspace:mine"):
+                found = self.missions.recent(limit=200, workspace_id=self._current_workspace_id)
+            elif normalized == "workspace:all":
+                found = self.missions.recent(limit=200)
+            else:
+                found = self.missions.search(query)
             return LibraryData(
                 missions=[summarise(m,
                                     findings=store.finding_count(m.id),
@@ -1039,7 +1089,8 @@ class MainWindow(QMainWindow):
         from app.agent.skills import Skill
 
         skill = Skill(id=f"workflow-{uuid.uuid4().hex[:12]}", name=name,
-                     description=description, instructions="", workflow=final_workflow)
+                     description=description, instructions="", workflow=final_workflow,
+                     workflow_workspace_id=self._current_workspace_id)
         self.skills.save(skill)
         self._show_status(f"Automation saved: {name}")
 
@@ -1058,6 +1109,8 @@ class MainWindow(QMainWindow):
         if session.busy:
             self._show_status("Py is busy; cannot run an automation right now.")
             return
+        if not self._confirm_workflow_workspace(skill):
+            return
         workflow = skill.workflow
         dialog = RunWorkflowDialog(skill.name, workflow.parameters, self)
         if dialog.exec() != dialog.DialogCode.Accepted:
@@ -1071,6 +1124,39 @@ class MainWindow(QMainWindow):
             self._workflow_runner.completed.connect(self._on_workflow_completed)
         self._workflow_runner.run(workflow, values)
         self._show_status(f"Running automation: {skill.name}")
+
+    def _confirm_workflow_workspace(self, skill) -> bool:
+        """A recorded workflow remembers the workspace it was taught in
+        (Skill.workflow_workspace_id). Running it from a DIFFERENT
+        workspace must never silently replay in the wrong cookie/session
+        context - see the Phase 17 brief's own recorder-specific rule -
+        so this always asks first, unless the workflow has no recorded
+        workspace at all (taught before Workspaces existed, or with the
+        feature untouched) or already matches where we are now.
+        """
+        recorded_id = skill.workflow_workspace_id
+        if recorded_id is None or recorded_id == self._current_workspace_id:
+            return True
+        recorded = self.workspaces.get(recorded_id)
+        recorded_name = recorded.name if recorded is not None else "a workspace that no longer exists"
+        box = QMessageBox(self)
+        box.setWindowTitle("Different workspace")
+        box.setText(
+            f'"{skill.name}" was recorded in the "{recorded_name}" workspace, not the '
+            "current one. Running it here uses this workspace's tabs, cookies, and "
+            "context instead.")
+        switch_button = box.addButton("Switch and Run", QMessageBox.ButtonRole.AcceptRole)
+        run_here_button = box.addButton("Run Here Anyway", QMessageBox.ButtonRole.DestructiveRole)
+        box.addButton("Cancel", QMessageBox.ButtonRole.RejectRole)
+        box.exec()
+        clicked = box.clickedButton()
+        if clicked is switch_button:
+            if recorded is None:
+                self._show_status("That workspace no longer exists.")
+                return False
+            self.switch_workspace(recorded_id)
+            return True
+        return clicked is run_here_button
 
     def _on_workflow_paused(self, reason: str, message: str) -> None:
         self._show_status(f"PyBrowser needs your help: {message}")
@@ -1164,8 +1250,11 @@ class MainWindow(QMainWindow):
     def _open_knowledge_search(self) -> None:
         from app.ui.knowledge_search_dialog import KnowledgeSearchDialog
 
+        current = self.workspaces.get(self._current_workspace_id)
         KnowledgeSearchDialog(
-            self.knowledge_index, self, on_open=self._open_knowledge_result).exec()
+            self.knowledge_index, self, on_open=self._open_knowledge_result,
+            current_workspace_id=self._current_workspace_id,
+            current_workspace_name=current.name if current else "this workspace").exec()
 
     def _open_knowledge_result(self, result) -> None:
         """Open a knowledge-search result where "open" makes sense for its
@@ -1365,7 +1454,8 @@ class MainWindow(QMainWindow):
         if highlight is None:
             return
         self.knowledge_index.index_highlight(
-            highlight.id, highlight.text, title=highlight.title, location=highlight.url)
+            highlight.id, highlight.text, title=highlight.title, location=highlight.url,
+            workspace_id=self._current_workspace_id)
         if truncated:
             QMessageBox.information(
                 self, "Highlight saved",
@@ -1381,7 +1471,8 @@ class MainWindow(QMainWindow):
         currently active tab - a highlight's source page may not even be
         open any more)."""
         if self.missions.active is None:
-            mission = self.missions.start(f"Research: {title or url}")
+            mission = self.missions.start(f"Research: {title or url}",
+                                          workspace_id=self._current_workspace_id)
             if mission is None:
                 return
             self._open_mission(mission.id)
@@ -1452,7 +1543,8 @@ class MainWindow(QMainWindow):
         if not picked:
             return
         titles = ", ".join(row["title"] for row in picked)
-        mission = self.missions.start(f"Research and consolidate: {titles}")
+        mission = self.missions.start(f"Research and consolidate: {titles}",
+                                      workspace_id=self._current_workspace_id)
         if mission is None:
             return
         self._open_mission(mission.id)
@@ -1663,7 +1755,8 @@ class MainWindow(QMainWindow):
     def _show_skills_library(self) -> None:
         from app.ui.skills_library import SkillsLibraryDialog
 
-        dialog = SkillsLibraryDialog(self.skills, self, on_run=self._run_skill)
+        dialog = SkillsLibraryDialog(self.skills, self, on_run=self._run_skill,
+                                    current_workspace_id=self._current_workspace_id)
         dialog.exec()
 
     def _run_skill(self, skill) -> None:
@@ -1827,10 +1920,11 @@ class MainWindow(QMainWindow):
             if full is None:
                 continue
             self.knowledge_index.index_mission(full.id, full.goal, full.result,
-                                               title=full.title)
+                                               title=full.title, workspace_id=full.workspace_id)
             for finding in full.findings:
                 self.knowledge_index.index_mission_finding(
-                    finding.id, full.id, finding.text, title=full.title)
+                    finding.id, full.id, finding.text, title=full.title,
+                    workspace_id=full.workspace_id)
         for highlight in self.highlights.all():
             self.knowledge_index.index_highlight(
                 highlight.id, highlight.text, title=highlight.title, location=highlight.url)
@@ -1844,6 +1938,222 @@ class MainWindow(QMainWindow):
         self.tabs.home_url = self.settings.new_tab_url()
         self._apply_tab_layout()
         self._show_status("Settings saved.")
+
+    # ------------------------------------------------------------------
+    # Phase 17: Workspaces
+    # ------------------------------------------------------------------
+    def _apply_workspace_environment(self, workspace: Workspace) -> None:
+        """Point the tab strip at whatever profile/homepage this workspace
+        uses. Cheap and safe to call even when nothing actually changes
+        (the overwhelming common case: a plain workspace sharing the one
+        default profile) - see WorkspaceProfileManager.profile_for."""
+        self.tabs._profile = self._workspace_profiles.profile_for(workspace)
+        self.tabs.home_url = self._workspace_profiles.new_tab_url_for(
+            workspace, self.settings.new_tab_url())
+        visible = (frozenset(workspace.mcp_visible_server_ids)
+                  if workspace.mcp_visible_server_ids is not None else None)
+        self.mcp.set_workspace_visibility(visible)
+
+    def _capture_tab_state(self) -> TabState:
+        """Everything the current workspace should remember about its tab
+        strip - see app/workspaces/model.py's TabState. Pure read: never
+        touches a tab."""
+        records = tuple(
+            TabRecord(url=self.tabs.widget(i).url().toString(),
+                     pinned=self.tabs.is_pinned(i), group_id=self.tabs.group_of(i))
+            for i in range(self.tabs.count()))
+        groups = {g["id"]: {"name": g["name"], "collapsed": g["collapsed"]}
+                 for g in self.tabs.groups()}
+        return TabState(tabs=records, groups=groups, active_index=self.tabs.currentIndex())
+
+    def _restore_tab_state(self, state: TabState) -> None:
+        """Recreate a workspace's tabs from its serialized TabState - the
+        "lazy recreation on switch" the brief asks for: an inactive
+        workspace's tabs are nothing but this plain data until the moment
+        it becomes current again, never a live WebEngine page kept around
+        just in case.
+
+        The new tabs are opened BEFORE the outgoing ones are closed, never
+        the other way round: TabManager.all_tabs_closed fires the instant
+        the count would otherwise touch zero, and that signal is wired to
+        close the whole window (see _connect_signals) - a workspace switch
+        must never look like the user closed their last tab.
+        """
+        outgoing = [self.tabs.widget(i) for i in range(self.tabs.count())]
+        if state.is_empty:
+            self.tabs.new_tab()
+        else:
+            created: list[tuple[object, TabRecord]] = []
+            for record in state.tabs:
+                widget = self.tabs.new_tab(record.url, background=True, pinned=record.pinned)
+                created.append((widget, record))
+            for group_id, info in state.groups.items():
+                self.tabs.ensure_group(group_id, info.get("name", "Group"),
+                                       bool(info.get("collapsed", False)))
+            for widget, record in created:
+                if record.group_id:
+                    self.tabs.move_tab_to_group(self.tabs.indexOf(widget), record.group_id)
+            self.tabs.setCurrentIndex(max(0, min(state.active_index, self.tabs.count() - 1)))
+        for widget in outgoing:
+            index = self.tabs.indexOf(widget)
+            if index != -1:
+                self.tabs.close_tab(index)
+
+    def switch_workspace(self, workspace_id: str) -> bool:
+        """Save the current workspace's tab state, then load another's.
+
+        Never destroys the outgoing workspace's tabs - they are captured
+        as data first and recreated exactly if the user switches back.
+        Nothing here silently changes cookie/session context: it only
+        looks that way if the target workspace has isolated_profile set,
+        in which case that IS the correct, disclosed behaviour, not an
+        accident - see app/workspaces/model.py.
+        """
+        if workspace_id == self._current_workspace_id:
+            return False
+        target = self.workspaces.get(workspace_id)
+        if target is None:
+            return False
+        current = self.workspaces.get(self._current_workspace_id)
+        if current is not None:
+            self.workspaces.save(current.with_tab_state(self._capture_tab_state()))
+        self._apply_workspace_environment(target)
+        self._restore_tab_state(target.tab_state)
+        self._current_workspace_id = workspace_id
+        self.settings.current_workspace_id = workspace_id
+        self.workspaces.save(target.touched())
+        self._refresh_workspace_switcher()
+        self._note_workspace_provider_preference(target)
+        return True
+
+    def _note_workspace_provider_preference(self, workspace: Workspace) -> None:
+        """Workspace.preferred_provider/preferred_model is a preference,
+        never a hidden lock (per the Phase 17 brief) - this only ever
+        surfaces a status message when the live session disagrees with
+        it, exactly the same "ask, never force" treatment
+        MainWindow._run_skill already gives a Skill's own preference. It
+        never rebuilds or reconfigures the running AgentSession itself.
+        """
+        if not workspace.preferred_provider or self._agent_session is None:
+            return
+        if workspace.preferred_provider == self._agent_session.config.provider:
+            return
+        from app.agent.config import describe_provider
+
+        preferred_label = describe_provider(workspace.preferred_provider).label
+        current_label = describe_provider(self._agent_session.config.provider).label
+        self._show_status(
+            f'"{workspace.name}" prefers {preferred_label}; '
+            f"Py is currently using {current_label}.")
+
+    def _refresh_workspace_switcher(self) -> None:
+        self.workspace_switcher.refresh(self.workspaces.all(), self._current_workspace_id)
+
+    def _new_workspace(self) -> None:
+        from app.ui.workspace_switcher import NewWorkspaceDialog
+
+        dialog = NewWorkspaceDialog(self)
+        if dialog.exec() != dialog.DialogCode.Accepted:
+            return
+        workspace = dialog.result_workspace()
+        if workspace is None:
+            return
+        self.workspaces.save(workspace)
+        self.switch_workspace(workspace.id)
+
+    def _manage_workspaces(self) -> None:
+        from app.ui.workspace_switcher import ManageWorkspacesDialog
+
+        dialog = ManageWorkspacesDialog(
+            self.workspaces.all(), self, on_rename=self._rename_workspace,
+            on_duplicate=self._duplicate_workspace, on_delete=self._delete_workspace_flow,
+            on_settings=self._edit_workspace_settings)
+        dialog.exec()
+        self._refresh_workspace_switcher()
+
+    def _edit_workspace_settings(self, workspace_id: str) -> None:
+        from dataclasses import replace
+
+        from app.ui.workspace_switcher import WorkspaceSettingsDialog
+
+        workspace = self.workspaces.get(workspace_id)
+        if workspace is None:
+            return
+        dialog = WorkspaceSettingsDialog(workspace, self.mcp.server_id_name_pairs(), self)
+        if dialog.exec() != dialog.DialogCode.Accepted:
+            return
+        updated = replace(
+            workspace, preferred_provider=dialog.preferred_provider(),
+            preferred_model=dialog.preferred_model(), homepage=dialog.homepage(),
+            mcp_visible_server_ids=dialog.mcp_visible_server_ids())
+        self.workspaces.save(updated)
+        if workspace_id == self._current_workspace_id:
+            self._apply_workspace_environment(updated)
+
+    def _rename_workspace(self, workspace_id: str) -> None:
+        from PySide6.QtWidgets import QInputDialog
+
+        workspace = self.workspaces.get(workspace_id)
+        if workspace is None:
+            return
+        name, ok = QInputDialog.getText(self, "Rename Workspace", "Name:", text=workspace.name)
+        if ok and name.strip():
+            from dataclasses import replace
+
+            self.workspaces.save(replace(workspace, name=name.strip()))
+            self._refresh_workspace_switcher()
+
+    def _duplicate_workspace(self, workspace_id: str) -> None:
+        """Copies name/icon/homepage/provider preference/MCP visibility -
+        a fresh workspace with no tabs of its own, never a second isolated
+        profile sharing the original's storage_name (that would defeat the
+        whole point of isolation)."""
+        from dataclasses import replace
+
+        workspace = self.workspaces.get(workspace_id)
+        if workspace is None:
+            return
+        copy = new_workspace(f"{workspace.name} (Copy)", icon=workspace.icon,
+                             color=workspace.color, isolated_profile=workspace.isolated_profile)
+        copy = replace(copy, homepage=workspace.homepage,
+                      preferred_provider=workspace.preferred_provider,
+                      preferred_model=workspace.preferred_model,
+                      mcp_visible_server_ids=workspace.mcp_visible_server_ids)
+        self.workspaces.save(copy)
+        self._refresh_workspace_switcher()
+
+    def _delete_workspace_flow(self, workspace_id: str) -> None:
+        from app.ui.workspace_switcher import DeleteWorkspaceDialog
+
+        workspace = self.workspaces.get(workspace_id)
+        if workspace is None:
+            return
+        others = [w for w in self.workspaces.all() if w.id != workspace_id]
+        if not others:
+            QMessageBox.information(
+                self, "Can't delete", "At least one workspace must always exist.")
+            return
+        dialog = DeleteWorkspaceDialog(workspace, others, self)
+        if dialog.exec() != dialog.DialogCode.Accepted:
+            return
+        reassign_to = dialog.reassign_to()
+        reassign_workspace_data(self._db, from_workspace_id=workspace_id,
+                                to_workspace_id=reassign_to)
+        reassign_recorded_workflows(self._db, from_workspace_id=workspace_id,
+                                    to_workspace_id=reassign_to)
+        was_current = workspace_id == self._current_workspace_id
+        if was_current:
+            self.switch_workspace(reassign_to or others[0].id)
+        self.workspaces.delete(workspace_id)
+        self._refresh_workspace_switcher()
+
+    def _save_current_workspace_tab_state(self) -> None:
+        """Called on shutdown - see closeEvent - so the workspace that was
+        active this session reopens exactly as it was left, the same
+        guarantee pinned tabs already had, now extended to every tab."""
+        current = self.workspaces.get(self._current_workspace_id)
+        if current is not None:
+            self.workspaces.save(current.with_tab_state(self._capture_tab_state()))
 
     # -- pinned tabs --------------------------------------------------------
     def _restore_pinned_tabs(self) -> None:
@@ -2087,7 +2397,9 @@ class MainWindow(QMainWindow):
     def _show_task_center(self) -> None:
         from app.ui.task_center import TaskCenterDialog
 
-        dialog = TaskCenterDialog(self.scheduled_tasks, self.task_runner, self.missions, self)
+        dialog = TaskCenterDialog(
+            self.scheduled_tasks, self.task_runner, self.missions, self,
+            current_workspace_id=self._current_workspace_id)
         dialog.exec()
 
     def _on_scheduled_mission_completed(self, task) -> None:
@@ -2172,7 +2484,8 @@ class MainWindow(QMainWindow):
         if watch.mission_id is not None:
             self.missions.resume(watch.mission_id)
         else:
-            mission = self.missions.start(f"Follow up on: {watch.title}")
+            mission = self.missions.start(f"Follow up on: {watch.title}",
+                                          workspace_id=self._current_workspace_id)
             if mission is not None:
                 self.watches.set_mission_id(watch.id, mission.id)
 
@@ -2235,7 +2548,7 @@ class MainWindow(QMainWindow):
                 "This goal does not need a team - ask Py directly instead.")
             return
         if self.missions.active is None or self.missions.active.goal != goal:
-            self.missions.start(goal)
+            self.missions.start(goal, workspace_id=self._current_workspace_id)
 
         # Persisted via self.mission_graph (Phase 10) - restart-safe, and
         # what the Mission Plan view and recover_after_restart both read.
@@ -2472,6 +2785,7 @@ class MainWindow(QMainWindow):
 
     # ------------------------------------------------------------------
     def closeEvent(self, event) -> None:  # noqa: N802
+        self._save_current_workspace_tab_state()
         self.task_runner.stop()
         # Stop the agent's worker thread before the window goes away.
         if self._agent_session is not None:

@@ -195,6 +195,10 @@ class McpConnectionManager(QObject):
         self._connections: dict[str, McpConnection] = {
             server.id: McpConnection(server) for server in store.list_servers()
         }
+        #: Phase 17: None = every connected server visible (the default,
+        #: unchanged from before Workspaces existed) - see
+        #: set_workspace_visibility.
+        self._visible_server_ids: frozenset[str] | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
         self._loop_ready = threading.Event()
         self._thread = threading.Thread(target=self._run_loop, name="mcp-io", daemon=True)
@@ -377,6 +381,15 @@ class McpConnectionManager(QObject):
         self.server_changed.emit(server_id)
 
     # -- tool discovery / agent surface -----------------------------------------------
+    def server_id_name_pairs(self) -> list[tuple[str, str]]:
+        """Every configured server's (id, display name) - for UI that lets
+        someone pick among servers by name without reaching into this
+        manager's connection dict directly (see app/ui/workspace_switcher.
+        py's per-workspace MCP visibility picker). See configured_servers()
+        for the full McpServerConfig list this is a thin projection of."""
+        return [(server_id, connection.config.name)
+                for server_id, connection in self._connections.items()]
+
     def all_tools(self, server_id: str) -> list[McpToolDescriptor]:
         connection = self._connections.get(server_id)
         return list(connection.tools) if connection else []
@@ -395,15 +408,32 @@ class McpConnectionManager(QObject):
         native browser tool "existing" and "being allowed to run right now
         without asking" are already two different questions answered by
         knows() and assess() respectively.
+
+        Phase 17: also False for a server hidden from the current
+        Workspace (see set_workspace_visibility) - defense in depth
+        alongside schemas() already not offering it, so a stale/cached
+        tool name from a different workspace's context cannot slip
+        through just because knows() was asked directly.
         """
         parts = adapter.split_namespaced(namespaced_name)
         if parts is None:
             return False
         server_id, tool_name = parts
+        if self._visible_server_ids is not None and server_id not in self._visible_server_ids:
+            return False
         return self.find_tool(server_id, tool_name) is not None
 
+    def set_workspace_visibility(self, visible_server_ids: frozenset[str] | None) -> None:
+        """Phase 17: scope which connected servers this session's tool
+        list/knows() will offer - None (the default) means every
+        connected, enabled server, exactly today's behaviour. Never
+        touches a server's connection, credentials, or config - purely a
+        filter over what is already connected; see app/workspaces/."""
+        self._visible_server_ids = visible_server_ids
+
     def schemas(self) -> list[dict[str, Any]]:
-        """Every tool from every currently CONNECTED, enabled server.
+        """Every tool from every currently CONNECTED, enabled, and
+        workspace-visible server (see set_workspace_visibility).
 
         All of them, regardless of classification: a write/sensitive/
         destructive/unknown tool is now offered to the model exactly the
@@ -411,8 +441,10 @@ class McpConnectionManager(QObject):
         what stands between the model proposing it and it actually running.
         """
         out: list[dict[str, Any]] = []
-        for connection in self._connections.values():
+        for server_id, connection in self._connections.items():
             if connection.state != ConnectionState.CONNECTED:
+                continue
+            if self._visible_server_ids is not None and server_id not in self._visible_server_ids:
                 continue
             for tool in connection.tools:
                 out.append(adapter.to_tool_schema(tool))

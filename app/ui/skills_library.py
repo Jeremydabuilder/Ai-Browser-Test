@@ -65,6 +65,12 @@ class SkillEditDialog(QDialog):
         #: app/ui/workflow_recording.py) - editing name/description/tools
         #: here must never silently drop an existing recording.
         self._editing_workflow = skill.workflow if skill is not None else None
+        #: Same reasoning as _editing_workflow: this dialog has no UI for
+        #: workspace visibility scoping or a workflow's recorded-in
+        #: workspace, so both must be carried through untouched.
+        self._editing_workspace_ids = skill.workspace_ids if skill is not None else None
+        self._editing_workflow_workspace_id = (
+            skill.workflow_workspace_id if skill is not None else None)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(m.space_4, m.space_4, m.space_4, m.space_4)
@@ -187,6 +193,8 @@ class SkillEditDialog(QDialog):
             preferred_provider=self.provider_combo.currentData() or "",
             preferred_model=self.model_edit.text().strip(),
             workflow=self._editing_workflow,
+            workspace_ids=self._editing_workspace_ids,
+            workflow_workspace_id=self._editing_workflow_workspace_id,
         )
         self.accept()
 
@@ -245,10 +253,15 @@ class _SkillRow(QFrame):
 
 
 class SkillsLibraryDialog(QDialog):
-    def __init__(self, store: SkillStore, parent: QWidget | None = None, *, on_run=None) -> None:
+    def __init__(self, store: SkillStore, parent: QWidget | None = None, *, on_run=None,
+                current_workspace_id: str | None = None) -> None:
         super().__init__(parent)
         self._store = store
         self._on_run = on_run
+        #: Phase 17: which Workspace is asking - filters out a Skill whose
+        #: workspace_ids does not include it. None (no workspaces feature
+        #: in play) shows every Skill, unfiltered - see Skill.visible_in.
+        self._current_workspace_id = current_workspace_id
         self.setWindowTitle("Skills")
         self.resize(640, 620)
         m = theme.METRICS
@@ -292,7 +305,9 @@ class SkillsLibraryDialog(QDialog):
             if widget is not None:
                 widget.deleteLater()
         custom = self._store.all()
-        for skill in list(BUILTIN_SKILLS) + custom:
+        visible = [s for s in list(BUILTIN_SKILLS) + custom
+                  if s.visible_in(self._current_workspace_id)]
+        for skill in visible:
             row = _SkillRow(
                 skill, self._container, on_run=self._run,
                 on_edit=self._edit_skill, on_duplicate=self._duplicate_skill,

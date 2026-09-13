@@ -72,10 +72,29 @@ class Skill:
     #: (Skills Library, Mission steps, Scheduled Tasks) with no duplicated
     #: plumbing.
     workflow: "RecordedWorkflow | None" = None
+    #: Phase 17: optional visibility scoping - None (the default) means
+    #: global, visible in every Workspace, exactly how every Skill behaved
+    #: before Workspaces existed. A tuple restricts it to just those
+    #: workspace ids. Never a copy of the Skill's data per workspace - see
+    #: app/workspaces/.
+    workspace_ids: tuple[str, ...] | None = None
+    #: Phase 17: which Workspace this Skill's recorded workflow (if any)
+    #: was taught in - None for an ordinary Skill, or a workflow recorded
+    #: before Workspaces existed. Checked at run time (see MainWindow.
+    #: _run_recorded_workflow) so a workflow never silently replays in the
+    #: wrong cookie/session context; a preference to confirm, never a hard
+    #: lock.
+    workflow_workspace_id: str | None = None
 
     @property
     def is_recorded_workflow(self) -> bool:
         return self.workflow is not None
+
+    def visible_in(self, workspace_id: str | None) -> bool:
+        """Would this Skill show up in ``workspace_id``'s Skills Library?
+        True for a global Skill (workspace_ids is None) regardless of
+        which workspace is asking."""
+        return self.workspace_ids is None or workspace_id in self.workspace_ids
 
     def as_dict(self) -> dict:
         return {
@@ -88,6 +107,8 @@ class Skill:
             "default_context_kinds": list(self.default_context_kinds),
             "version": self.version,
             "workflow": self.workflow.as_dict() if self.workflow is not None else None,
+            "workspace_ids": list(self.workspace_ids) if self.workspace_ids is not None else None,
+            "workflow_workspace_id": self.workflow_workspace_id,
         }
 
     @classmethod
@@ -95,6 +116,7 @@ class Skill:
         from app.automation.model import RecordedWorkflow
 
         allowed = data.get("allowed_tools")
+        workspace_ids = data.get("workspace_ids")
         return cls(
             id=data["id"], name=data.get("name", ""), description=data.get("description", ""),
             instructions=data.get("instructions", ""),
@@ -106,6 +128,8 @@ class Skill:
             builtin=False,
             version=int(data.get("version", SKILL_SCHEMA_VERSION)),
             workflow=RecordedWorkflow.from_dict(data.get("workflow")),
+            workspace_ids=tuple(workspace_ids) if workspace_ids is not None else None,
+            workflow_workspace_id=data.get("workflow_workspace_id"),
         )
 
     def duplicated(self, *, new_id: str, name: str | None = None) -> "Skill":

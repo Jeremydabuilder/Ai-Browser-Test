@@ -835,6 +835,11 @@ class Mission:
     #: What the mission has not settled yet - see MissionQuestion. Includes
     #: both open and answered questions; the UI separates them by .status.
     questions: tuple[MissionQuestion, ...] = field(default_factory=tuple)
+    #: Phase 17: which Workspace this Mission belongs to, or None for a
+    #: global Mission visible everywhere - see app/workspaces/. A
+    #: preference for where it shows up and which knowledge search scopes
+    #: to it, never a security boundary.
+    workspace_id: str | None = None
 
     @property
     def is_branch(self) -> bool:

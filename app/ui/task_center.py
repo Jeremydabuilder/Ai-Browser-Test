@@ -177,13 +177,20 @@ class NewScheduleDialog(QDialog):
 
 
 class TaskCenterDialog(QDialog):
-    def __init__(self, store, task_runner, missions, parent: QWidget | None = None) -> None:
+    def __init__(
+        self, store, task_runner, missions, parent: QWidget | None = None,
+        current_workspace_id: str | None = None,
+    ) -> None:
         super().__init__(parent)
         self.setWindowTitle("Task Center")
         self.resize(760, 420)
         self._store = store
         self._runner = task_runner
         self._missions = missions
+        #: Phase 17: a task scheduled here fires bound to whatever workspace
+        #: was current at scheduling time - see TaskRunner._fire /
+        #: app/workspaces/. Never guessed from the goal text.
+        self._current_workspace_id = current_workspace_id
         m = theme.METRICS
 
         layout = QVBoxLayout(self)
@@ -276,7 +283,8 @@ class TaskCenterDialog(QDialog):
             goal=fields["goal"], schedule_kind=fields["schedule_kind"],
             schedule_at=fields["schedule_at"], time_of_day=fields["time_of_day"],
             weekday=fields["weekday"], interval_seconds=fields["interval_seconds"],
-            next_run_at=next_run.isoformat() if next_run else None)
+            next_run_at=next_run.isoformat() if next_run else None,
+            workspace_id=self._current_workspace_id)
         self.refresh()
 
     def _on_run_now(self) -> None:

@@ -38,6 +38,7 @@ def _row_to_task(row) -> "ScheduledTask":
         last_duration_s=row["last_duration_s"], last_error=row["last_error"],
         write_attempted=bool(row["write_attempted"]),
         created_at=row["created_at"], updated_at=row["updated_at"],
+        workspace_id=row["workspace_id"] if "workspace_id" in row.keys() else None,
     )
 
 
@@ -50,7 +51,7 @@ class ScheduledTaskStore:
         mission_title: str = "", schedule_at: str | None = None,
         time_of_day: str | None = None, weekday: int | None = None,
         interval_seconds: int | None = None, next_run_at: str | None = None,
-        state: str = "queued",
+        state: str = "queued", workspace_id: str | None = None,
     ) -> "ScheduledTask | None":
         goal = (goal or "").strip()[:MAX_GOAL_CHARS]
         if not goal:
@@ -59,10 +60,10 @@ class ScheduledTaskStore:
         cursor = self._db.execute(
             "INSERT INTO scheduled_tasks (mission_id, mission_title, goal, schedule_kind, "
             "schedule_at, time_of_day, weekday, interval_seconds, state, next_run_at, "
-            "write_attempted, created_at, updated_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)",
+            "write_attempted, workspace_id, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)",
             (mission_id, mission_title, goal, schedule_kind, schedule_at, time_of_day,
-             weekday, interval_seconds, state, next_run_at, now, now),
+             weekday, interval_seconds, state, next_run_at, workspace_id, now, now),
         )
         if cursor is None:
             return None

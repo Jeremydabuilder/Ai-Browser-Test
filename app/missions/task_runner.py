@@ -49,6 +49,7 @@ class TaskRunner(QObject):
         missions,
         session_provider: Callable[[], object | None],
         parent: QObject | None = None,
+        workspace_switcher: Callable[[str], None] | None = None,
     ) -> None:
         super().__init__(parent)
         self._store = store
@@ -58,6 +59,14 @@ class TaskRunner(QObject):
         #: Never builds a second session: this is the exact same accessor
         #: interactive use goes through.
         self._session_provider = session_provider
+        #: Phase 17: switches the window's current workspace (tabs, Mission
+        #: scope, MCP visibility, isolated profile) before a bound task
+        #: fires - see app/workspaces/. A background timer firing must never
+        #: silently run in whatever workspace happens to be active; unlike
+        #: a recorded workflow (MainWindow._confirm_workflow_workspace) an
+        #: unattended task cannot block on a dialog, so it switches rather
+        #: than asking. None (e.g. in tests) means "don't switch."
+        self._workspace_switcher = workspace_switcher
         self._current_task_id: int | None = None
         self._current_run_id: int | None = None
         self._current_start: float = 0.0
@@ -161,6 +170,8 @@ class TaskRunner(QObject):
 
     # -- firing one task ------------------------------------------------------
     def _fire(self, task: ScheduledTask, session) -> None:
+        if task.workspace_id and self._workspace_switcher is not None:
+            self._workspace_switcher(task.workspace_id)
         self._current_task_id = task.id
         self._current_start = time.monotonic()
         self._pending_error = None

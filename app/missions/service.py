@@ -146,21 +146,28 @@ class MissionService(QObject):
     def store(self) -> MissionStore:
         return self._store
 
-    def recent(self, limit: int = 8) -> list[Mission]:
-        return self._store.recent(limit)
+    def recent(self, limit: int = 8, *, workspace_id: str | None = None,
+              include_global: bool = True) -> list[Mission]:
+        return self._store.recent(limit, workspace_id=workspace_id, include_global=include_global)
 
     # -- lifecycle -------------------------------------------------------
-    def start(self, goal: str, title: str = "") -> Mission | None:
+    def start(self, goal: str, title: str = "", *, workspace_id: str | None = None
+             ) -> Mission | None:
         """Create a Mission from a goal and make it the active one.
 
         The title is derived locally (see model.title_from_goal) so that
         pressing the button creates the Mission immediately. No API call, no
         spinner, nothing to wait for - and the user can rename it.
+
+        ``workspace_id`` defaults to None (global) - MainWindow passes the
+        currently active workspace so a new Mission defaults to "current
+        workspace," per the Phase 17 brief; nothing here forces that choice.
         """
         goal = (goal or "").strip()
         if not goal:
             return None
-        mission = self._store.create(title.strip() or title_from_goal(goal), goal)
+        mission = self._store.create(title.strip() or title_from_goal(goal), goal,
+                                     workspace_id=workspace_id)
         if mission is None:
             return None
         self.missions_changed.emit(mission)

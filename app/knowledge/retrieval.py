@@ -78,10 +78,18 @@ def _excerpt(text: str, query_tokens: set[str], max_chars: int = 220) -> str:
 def search(
     chunks: list[Chunk], query: str, *, limit: int = DEFAULT_LIMIT,
     source_types: tuple[str, ...] | None = None,
+    workspace_ids: tuple[str | None, ...] | None = None,
 ) -> list[SearchResult]:
     """Rank ``chunks`` (typically ``KnowledgeStore.all_chunks()``) against
     ``query``. An empty query returns no results - this is a search, not
-    a browse-everything view."""
+    a browse-everything view.
+
+    ``workspace_ids``, when given, scopes results to chunks whose
+    ``workspace_id`` is in that set - pass ``(current_id, None)`` to mean
+    "this workspace, plus anything not tied to one" (see
+    app/workspaces/), never silently mixing in a genuinely different
+    workspace's content just because the query happened to match it.
+    """
     query = (query or "").strip()
     if not query:
         return []
@@ -91,6 +99,8 @@ def search(
     scored: list[SearchResult] = []
     for chunk in chunks:
         if source_types is not None and chunk.source_type not in source_types:
+            continue
+        if workspace_ids is not None and chunk.workspace_id not in workspace_ids:
             continue
         semantic = cosine_similarity(query_embedding, chunk.embedding)
         lexical = _lexical_score(query_tokens, chunk)

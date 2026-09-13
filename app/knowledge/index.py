@@ -52,7 +52,7 @@ class KnowledgeIndex:
     def _write_chunks(
         self, source_type: str, source_id: str, texts: list[str], *,
         timestamp: str, parent_id: str | None = None, title: str = "", location: str = "",
-        locations: list[str] | None = None,
+        locations: list[str] | None = None, workspace_id: str | None = None,
     ) -> None:
         """Embed and store each text as a chunk at its list position,
         skipping any whose content hash matches what is already stored -
@@ -68,11 +68,13 @@ class KnowledgeIndex:
                 source_type=source_type, source_id=source_id, chunk_index=index,
                 text=text, content_hash=digest, embedding=embed(text), timestamp=timestamp,
                 parent_id=parent_id, title=title,
-                location=locations[index] if locations is not None else location)
+                location=locations[index] if locations is not None else location,
+                workspace_id=workspace_id)
         self._store.delete_source_chunks_from(source_type, source_id, len(texts))
 
     # -- history -------------------------------------------------------
-    def index_history_visit(self, url: str, title: str, visited_at: str | None = None) -> None:
+    def index_history_visit(self, url: str, title: str, visited_at: str | None = None,
+                            *, workspace_id: str | None = None) -> None:
         """Metadata only (title + URL) - never the page's own body. This
         is the one source type the Phase 13 spec says is fine to index by
         default (once the feature itself is on) precisely because it is
@@ -83,29 +85,30 @@ class KnowledgeIndex:
         text = f"{title}\n{url}".strip()
         self._write_chunks(
             SourceType.HISTORY, source_id, [text], timestamp=visited_at or _now(),
-            title=title, location=url)
+            title=title, location=url, workspace_id=workspace_id)
 
     # -- missions --------------------------------------------------------
     def index_mission(self, mission_id: int, goal: str, result: str, *,
-                      title: str = "", timestamp: str | None = None) -> None:
+                      title: str = "", timestamp: str | None = None,
+                      workspace_id: str | None = None) -> None:
         if not self.enabled:
             return
         source_id = str(mission_id)
         texts = [text for _label, text in chunking.chunk_mission(goal, result)]
         self._write_chunks(
             SourceType.MISSION, source_id, texts, timestamp=timestamp or _now(),
-            title=title or goal[:120])
+            title=title or goal[:120], workspace_id=workspace_id)
 
     def index_mission_finding(
         self, finding_id: int, mission_id: int, text: str, *,
-        title: str = "", timestamp: str | None = None,
+        title: str = "", timestamp: str | None = None, workspace_id: str | None = None,
     ) -> None:
         if not self.enabled:
             return
         chunks = chunking.chunk_highlight(text)  # a finding is already one short fact
         self._write_chunks(
             SourceType.MISSION_FINDING, str(finding_id), chunks, timestamp=timestamp or _now(),
-            parent_id=str(mission_id), title=title)
+            parent_id=str(mission_id), title=title, workspace_id=workspace_id)
 
     def remove_mission(self, mission_id: int) -> None:
         """A deleted Mission takes its goal/result chunk AND every finding
@@ -120,14 +123,14 @@ class KnowledgeIndex:
     # -- highlights --------------------------------------------------------
     def index_highlight(
         self, highlight_id: int, text: str, *, title: str = "", location: str = "",
-        timestamp: str | None = None,
+        timestamp: str | None = None, workspace_id: str | None = None,
     ) -> None:
         if not self.enabled:
             return
         chunks = chunking.chunk_highlight(text)
         self._write_chunks(
             SourceType.HIGHLIGHT, str(highlight_id), chunks, timestamp=timestamp or _now(),
-            title=title, location=location)
+            title=title, location=location, workspace_id=workspace_id)
 
     def remove_highlight(self, highlight_id: int) -> None:
         self._store.delete_source(SourceType.HIGHLIGHT, str(highlight_id))

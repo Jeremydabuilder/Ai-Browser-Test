@@ -473,6 +473,16 @@ class TabManager(QTabWidget):
         self.groups_changed.emit()
         return True
 
+    def ensure_group(self, group_id: str, name: str, collapsed: bool = False) -> None:
+        """Recreate a *specific* group id with this name/collapsed state -
+        a no-op if it already exists. The one caller that needs to name a
+        group's id itself rather than mint a fresh random one (see
+        create_group): restoring a Workspace's serialized tab state must
+        reproduce the exact group ids its TabRecords still refer to."""
+        if group_id not in self._groups:
+            self._groups[group_id] = {"name": name.strip() or "Group", "collapsed": collapsed}
+            self.groups_changed.emit()
+
     def remove_group(self, group_id: str) -> bool:
         """Delete a group without closing its tabs - they simply become
         ungrouped, still exactly where they were."""
