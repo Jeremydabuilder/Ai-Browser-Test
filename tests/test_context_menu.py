@@ -55,9 +55,10 @@ class AskMenuTests(unittest.TestCase):
         for _ in range(3):
             _app.processEvents()
 
-    def test_no_selection_offers_a_single_page_level_ask(self) -> None:
+    def test_no_selection_offers_ask_and_watch_this_page(self) -> None:
         menu = self.tab._build_ask_menu("")
-        self.assertEqual(_menu_texts(menu), ["Ask Py about this page"])
+        labels = [text for text in _menu_texts(menu) if text]
+        self.assertEqual(labels, ["Ask Py about this page", "Watch this page"])
         menu.deleteLater()
 
     def test_a_selection_titles_the_menu_with_it(self) -> None:
@@ -69,7 +70,8 @@ class AskMenuTests(unittest.TestCase):
         menu = self.tab._build_ask_menu("some claim")
         labels = _menu_texts(menu)
         for expected in ("Explain this", "Summarize this", "Research this",
-                        "Verify this claim", "Compare this", "Ask something else…"):
+                        "Verify this claim", "Compare this", "Ask something else…",
+                        "Save Highlight", "Add to Mission", "Watch selected section"):
             self.assertIn(expected, labels)
         menu.deleteLater()
 

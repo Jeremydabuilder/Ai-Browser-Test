@@ -25,7 +25,7 @@ import threading
 from pathlib import Path
 from typing import Any, Iterable, Sequence
 
-SCHEMA_VERSION = 17
+SCHEMA_VERSION = 18
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS history (
@@ -115,6 +115,47 @@ CREATE TABLE IF NOT EXISTS task_runs (
     FOREIGN KEY (task_id) REFERENCES scheduled_tasks(id) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS idx_task_runs_task ON task_runs(task_id, started_at DESC);
+
+-- Page Watches (Phase 8): monitor a page or a selected section of one over
+-- time - see app/watches/. Never a full-page copy: baseline/last-observed
+-- are a hash plus a small condition-specific derived value (a number, a
+-- true/false, or a short preview), not the page itself.
+CREATE TABLE IF NOT EXISTS watches (
+    id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+    title                 TEXT NOT NULL,
+    url                   TEXT NOT NULL,
+    target_type           TEXT NOT NULL,
+    selection_hint        TEXT NOT NULL DEFAULT '',
+    condition             TEXT NOT NULL,
+    condition_value       TEXT NOT NULL DEFAULT '',
+    check_interval_seconds INTEGER NOT NULL,
+    baseline_hash         TEXT,
+    baseline_value        TEXT,
+    last_observed_hash    TEXT,
+    last_observed_value   TEXT,
+    last_checked_at       TEXT,
+    next_check_at         TEXT,
+    state                 TEXT NOT NULL DEFAULT 'active',
+    failure_count         INTEGER NOT NULL DEFAULT 0,
+    mission_id            INTEGER,
+    created_at            TEXT NOT NULL,
+    updated_at            TEXT NOT NULL,
+    FOREIGN KEY (mission_id) REFERENCES missions(id) ON DELETE SET NULL
+);
+CREATE INDEX IF NOT EXISTS idx_watches_next_check ON watches(next_check_at);
+
+-- One row per meaningful change only - never one per check. Retention is
+-- enforced in code (WatchStore trims to the newest N per watch), not here.
+CREATE TABLE IF NOT EXISTS watch_history (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    watch_id    INTEGER NOT NULL,
+    observed_at TEXT NOT NULL,
+    summary     TEXT NOT NULL,
+    old_value   TEXT,
+    new_value   TEXT,
+    FOREIGN KEY (watch_id) REFERENCES watches(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_watch_history_watch ON watch_history(watch_id, observed_at DESC);
 
 CREATE TABLE IF NOT EXISTS settings (
     key   TEXT PRIMARY KEY,
@@ -742,6 +783,44 @@ CREATE TABLE IF NOT EXISTS decision_alternatives (
         FOREIGN KEY (task_id) REFERENCES scheduled_tasks(id) ON DELETE CASCADE
     );
     CREATE INDEX IF NOT EXISTS idx_task_runs_task ON task_runs(task_id, started_at DESC);
+    """,
+    17: """
+    CREATE TABLE IF NOT EXISTS watches (
+        id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+        title                 TEXT NOT NULL,
+        url                   TEXT NOT NULL,
+        target_type           TEXT NOT NULL,
+        selection_hint        TEXT NOT NULL DEFAULT '',
+        condition             TEXT NOT NULL,
+        condition_value       TEXT NOT NULL DEFAULT '',
+        check_interval_seconds INTEGER NOT NULL,
+        baseline_hash         TEXT,
+        baseline_value        TEXT,
+        last_observed_hash    TEXT,
+        last_observed_value   TEXT,
+        last_checked_at       TEXT,
+        next_check_at         TEXT,
+        state                 TEXT NOT NULL DEFAULT 'active',
+        failure_count         INTEGER NOT NULL DEFAULT 0,
+        mission_id            INTEGER,
+        created_at            TEXT NOT NULL,
+        updated_at            TEXT NOT NULL,
+        FOREIGN KEY (mission_id) REFERENCES missions(id) ON DELETE SET NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_watches_next_check ON watches(next_check_at);
+
+    -- One row per meaningful change only - never one per check. Retention
+    -- is enforced in code (WatchStore trims to the newest N per watch).
+    CREATE TABLE IF NOT EXISTS watch_history (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        watch_id    INTEGER NOT NULL,
+        observed_at TEXT NOT NULL,
+        summary     TEXT NOT NULL,
+        old_value   TEXT,
+        new_value   TEXT,
+        FOREIGN KEY (watch_id) REFERENCES watches(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_watch_history_watch ON watch_history(watch_id, observed_at DESC);
     """,
 }
 

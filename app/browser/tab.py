@@ -51,6 +51,12 @@ class BrowserTab(QWidget):
     # selection menu can offer these, exactly like ask_py_requested above.
     save_highlight_requested = Signal(str, str, str)
     add_selection_to_mission_requested = Signal(str, str, str)
+    # "Watch this page" (no selection) / "Watch selected section" (selection)
+    # from the context menu - carry (url, title, selected_text), the last
+    # one empty for a whole-page watch. A tab knows nothing about Watches,
+    # only that its menu can offer these - same shape as the two above.
+    watch_page_requested = Signal(str, str, str)
+    watch_selection_requested = Signal(str, str, str)
 
     def __init__(
         self,
@@ -192,9 +198,18 @@ class BrowserTab(QWidget):
             mission_action.triggered.connect(
                 lambda _checked=False: self.add_selection_to_mission_requested.emit(
                     self._page.url().toString(), self.title(), selected))
+            watch_action = menu.addAction("Watch selected section")
+            watch_action.triggered.connect(
+                lambda _checked=False: self.watch_selection_requested.emit(
+                    self._page.url().toString(), self.title(), selected))
         else:
             action = menu.addAction("Ask Py about this page")
             action.triggered.connect(lambda _checked=False: self._ask_py(""))
+            menu.addSeparator()
+            watch_page_action = menu.addAction("Watch this page")
+            watch_page_action.triggered.connect(
+                lambda _checked=False: self.watch_page_requested.emit(
+                    self._page.url().toString(), self.title(), ""))
         return menu
 
     def _show_context_menu(self, pos) -> None:

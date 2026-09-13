@@ -67,6 +67,11 @@ class TaskRunner(QObject):
         self._timer = QTimer(self)
         self._timer.setInterval(_POLL_INTERVAL_MS)
         self._timer.timeout.connect(self._tick)
+        #: Public so other schedule-shaped features (Page Watches - see
+        #: app/watches/runner.py) can piggyback their own periodic check on
+        #: this same timer instead of starting a second background timing
+        #: system, per that phase's own architecture rule.
+        self.timer = self._timer
 
     def start(self) -> None:
         self._timer.start()
