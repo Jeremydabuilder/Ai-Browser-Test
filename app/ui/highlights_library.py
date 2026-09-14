@@ -64,12 +64,15 @@ def _saved_when(iso_timestamp: str) -> str:
 
 class HighlightsLibraryDialog(QDialog):
     def __init__(self, highlights: HighlightStore, parent: QWidget | None = None,
-                 *, on_ask_py=None, on_add_to_mission=None, knowledge_index=None) -> None:
+                 *, on_ask_py=None, on_add_to_mission=None, knowledge_index=None,
+                 knowledge_graph=None) -> None:
         super().__init__(parent)
         self._highlights = highlights
         #: Phase 13 - a deleted highlight's semantic-index entry must not
         #: outlive it. None in tests/contexts with no knowledge index.
         self._knowledge_index = knowledge_index
+        #: Phase 19 - same idea, for the research graph's Highlight node.
+        self._knowledge_graph = knowledge_graph
         #: Callbacks rather than signals: MainWindow is the only caller,
         #: and both actions need a live Highlight, not just an id - the
         #: same "callback, not a new route into the agent" shape
@@ -209,4 +212,6 @@ class HighlightsLibraryDialog(QDialog):
             self._highlights.remove(highlight.id)
             if self._knowledge_index is not None:
                 self._knowledge_index.remove_highlight(highlight.id)
+            if self._knowledge_graph is not None:
+                self._knowledge_graph.remove_highlight(highlight.id)
         self.refresh()

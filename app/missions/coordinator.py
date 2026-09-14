@@ -460,12 +460,20 @@ class MissionCoordinator(QObject):
         parent: QObject | None = None,
         graph_store: Any = None,
         require_plan_approval: bool = False,
+        knowledge_graph: Any = None,
     ) -> None:
         super().__init__(parent)
         self._missions = missions
         self._session_factory = session_factory
         self.limits = limits or CoordinatorLimits()
         self._graph_store = graph_store
+        #: Phase 19 KnowledgeGraphService, or None - MISSION INTEGRATION:
+        #: "Before fresh research, a Mission may query related previous
+        #: Missions / existing claims / known supporting sources." Named
+        #: distinctly from ``_graph_store`` (the Phase 10 execution-graph
+        #: persistence, an unrelated concept) to avoid any confusion
+        #: between the two graphs this coordinator now touches.
+        self._knowledge_graph = knowledge_graph
         self._mission_id: int | None = None
         self.tasks: list[WorkerTask] = []
         self._next_id = 1
@@ -482,6 +490,11 @@ class MissionCoordinator(QObject):
         #: section. False (the default) preserves Phase 9's behaviour:
         #: execution begins the moment the plan exists.
         self._require_plan_approval = require_plan_approval
+        #: Phase 18 hardening: the specific reason _build_worker_session
+        #: last returned None for, so _launch_worker/_run_planner can show
+        #: it instead of the generic "Py is not available." - set on every
+        #: call, read immediately after by the caller.
+        self._last_worker_block_reason = ""
         self._plan_pending = False
 
     # -- entry point --------------------------------------------------------
@@ -514,7 +527,8 @@ class MissionCoordinator(QObject):
         prompt = self._planner_prompt(goal, mission)
         session = self._build_worker_session(WorkerRole.PLANNER)
         if session is None:
-            self._fallback_plan(planner_task, goal, "Py is not available.")
+            self._fallback_plan(planner_task, goal, self._last_worker_block_reason or
+                               "Py is not available.")
             return
         self._workers_launched += 1
 
@@ -570,12 +584,39 @@ class MissionCoordinator(QObject):
             "the goal needs a final written answer.")
         return (f"You are the Planner for this Mission.\nGoal: {goal}\n"
                f"{self._shared_state_block(mission)}\n"
+               f"{self._historical_context_block(goal, mission)}\n"
                "Decide whether this goal is best split into a small number of bounded "
                "tasks for specialised workers (Researcher: gathers information; "
                "Browser Operator: performs browser actions like filling forms; "
                "Analyst: compares/synthesizes findings; Writer: writes the final answer; "
                "Critic: checks claims). Keep the plan small and avoid unnecessary tasks.\n"
                f"{schema_hint}")
+
+    def _historical_context_block(self, goal: str, mission) -> str:
+        """Part MISSION INTEGRATION: surface prior Missions on a similar
+        topic before planning fresh research - "You previously researched
+        MCP permissions in Mission X" - as historical context only. Never
+        presented as current web evidence (Part MISSION INTEGRATION's own
+        warning): every entry is explicitly labeled "previously researched"
+        with its own date, inside an untrusted-content fence like any
+        other non-authoritative context."""
+        if self._knowledge_graph is None:
+            return ""
+        workspace_id = getattr(mission, "workspace_id", None) if mission is not None else None
+        try:
+            entries = self._knowledge_graph.historical_context_for_goal(
+                goal, workspace_id=workspace_id)
+        except Exception:  # noqa: BLE001 - historical context is never load-bearing
+            return ""
+        if not entries:
+            return ""
+        from app.agent.tools import wrap_untrusted
+        from app.security.provenance import Provenance
+
+        return ("Historical context (previously researched - NOT current web evidence, "
+               "check freshness before relying on it):\n" +
+               wrap_untrusted({"previous_missions": entries},
+                             provenance=Provenance.KNOWLEDGE_RETRIEVAL))
 
     # -- shared state, assembled fresh from MissionService every time --------
     def _shared_state_block(self, mission) -> str:
@@ -858,7 +899,7 @@ class MissionCoordinator(QObject):
         session = self._build_worker_session(task.role)
         if session is None:
             task.state = WorkerState.FAILED
-            task.error = "Py is not available."
+            task.error = self._last_worker_block_reason or "Py is not available."
             self._sync_node(task)
             self.worker_changed.emit(task)
             self._advance()
@@ -1096,8 +1137,17 @@ class MissionCoordinator(QObject):
 
     # -- building a worker's session and prompt ------------------------------
     def _build_worker_session(self, role: str):
+        """Phase 18 hardening: a worker role that actually needs tool
+        calling (Researcher, Browser Operator, ...) is blocked here rather
+        than launched blind against a model confirmed unable to use tools -
+        the same "only a *confirmed* UNSUPPORTED blocks" rule
+        require_tool_capability already applies at the Skill-run and
+        scheduled-Mission entry points (Parts 10/16/17/18). A role with an
+        empty tool allowlist (Planner/Analyst/Writer/Critic) has nothing a
+        tool-incapable model would fail to do, so it is never gated here."""
         session = self._session_factory()
         if session is None:
+            self._last_worker_block_reason = ""
             return None
         allowed = ROLE_ALLOWED_TOOLS.get(role, frozenset())
         mcp = getattr(session, "_mcp", None)
@@ -1109,6 +1159,17 @@ class MissionCoordinator(QObject):
         if config is not None and hasattr(config, "limits"):
             config.limits.max_turns = self.limits.max_turns_per_worker
             config.limits.max_tool_calls = self.limits.max_tool_calls_per_worker
+        if config is not None and allowed:
+            from app.agent.capabilities import default_cache, require_tool_capability
+
+            caps = default_cache().get(getattr(config, "local_endpoint", ""),
+                                       getattr(config, "model", ""))
+            blocked = require_tool_capability(caps)
+            if blocked:
+                self._last_worker_block_reason = (
+                    f"{WorkerRole.LABELS.get(role, role)} needs tool calling: {blocked}")
+                return None
+        self._last_worker_block_reason = ""
         return session
 
     def _worker_prompt(self, task: WorkerTask, mission) -> str:

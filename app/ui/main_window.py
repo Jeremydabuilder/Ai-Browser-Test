@@ -101,6 +101,16 @@ class MainWindow(QMainWindow):
         self.knowledge_store = KnowledgeStore(database)
         self.knowledge_index = KnowledgeIndex(self.knowledge_store, self.settings)
 
+        #: Research/Knowledge Graph (Phase 19) - see app/knowledge_graph/.
+        #: Unlike knowledge_index, never gated behind an enabled toggle:
+        #: explicit Mission/finding/source relationships are always built.
+        from app.storage.knowledge_graph_store import GraphStore
+        from app.knowledge_graph.service import KnowledgeGraphService, RejectionStore
+
+        self.graph_store = GraphStore(database)
+        self.knowledge_graph = KnowledgeGraphService(
+            self.graph_store, rejections=RejectionStore(self.settings))
+
         self.nav_bar = NavigationBar(self)
         self.addToolBar(self.nav_bar)
         from app.ui.workspace_switcher import WorkspaceSwitcher
@@ -130,7 +140,7 @@ class MainWindow(QMainWindow):
         # drives it; see app/missions/service.py.
         self.missions = MissionService(
             MissionStore(database), self.controller, self.tabs, self,
-            knowledge=self.knowledge_index)
+            knowledge=self.knowledge_index, graph=self.knowledge_graph)
         #: MCP client core (Phase 1, read-only). Owned here for the same
         #: reason as Missions: it must outlive the agent panel and every
         #: rebuilt AgentSession, and connections should stay live across a
@@ -367,6 +377,8 @@ class MainWindow(QMainWindow):
                          self._show_mission_library)
         self._add_action(tools_menu, "&Highlights Library", "Ctrl+Shift+H",
                          self._show_highlights_library)
+        self._add_action(tools_menu, "&Research Graph…", "Ctrl+Shift+G",
+                         self._show_research_graph)
         self._add_action(tools_menu, "&Skills Library", "Ctrl+Shift+S",
                          self._show_skills_library)
         self._add_action(tools_menu, "&Task Center…", "Ctrl+Shift+J",
@@ -1316,14 +1328,23 @@ class MainWindow(QMainWindow):
         as ordinary history metadata via the sibling connection above."""
         from app.browser.pdf_context import PdfExtractionError, extract_pdf, is_pdf_url
 
-        if not self.knowledge_index.enabled or not is_pdf_url(url) or not url.startswith("file://"):
+        if not is_pdf_url(url) or not url.startswith("file://"):
+            return
+        if not self.knowledge_index.enabled and self.knowledge_graph is None:
             return
         try:
             document = extract_pdf(url)
         except PdfExtractionError:
             return
-        self.knowledge_index.index_pdf(
-            url, [page.text for page in document.pages], title=document.title or url)
+        title = document.title or url
+        if self.knowledge_index.enabled:
+            self.knowledge_index.index_pdf(
+                url, [page.text for page in document.pages], title=title)
+        if self.knowledge_graph is not None:
+            from app.knowledge_graph.types import NodeType
+
+            full_text = "\n".join(page.text for page in document.pages)
+            self.knowledge_graph.on_document_indexed(NodeType.PDF, url, full_text, title=title)
 
     def _ask_py_about_local_file(self) -> None:
         """Let the user explicitly pick one local file, parse it locally,
@@ -1354,6 +1375,11 @@ class MainWindow(QMainWindow):
             return
         self.knowledge_index.index_file(
             document.source, document.text, title=document.filename)
+        if self.knowledge_graph is not None:
+            from app.knowledge_graph.types import NodeType
+
+            self.knowledge_graph.on_document_indexed(
+                NodeType.FILE, document.source, document.text, title=document.filename)
         block = wrap_untrusted({
             "filename": document.filename,
             "source": document.source,
@@ -1457,6 +1483,7 @@ class MainWindow(QMainWindow):
         self.knowledge_index.index_highlight(
             highlight.id, highlight.text, title=highlight.title, location=highlight.url,
             workspace_id=self._current_workspace_id)
+        self.knowledge_graph.on_highlight_created(highlight)
         if truncated:
             QMessageBox.information(
                 self, "Highlight saved",
@@ -1750,7 +1777,14 @@ class MainWindow(QMainWindow):
             self.highlights, self,
             on_ask_py=self._ask_py_about_highlight,
             on_add_to_mission=lambda h: self._add_selection_to_mission(h.url, h.title, h.text),
-            knowledge_index=self.knowledge_index)
+            knowledge_index=self.knowledge_index, knowledge_graph=self.knowledge_graph)
+        dialog.exec()
+
+    def _show_research_graph(self) -> None:
+        from app.ui.research_graph import ResearchGraphDialog
+
+        dialog = ResearchGraphDialog(
+            self.knowledge_graph, self, workspace_id=self._current_workspace_id)
         dialog.exec()
 
     def _show_skills_library(self) -> None:
@@ -2372,7 +2406,7 @@ class MainWindow(QMainWindow):
         if self._agent_session is None:
             self._agent_session, reason = build_session(
                 self.controller, self, self.settings, self.missions, self.mcp,
-                knowledge=self.knowledge_index)
+                knowledge=self.knowledge_index, graph=self.knowledge_graph)
             if self._agent_session is None:
                 self._agent_unavailable = True
                 self._show_status(f"AI agent unavailable: {reason}")
@@ -2398,7 +2432,7 @@ class MainWindow(QMainWindow):
         session = self._ensure_agent_session()
         self.set_side_panel(AgentPanel(session, self, self.missions, self.mcp,
                                        browser=self.controller, highlights=self.highlights,
-                                       knowledge=self.knowledge_index))
+                                       knowledge=self.knowledge_index, graph=self.knowledge_graph))
         self._agent_action.setChecked(True)
 
     # ------------------------------------------------------------------
@@ -2526,7 +2560,7 @@ class MainWindow(QMainWindow):
 
         session, reason = build_session(
             self.controller, self, self.settings, self.missions, self.mcp,
-            knowledge=self.knowledge_index)
+            knowledge=self.knowledge_index, graph=self.knowledge_graph)
         if session is None:
             self._show_status(f"A Multi-Agent worker could not start: {reason}")
             return None
@@ -2567,7 +2601,8 @@ class MainWindow(QMainWindow):
         # all (should_delegate said no) never reaches that preview.
         coordinator = MissionCoordinator(
             self.missions, self._build_worker_agent_session, CoordinatorLimits(), self,
-            graph_store=self.mission_graph, require_plan_approval=True)
+            graph_store=self.mission_graph, require_plan_approval=True,
+            knowledge_graph=self.knowledge_graph)
         coordinator.result_ready.connect(self._on_multi_agent_result)
         coordinator.failed.connect(self._on_multi_agent_failed)
 

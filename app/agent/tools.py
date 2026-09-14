@@ -518,6 +518,39 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                      "description": "Maximum results to return. Defaults to 5."}},
           ["query"]),
 
+    # Phase 19 - the research/knowledge graph. Read-only: these tools never
+    # write a node or edge, only look at what already exists. Always
+    # available regardless of the Semantic History toggle (see
+    # app/knowledge_graph/service.py's module docstring).
+    _tool("knowledge_graph_search",
+          "Search the research graph for Missions, findings, sources (pages/PDFs/files), "
+          "highlights, topics, and claims by title/name. Use this to find a starting node "
+          "before asking about its sources, related items, or provenance.",
+          {"query": {"type": "string", "description": "What to look for, in plain words."},
+           "node_type": {"type": "string",
+                        "description": "Optional: restrict to one kind - mission, finding, "
+                                       "webpage, pdf, file, highlight, topic, or claim."}},
+          ["query"]),
+    _tool("knowledge_graph_sources",
+          "Given a graph node id (from knowledge_graph_search), return what supports or "
+          "contradicts it: a claim's supporting sources and any contradicting claims (with "
+          "whether that is a genuine contradiction, superseded information, or a differing "
+          "opinion), or a source's related sources and the findings/Missions that used it.",
+          {"node_id": {"type": "string", "description": "A graph node id, e.g. 'claim:abc123' "
+                                                        "or 'webpage:abc123'."}},
+          ["node_id"]),
+    _tool("knowledge_graph_related",
+          "Given a graph node id, return its immediate neighborhood in the research graph - "
+          "connected Missions, findings, sources, topics, and claims, with the relationship "
+          "each one has to it. Capped to a small neighborhood, never the whole graph.",
+          {"node_id": {"type": "string", "description": "A graph node id."}},
+          ["node_id"]),
+    _tool("knowledge_graph_provenance",
+          "Given a graph node id (typically a claim or finding), trace where it originally "
+          "came from - the chain back to its original evidence.",
+          {"node_id": {"type": "string", "description": "A graph node id."}},
+          ["node_id"]),
+
     # Phase 14 - visual computer-use FALLBACK. Only offered when a
     # vision-capable provider is configured (see ToolRegistry.schemas) -
     # never a default path. Use the structured tools above (browser_get_page,
@@ -1008,7 +1041,7 @@ class ToolRegistry:
     def __init__(self, browser: BrowserController, limits: ContextLimits | None = None,
                  missions=None, *, autonomy: str = Autonomy.STANDARD, mcp=None,
                  allowed_tools: frozenset[str] | None = None, knowledge=None,
-                 vision_capable: bool = False) -> None:
+                 vision_capable: bool = False, graph=None) -> None:
         """``missions`` is the Mission service, or None when there is not one.
 
         Typed loosely on purpose: this class needs exactly one method from it,
@@ -1050,6 +1083,11 @@ class ToolRegistry:
         #: unavailable/disabled - knowledge_search then simply reports no
         #: results (see _run_search) rather than failing.
         self._knowledge = knowledge
+        #: Phase 19 KnowledgeGraphService, or None where the graph is
+        #: unavailable (e.g. a bare test) - the graph_* tools then simply
+        #: report nothing found, the same "not an error" shape
+        #: knowledge_search already uses for a disabled/absent index.
+        self._graph = graph
         #: Phase 14 - whether the configured provider can process images
         #: (see app.agent.config.provider_supports_images). Gates whether
         #: the visual-fallback tools are even offered: a text-only
@@ -1890,6 +1928,91 @@ class ToolRegistry:
         } for r in results]
         return ToolOutcome(
             immediate={"ok": True, "results": payload}, activity="Searching local knowledge")
+
+    # -- Phase 19: research/knowledge graph - read-only ---------------------
+    @staticmethod
+    def _graph_node_summary(node) -> dict[str, Any] | None:
+        """A small, fenced summary of one graph node - never the raw data
+        dict unfenced, since it may carry text drawn from a webpage/PDF/
+        file (Part SECURITY: a graph node is untrusted evidence, never an
+        instruction)."""
+        if node is None:
+            return None
+        payload = {"title": node.title, "source_ref": node.source_ref, "data": node.data}
+        return {
+            "id": node.id, "type": node.node_type,
+            "content": wrap_untrusted(payload, provenance=Provenance.KNOWLEDGE_RETRIEVAL),
+        }
+
+    def _run_graph_search(self, args: dict) -> ToolOutcome:
+        query = self._string(args, "query", required=True)
+        node_type = self._string(args, "node_type") or None
+        if self._graph is None:
+            return ToolOutcome(
+                immediate={"ok": True, "results": [], "note": "The research graph is unavailable."},
+                activity="Searching the research graph")
+        from app.knowledge_graph.types import NodeType
+
+        node_types = (node_type,) if node_type in NodeType.ALL else None
+        results = self._graph.search(query, node_types=node_types, limit=10)
+        payload = [self._graph_node_summary(n) for n in results]
+        return ToolOutcome(immediate={"ok": True, "results": payload},
+                           activity="Searching the research graph")
+
+    def _run_graph_sources(self, args: dict) -> ToolOutcome:
+        node_id = self._string(args, "node_id", required=True)
+        if self._graph is None:
+            return ToolOutcome(
+                immediate={"ok": True, "sources": [], "note": "The research graph is unavailable."},
+                activity="Looking up graph sources")
+        from app.knowledge_graph.types import NodeType
+
+        node = self._graph.get_node(node_id)
+        if node is None:
+            return ToolOutcome(immediate=_error(
+                "NOT_FOUND", f"No graph node with id '{node_id}'.",
+                hint="Use knowledge_graph_search to find a valid node id."),
+                activity="Looking up graph sources")
+        if node.node_type == NodeType.CLAIM:
+            sources = [self._graph_node_summary(n) for n in self._graph.sources_for_claim(node_id)]
+            contradictions = [
+                {"kind": kind, **(self._graph_node_summary(n) or {})}
+                for n, kind in self._graph.contradictions_for_claim(node_id)
+            ]
+            return ToolOutcome(
+                immediate={"ok": True, "sources": sources, "contradictions": contradictions},
+                activity="Looking up graph sources")
+        related = [self._graph_node_summary(n) for n in self._graph.related_sources(node_id)]
+        findings = [self._graph_node_summary(n) for n in self._graph.findings_for_source(node_id)]
+        missions = [self._graph_node_summary(n) for n in self._graph.missions_for_source(node_id)]
+        return ToolOutcome(
+            immediate={"ok": True, "related_sources": related, "findings": findings,
+                      "missions": missions},
+            activity="Looking up graph sources")
+
+    def _run_graph_related(self, args: dict) -> ToolOutcome:
+        node_id = self._string(args, "node_id", required=True)
+        if self._graph is None:
+            return ToolOutcome(
+                immediate={"ok": True, "neighbors": [], "note": "The research graph is unavailable."},
+                activity="Finding related graph nodes")
+        neighbors = self._graph.neighbors(node_id, limit=25)
+        payload = [
+            {"relationship": n.edge.edge_type, "direction": n.direction,
+             **(self._graph_node_summary(n.node) or {})}
+            for n in neighbors if n.node is not None
+        ]
+        return ToolOutcome(immediate={"ok": True, "neighbors": payload},
+                           activity="Finding related graph nodes")
+
+    def _run_graph_provenance(self, args: dict) -> ToolOutcome:
+        node_id = self._string(args, "node_id", required=True)
+        if self._graph is None:
+            return ToolOutcome(
+                immediate={"ok": True, "chain": [], "note": "The research graph is unavailable."},
+                activity="Tracing graph provenance")
+        chain = [self._graph_node_summary(n) for n in self._graph.provenance_chain(node_id)]
+        return ToolOutcome(immediate={"ok": True, "chain": chain}, activity="Tracing graph provenance")
 
     def _run_get_page(self, args: dict) -> ToolOutcome:
         return ToolOutcome(future=self._browser.get_page_structure(

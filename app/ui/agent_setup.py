@@ -531,7 +531,16 @@ class ApiKeyDialog(QDialog):
         """Part 4: never fails the whole provider setup because listing
         models isn't available - an empty result just falls back to manual
         entry, silently, since a local runtime with no models installed
-        yet is a completely normal state, not an error to alarm over."""
+        yet is a completely normal state, not an error to alarm over.
+
+        Phase 18 hardening: for Ollama, also asks for each model's real
+        ``/api/show`` capability metadata (see OllamaClient.list_models's
+        ``include_capabilities``) and, when a model reports one, seeds the
+        shared capability cache from it - so a model that genuinely
+        advertises tool/vision support shows that immediately, without
+        waiting for (or requiring) an explicit probe request."""
+        from app.agent.config import PROVIDER_OLLAMA
+
         provider_id = self._current_other_provider()
         client_class = self._local_client_class(provider_id)
         endpoint = self._current_local_endpoint()
@@ -539,10 +548,32 @@ class ApiKeyDialog(QDialog):
         current = self._selected_local_model()
 
         def done(models: list) -> None:
+            if provider_id == PROVIDER_OLLAMA:
+                self._seed_ollama_capabilities(endpoint, models)
             self._populate_local_model_combo(provider_id, models, current)
 
-        self._run_other_call(client_class.list_models, (key,), done,
-                             kwargs={"base_url": endpoint})
+        kwargs = {"base_url": endpoint}
+        if provider_id == PROVIDER_OLLAMA:
+            kwargs["include_capabilities"] = True
+        self._run_other_call(client_class.list_models, (key,), done, kwargs=kwargs)
+
+    @staticmethod
+    def _seed_ollama_capabilities(endpoint: str, models: list) -> None:
+        from app.agent.capabilities import capabilities_from_ollama_entry, default_cache
+
+        cache = default_cache()
+        for entry in models:
+            if not isinstance(entry, dict):
+                continue
+            reported = entry.get("capabilities")
+            if not isinstance(reported, list):
+                continue
+            model_id = entry.get("id", "")
+            if not model_id:
+                continue
+            caps = capabilities_from_ollama_entry({"capabilities": reported})
+            if caps.source:  # only a genuine metadata answer overwrites the cache
+                cache.set(endpoint, model_id, caps)
 
     def _toggle_local_custom_model(self, checked: bool) -> None:
         self._local_model_box.setEnabled(not checked)
@@ -1398,7 +1429,8 @@ def build_transport(credential, config):
     return ClaudeClient(credential, config)
 
 
-def build_session(browser, parent=None, settings=None, missions=None, mcp=None, knowledge=None):
+def build_session(browser, parent=None, settings=None, missions=None, mcp=None, knowledge=None,
+                  graph=None):
     """Create an AgentSession if the agent can run, else return (None, reason).
 
     Every failure path here is soft. A missing SDK or credential must leave a
@@ -1436,7 +1468,7 @@ def build_session(browser, parent=None, settings=None, missions=None, mcp=None, 
     try:
         transport = build_transport(credential, config)
         return AgentSession(browser, transport, config, parent, missions=missions, mcp=mcp,
-                           knowledge=knowledge), ""
+                           knowledge=knowledge, graph=graph), ""
     except BaseException as exc:  # noqa: BLE001
         # Nothing the agent does may take the browser down with it.
         if isinstance(exc, (KeyboardInterrupt, SystemExit)):

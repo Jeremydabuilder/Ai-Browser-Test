@@ -50,7 +50,8 @@ from app.agent.local_providers import (  # noqa: E402
 # ---------------------------------------------------------------------------
 
 def _ollama_server(*, installed: list[str] | None = None, chat_ok: bool = True,
-                   tool_call: bool = False, loading: bool = False):
+                   tool_call: bool = False, loading: bool = False,
+                   show_capabilities: dict[str, list[str]] | None = None):
     installed = installed or ["llama3:latest"]
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -60,6 +61,12 @@ def _ollama_server(*, installed: list[str] | None = None, chat_ok: bool = True,
                  "details": {"family": "llama", "parameter_size": "8B",
                             "quantization_level": "Q4_0"}}
                 for name in installed]})
+        if request.url.path == "/api/show":
+            body = json.loads(request.content)
+            model = body.get("model", "")
+            if show_capabilities is not None and model in show_capabilities:
+                return httpx.Response(200, json={"capabilities": show_capabilities[model]})
+            return httpx.Response(404)
         if request.url.path == "/v1/chat/completions":
             if loading:
                 return httpx.Response(503, json={"error": {"message": "model is loading"}})
@@ -273,6 +280,49 @@ class OllamaProviderTests(unittest.TestCase):
         ok, message = OllamaClient.test_connection(
             "", "", base_url="http://127.0.0.1:11434", transport=_ollama_server())
         self.assertTrue(ok)
+
+    # -- Phase 18 hardening: /api/show wired into live discovery -----------
+    def test_show_capabilities_returns_raw_payload(self) -> None:
+        transport = _ollama_server(
+            installed=["llama3:latest"],
+            show_capabilities={"llama3:latest": ["completion", "tools", "vision"]})
+        payload = OllamaClient.show_capabilities(
+            "http://127.0.0.1:11434", "llama3:latest", transport=transport)
+        self.assertEqual(payload, {"capabilities": ["completion", "tools", "vision"]})
+
+    def test_show_capabilities_missing_returns_none(self) -> None:
+        transport = _ollama_server(installed=["llama3:latest"], show_capabilities={})
+        payload = OllamaClient.show_capabilities(
+            "http://127.0.0.1:11434", "llama3:latest", transport=transport)
+        self.assertIsNone(payload)
+
+    def test_list_models_include_capabilities_attaches_real_metadata(self) -> None:
+        transport = _ollama_server(
+            installed=["llama3:latest", "tinymodel:latest"],
+            show_capabilities={"llama3:latest": ["completion", "tools"]})
+        entries = OllamaClient.list_models(
+            "", base_url="http://127.0.0.1:11434", transport=transport,
+            include_capabilities=True)
+        by_id = {e["id"]: e for e in entries}
+        self.assertEqual(by_id["llama3:latest"]["capabilities"], ["completion", "tools"])
+        # A model /api/show does not recognise gets no fabricated capabilities.
+        self.assertNotIn("capabilities", by_id["tinymodel:latest"])
+
+    def test_list_models_without_include_capabilities_never_calls_show(self) -> None:
+        """Part 22: never eagerly probe every provider - the default
+        discovery call must not attach capability metadata unless asked."""
+        transport = _ollama_server(
+            installed=["llama3:latest"],
+            show_capabilities={"llama3:latest": ["completion", "tools"]})
+        entries = OllamaClient.list_models(
+            "", base_url="http://127.0.0.1:11434", transport=transport)
+        self.assertNotIn("capabilities", entries[0])
+
+    def test_capabilities_from_ollama_entry_reflects_real_metadata(self) -> None:
+        real = caps.capabilities_from_ollama_entry({"capabilities": ["completion", "tools"]})
+        self.assertEqual(real.tools, caps.Capability.SUPPORTED)
+        self.assertEqual(real.vision, caps.Capability.UNSUPPORTED)
+        self.assertEqual(real.source, "metadata")
 
 
 # ---------------------------------------------------------------------------

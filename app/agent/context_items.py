@@ -50,6 +50,11 @@ ACTION_IMAGE = "action:image"
 #: findings, highlights, PDFs, files) at build() time - see
 #: ContextComposer.build's "knowledge" branch.
 ACTION_KNOWLEDGE = "action:knowledge"
+#: Phase 19 - like ACTION_KNOWLEDGE, selecting this marks that the message
+#: about to be sent should also be used as a search query over the
+#: research graph (app.knowledge_graph) at build() time, surfacing a small,
+#: relevant subgraph rather than dumping the whole graph into the prompt.
+ACTION_GRAPH = "action:graph"
 
 
 @dataclass(frozen=True)
@@ -92,7 +97,7 @@ class ContextComposer:
     """
 
     def __init__(self, *, browser=None, missions=None, mcp=None, highlights=None,
-                 knowledge=None) -> None:
+                 knowledge=None, graph=None) -> None:
         self._browser = browser
         self._missions = missions
         self._mcp = mcp
@@ -105,6 +110,10 @@ class ContextComposer:
         #: off-by-default feature should not even offer itself in the
         #: composer while the user has not opted in.
         self._knowledge = knowledge
+        #: Phase 19 KnowledgeGraphService, or None. Unlike @knowledge, this
+        #: candidate is not gated behind any toggle - the research graph is
+        #: always available (see its own module docstring).
+        self._graph = graph
         self._selected: dict[str, ContextItem] = {}
 
     # -- candidates --------------------------------------------------------
@@ -122,6 +131,11 @@ class ContextComposer:
                 id=ACTION_KNOWLEDGE, kind=ACTION_KNOWLEDGE,
                 title="Search Knowledge & History…",
                 subtitle="Retrieves relevant past pages/Missions/highlights for your question"))
+        if self._graph is not None:
+            items.append(ContextItem(
+                id=ACTION_GRAPH, kind=ACTION_GRAPH,
+                title="Search Research Graph…",
+                subtitle="Retrieves related Missions/findings/sources/claims for your question"))
         items.append(ContextItem(id=ACTION_FILE, kind=ACTION_FILE,
                                  title="Attach a local file…",
                                  subtitle="Opens a file picker"))
@@ -326,6 +340,8 @@ class ContextComposer:
                 lines.append(wrap_untrusted(payload))
             elif item.kind == ACTION_KNOWLEDGE:
                 lines.append(self._knowledge_block(user_text))
+            elif item.kind == ACTION_GRAPH:
+                lines.append(self._graph_block(user_text))
             elif item.kind == "image":
                 if not provider_supports_images:
                     lines.append(
@@ -378,6 +394,39 @@ class ContextComposer:
             lines.append("  " + wrap_untrusted(payload, provenance=Provenance.KNOWLEDGE_RETRIEVAL))
         return "\n".join(lines)
 
+    #: Small subgraph only - "select only relevant nodes", the same
+    #: MAX_KNOWLEDGE_RESULTS-style cap, never the whole graph.
+    MAX_GRAPH_MATCHES = 3
+    MAX_GRAPH_NEIGHBORS = 5
+
+    def _graph_block(self, query: str) -> str:
+        """Retrieve a small, relevant subgraph for ``query`` - the top
+        matching nodes plus each one's strongest (first-returned)
+        relationships and provenance, fenced as untrusted exactly like
+        _knowledge_block. Never the whole graph."""
+        if self._graph is None or not query.strip():
+            return "- @research_graph: no query text to search for."
+        matches = self._graph.search(query, limit=self.MAX_GRAPH_MATCHES)
+        if not matches:
+            return "- @research_graph: no relevant Missions/findings/sources/claims found."
+        lines = ["- Relevant research graph nodes (Missions, findings, sources, topics and "
+                "claims you have already gathered - fenced as untrusted data below):"]
+        for node in matches:
+            neighbors = self._graph.neighbors(node.id, limit=self.MAX_GRAPH_NEIGHBORS)
+            payload = {
+                "type": node.node_type, "title": node.title, "source_ref": node.source_ref,
+                "data": node.data,
+                "relationships": [
+                    {"relationship": n.edge.edge_type, "direction": n.direction,
+                     "node_title": n.node.title if n.node else "", "node_type":
+                     n.node.node_type if n.node else ""}
+                    for n in neighbors if n.node is not None
+                ],
+            }
+            lines.append(f"  {node.node_type} \"{node.title}\":")
+            lines.append("  " + wrap_untrusted(payload, provenance=Provenance.KNOWLEDGE_RETRIEVAL))
+        return "\n".join(lines)
+
 
 def context_icon(kind: str) -> str:
     """A short plain-text glyph per kind, for a chip or a candidate row -
@@ -386,4 +435,5 @@ def context_icon(kind: str) -> str:
         "tab": "TAB", "pdf_tab": "PDF", "mission": "MISSION", "mcp_tool": "MCP",
         "file": "FILE", "image": "IMAGE", "highlight": "HIGHLIGHT",
         ACTION_FILE: "+FILE", ACTION_IMAGE: "+IMAGE", ACTION_KNOWLEDGE: "KNOWLEDGE",
+        ACTION_GRAPH: "GRAPH",
     }.get(kind, "?")

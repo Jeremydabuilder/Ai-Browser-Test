@@ -366,13 +366,60 @@ class OllamaClient(LocalOpenAICompatibleClient):
 
     @classmethod
     def list_models(cls, api_key: str, *, base_url: str | None = None, timeout: float = 10.0,
-                    transport: "httpx.BaseTransport | None" = None) -> list[dict[str, Any]]:
+                    transport: "httpx.BaseTransport | None" = None,
+                    include_capabilities: bool = False) -> list[dict[str, Any]]:
         """The shared ``{"id": ...}`` shape the settings dialog's model
-        dropdown expects, built from the native listing above."""
+        dropdown expects, built from the native listing above.
+
+        ``include_capabilities`` (Phase 18 hardening) additionally calls
+        ``/api/show`` per installed model and attaches its real, self-
+        reported capability metadata (never guessed from the name) as
+        each entry's ``"capabilities"`` key - see
+        ``app.agent.capabilities.capabilities_from_ollama_entry``, which
+        reads exactly that key. Off by default: this is one extra request
+        per installed model, and Part 22 is explicit that nothing should
+        eagerly probe every provider - callers that want live capability
+        data ask for it explicitly (e.g. a model-list refresh in Settings),
+        never on every ordinary discovery call.
+        """
         if not base_url:
             return []
-        return [{"id": m.name, "ollama": m} for m in
-               cls.list_installed(base_url, timeout=timeout, transport=transport)]
+        entries = []
+        for model in cls.list_installed(base_url, timeout=timeout, transport=transport):
+            entry: dict[str, Any] = {"id": model.name, "ollama": model}
+            if include_capabilities:
+                show = cls.show_capabilities(base_url, model.name, timeout=timeout,
+                                             transport=transport)
+                if show is not None:
+                    entry["capabilities"] = show.get("capabilities")
+            entries.append(entry)
+        return entries
+
+    @classmethod
+    def show_capabilities(cls, base_url: str, model: str, *, timeout: float = 10.0,
+                          transport: "httpx.BaseTransport | None" = None
+                          ) -> dict[str, Any] | None:
+        """Ollama's ``/api/show`` for one installed model - its
+        ``capabilities`` array (e.g. ``["completion", "tools", "vision"]``)
+        is the live metadata ``app.agent.capabilities.
+        capabilities_from_ollama_entry`` consumes. Returns the raw JSON
+        payload, or None if the endpoint is unreachable or does not
+        support this call on this Ollama build - never raises, matching
+        every other discovery method in this module (Part 4: a listing
+        failure must never fail provider setup)."""
+        try:
+            endpoint = validate_endpoint(base_url)
+        except LocalEndpointError:
+            return None
+        try:
+            with httpx.Client(base_url=endpoint, timeout=timeout, transport=transport) as client:
+                response = client.post("/api/show", json={"model": model})
+                if response.status_code != 200:
+                    return None
+                payload = response.json()
+                return payload if isinstance(payload, dict) else None
+        except Exception:  # noqa: BLE001 - a capability-metadata miss is never fatal
+            return None
 
     @staticmethod
     def _normalise_name(name: str) -> str:

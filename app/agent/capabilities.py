@@ -99,6 +99,19 @@ class ModelCapabilities:
     def blocks_vision(self) -> bool:
         return self.vision == Capability.UNSUPPORTED
 
+    def blocks_structured_output(self) -> bool:
+        """True only when structured output is *confirmed* unsupported -
+        the same conservative rule as blocks_tools/blocks_vision. Since no
+        provider in this codebase offers provider-side constrained
+        decoding today (see Skill.output_schema's own docstring), this is
+        never about "can it produce JSON at all" - every model gets the
+        same prompt+validate fallback (Part 12). It is about whether a
+        model has been confirmed unable to even follow a structured-
+        response instruction reliably (the same signal a tool-call probe
+        already produces - see probe_capabilities, which sets
+        structured_output from the tool-call probe result)."""
+        return self.structured_output == Capability.UNSUPPORTED
+
 
 def default_capabilities() -> ModelCapabilities:
     return ModelCapabilities()
@@ -449,6 +462,10 @@ def validate_skill_capability(skill, capabilities: ModelCapabilities | None) -> 
     if skill_requires_vision(skill) and capabilities.blocks_vision():
         return (f'"{skill.name}" needs a vision-capable model, and the selected one is not. '
                "Choose a different model to run this Skill.")
+    if skill_requires_structured_output(skill) and capabilities.blocks_structured_output():
+        return (f'"{skill.name}" needs a structured JSON response, and the selected model is '
+               "confirmed unable to follow that reliably. Choose a different model to run "
+               "this Skill.")
     return None
 
 

@@ -84,7 +84,7 @@ class MissionService(QObject):
     missions_changed = Signal(object)
 
     def __init__(self, store: MissionStore, controller=None, tabs=None,
-                 parent: QObject | None = None, *, knowledge=None) -> None:
+                 parent: QObject | None = None, *, knowledge=None, graph=None) -> None:
         """``controller`` is observed, never driven.
 
         The Mission system listens to BrowserController.action_completed to
@@ -104,6 +104,13 @@ class MissionService(QObject):
         self._controller = controller
         self._tabs = tabs
         self._knowledge = knowledge
+        #: Phase 19 KnowledgeGraphService (or None). Unlike ``knowledge``,
+        #: this is never gated behind an "enabled" toggle: explicit
+        #: Mission/finding/source relationships are built regardless of
+        #: whether Semantic History is on - see the module docstring in
+        #: app/knowledge_graph/service.py for why that is true by
+        #: construction rather than a runtime check here.
+        self._graph = graph
         self._active: Mission | None = None
         #: How many times a Mission has become active in this window. Runtime
         #: only - it exists to answer "is this the same activation the agent
@@ -626,6 +633,8 @@ class MissionService(QObject):
             self.missions_changed.emit(None)
             if self._knowledge is not None:
                 self._knowledge.remove_mission(mission_id)
+            if self._graph is not None:
+                self._graph.remove_mission(mission_id)
         return removed
 
     def restore(self, mission_id: int) -> bool:
@@ -694,6 +703,10 @@ class MissionService(QObject):
             if self._knowledge is not None:
                 self._knowledge.index_mission_finding(
                     finding.id, mission.id, finding.text, title=mission.title)
+            if self._graph is not None:
+                self._graph.on_finding_saved(
+                    finding_id=finding.id, mission=mission, text=finding.text,
+                    source_url=url, source_title=title)
         if outcome == self._store.TOO_LONG:
             result["limit"] = MAX_FINDING_CHARS
         if outcome == self._store.FULL:
@@ -734,6 +747,10 @@ class MissionService(QObject):
             if self._knowledge is not None:
                 self._knowledge.index_mission_finding(
                     finding.id, mission.id, finding.text, title=mission.title)
+            if self._graph is not None:
+                self._graph.on_finding_saved(
+                    finding_id=finding.id, mission=mission, text=finding.text,
+                    source_url=url, source_title=title)
         if outcome == self._store.TOO_LONG:
             result["limit"] = MAX_FINDING_CHARS
         if outcome == self._store.FULL:
@@ -929,6 +946,9 @@ class MissionService(QObject):
         self._announce(mission.id)
         if self._knowledge is not None:
             self._knowledge.index_mission(mission.id, mission.goal, text, title=mission.title)
+        if self._graph is not None:
+            updated = self._store.get(mission.id) or mission
+            self._graph.on_mission_completed(updated)
         return {"status": "saved"}
 
     def save_constraints(self, constraints: list[str]) -> dict:
@@ -963,6 +983,8 @@ class MissionService(QObject):
             self._refresh()
             if self._knowledge is not None:
                 self._knowledge.remove_mission_finding(finding_id)
+            if self._graph is not None:
+                self._graph.store.remove_node(f"finding:{finding_id}")
         return removed
 
     def source_page(self, finding: MissionFinding) -> MissionPage | None:

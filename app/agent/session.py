@@ -288,6 +288,7 @@ class AgentSession(QObject):
         missions=None,
         mcp=None,
         knowledge=None,
+        graph=None,
     ) -> None:
         super().__init__(parent)
         self.config = config or AgentConfig()
@@ -303,9 +304,12 @@ class AgentSession(QObject):
         #: Phase 13 KnowledgeIndex, or None - same "kept here so
         #: set_tool_allowlist can rebuild" reasoning as missions/mcp above.
         self._knowledge = knowledge
+        #: Phase 19 KnowledgeGraphService, or None - same reasoning.
+        self._graph = graph
         self._tools = ToolRegistry(browser, self.config.limits, missions,
                                   autonomy=self.config.autonomy, mcp=mcp, knowledge=knowledge,
-                                  vision_capable=provider_supports_images(self.config.provider))
+                                  vision_capable=provider_supports_images(self.config.provider),
+                                  graph=graph)
 
         # -- agent state, deliberately separate from browser state -------
         self._messages: list[dict[str, Any]] = []
@@ -529,7 +533,8 @@ class AgentSession(QObject):
         self._tools = ToolRegistry(self._browser, self.config.limits, self._missions,
                                    autonomy=self.config.autonomy, mcp=self._mcp,
                                    allowed_tools=allowed_tools, knowledge=self._knowledge,
-                                   vision_capable=provider_supports_images(self.config.provider))
+                                   vision_capable=provider_supports_images(self.config.provider),
+                                   graph=self._graph)
 
     def cancel(self) -> None:
         """Stop the current task.

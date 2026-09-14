@@ -25,7 +25,7 @@ import threading
 from pathlib import Path
 from typing import Any, Callable, Iterable, Sequence
 
-SCHEMA_VERSION = 24
+SCHEMA_VERSION = 25
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS history (
@@ -278,6 +278,54 @@ CREATE TABLE IF NOT EXISTS settings (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
 );
+
+-- Research Graph (Phase 19) - see app/knowledge_graph/. Stores identity,
+-- relationships and lightweight metadata only; full content stays in the
+-- store that already owns it (missions, highlights, knowledge_chunks).
+-- Node ids are deterministic (app/knowledge_graph/types.py's *_node_id
+-- helpers), so re-building the graph for content already seen upserts
+-- the same row rather than creating a duplicate. data_json is a small
+-- structured summary (never a copy of a page/PDF/file body).
+CREATE TABLE IF NOT EXISTS knowledge_graph_nodes (
+    id                TEXT PRIMARY KEY,
+    node_type         TEXT NOT NULL,
+    title             TEXT NOT NULL DEFAULT '',
+    data_json         TEXT NOT NULL DEFAULT '{}',
+    provenance        TEXT NOT NULL DEFAULT '',
+    source_ref        TEXT NOT NULL DEFAULT '',
+    mission_id        INTEGER,
+    workspace_id      TEXT,
+    extraction_method TEXT NOT NULL DEFAULT '',
+    confidence        REAL,
+    created_at        TEXT NOT NULL,
+    updated_at        TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_kg_nodes_type ON knowledge_graph_nodes(node_type);
+CREATE INDEX IF NOT EXISTS idx_kg_nodes_workspace ON knowledge_graph_nodes(workspace_id);
+CREATE INDEX IF NOT EXISTS idx_kg_nodes_mission ON knowledge_graph_nodes(mission_id);
+
+-- UNIQUE(edge_type, src_id, dst_id) is what makes "do not create a
+-- duplicate relationship" a constraint rather than a hopeful check - the
+-- same pattern mission_findings' UNIQUE(mission_id, key) already uses.
+-- ON DELETE CASCADE on both endpoints: an edge cannot outlive either node
+-- it connects (see GraphStore.remove_node, which relies on this rather
+-- than deleting edges itself).
+CREATE TABLE IF NOT EXISTS knowledge_graph_edges (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    edge_type    TEXT NOT NULL,
+    src_id       TEXT NOT NULL REFERENCES knowledge_graph_nodes(id) ON DELETE CASCADE,
+    dst_id       TEXT NOT NULL REFERENCES knowledge_graph_nodes(id) ON DELETE CASCADE,
+    data_json    TEXT NOT NULL DEFAULT '{}',
+    provenance   TEXT NOT NULL DEFAULT '',
+    mission_id   INTEGER,
+    workspace_id TEXT,
+    confidence   REAL,
+    created_at   TEXT NOT NULL,
+    UNIQUE(edge_type, src_id, dst_id)
+);
+CREATE INDEX IF NOT EXISTS idx_kg_edges_src ON knowledge_graph_edges(src_id);
+CREATE INDEX IF NOT EXISTS idx_kg_edges_dst ON knowledge_graph_edges(dst_id);
+CREATE INDEX IF NOT EXISTS idx_kg_edges_type ON knowledge_graph_edges(edge_type);
 
 -- Missions: a goal the user is working on, and the pages that served it.
 -- Pages are addressed by URL, never by tab id: a tab id is an in-memory
@@ -1093,6 +1141,45 @@ CREATE TABLE IF NOT EXISTS decision_alternatives (
     """,
     22: _migrate_22_add_skills_workflow_column,
     23: _migrate_23_add_workspace_columns,
+    # v24 -> v25: Research Graph (Phase 19) - identical to the block in
+    # _SCHEMA above, so a fresh profile and an upgraded one end up with the
+    # same two tables.
+    24: """
+    CREATE TABLE IF NOT EXISTS knowledge_graph_nodes (
+        id                TEXT PRIMARY KEY,
+        node_type         TEXT NOT NULL,
+        title             TEXT NOT NULL DEFAULT '',
+        data_json         TEXT NOT NULL DEFAULT '{}',
+        provenance        TEXT NOT NULL DEFAULT '',
+        source_ref        TEXT NOT NULL DEFAULT '',
+        mission_id        INTEGER,
+        workspace_id      TEXT,
+        extraction_method TEXT NOT NULL DEFAULT '',
+        confidence        REAL,
+        created_at        TEXT NOT NULL,
+        updated_at        TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_kg_nodes_type ON knowledge_graph_nodes(node_type);
+    CREATE INDEX IF NOT EXISTS idx_kg_nodes_workspace ON knowledge_graph_nodes(workspace_id);
+    CREATE INDEX IF NOT EXISTS idx_kg_nodes_mission ON knowledge_graph_nodes(mission_id);
+
+    CREATE TABLE IF NOT EXISTS knowledge_graph_edges (
+        id           INTEGER PRIMARY KEY AUTOINCREMENT,
+        edge_type    TEXT NOT NULL,
+        src_id       TEXT NOT NULL REFERENCES knowledge_graph_nodes(id) ON DELETE CASCADE,
+        dst_id       TEXT NOT NULL REFERENCES knowledge_graph_nodes(id) ON DELETE CASCADE,
+        data_json    TEXT NOT NULL DEFAULT '{}',
+        provenance   TEXT NOT NULL DEFAULT '',
+        mission_id   INTEGER,
+        workspace_id TEXT,
+        confidence   REAL,
+        created_at   TEXT NOT NULL,
+        UNIQUE(edge_type, src_id, dst_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_kg_edges_src ON knowledge_graph_edges(src_id);
+    CREATE INDEX IF NOT EXISTS idx_kg_edges_dst ON knowledge_graph_edges(dst_id);
+    CREATE INDEX IF NOT EXISTS idx_kg_edges_type ON knowledge_graph_edges(edge_type);
+    """,
 }
 
 _STOP = object()

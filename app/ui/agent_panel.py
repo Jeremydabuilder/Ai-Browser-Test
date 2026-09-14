@@ -600,7 +600,8 @@ class AgentPanel(QWidget):
     """The right-hand panel. Install it with MainWindow.set_side_panel()."""
 
     def __init__(self, session: AgentSession | None, parent: QWidget | None = None,
-                 missions=None, mcp=None, browser=None, highlights=None, knowledge=None) -> None:
+                 missions=None, mcp=None, browser=None, highlights=None, knowledge=None,
+                 graph=None) -> None:
         super().__init__(parent)
         m = theme.METRICS
         self._colours = theme.palette_for(QApplication.instance())
@@ -620,7 +621,7 @@ class AgentPanel(QWidget):
         #: Built once here, from the same collaborators MainWindow already
         #: owns, rather than looked up per keystroke.
         self._composer = ContextComposer(browser=browser, missions=missions, mcp=mcp,
-                                         highlights=highlights, knowledge=knowledge)
+                                         highlights=highlights, knowledge=knowledge, graph=graph)
         #: Candidates currently shown in the @-mention popup, in the same
         #: order as the popup's rows - so an arrow-key move or Enter can
         #: index straight into it without re-querying the composer.
