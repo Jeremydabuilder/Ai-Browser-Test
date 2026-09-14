@@ -873,6 +873,19 @@ class AgentPanel(QWidget):
         self.vision_warning.hide()
         layout.addWidget(self.vision_warning)
 
+        # Phase 18, Part 13: visible only when inference is genuinely local
+        # (see app.agent.capabilities.local_privacy_status) - never claims
+        # PyBrowser itself is offline, only that the model is.
+        self.local_privacy_notice = QLabel("", self)
+        self.local_privacy_notice.setWordWrap(True)
+        self.local_privacy_notice.setStyleSheet(
+            f"color:{c.muted}; background:{c.surface_alt};"
+            f" border-radius:{m.radius_sm}px; padding:{m.space_2}px;"
+            f" font-size:{m.text_xs}px;")
+        self.local_privacy_notice.hide()
+        layout.addWidget(self.local_privacy_notice)
+        self._update_local_privacy_notice()
+
         # The @-mention candidate popup. A plain QListWidget rather than a
         # QCompleter: it needs to show a mixed catalogue (tabs, PDFs,
         # Missions, MCP tools, the two attach actions) with a subtitle per
@@ -1179,12 +1192,25 @@ class AgentPanel(QWidget):
             "but will not be sent until you switch provider.")
         self.vision_warning.show()
 
+    def _update_local_privacy_notice(self) -> None:
+        if self._session is None:
+            self.local_privacy_notice.hide()
+            return
+        from app.agent.capabilities import local_privacy_status
+
+        message = local_privacy_status(self._session.config)
+        if message:
+            self.local_privacy_notice.setText(message)
+            self.local_privacy_notice.show()
+        else:
+            self.local_privacy_notice.hide()
+
     def _provider_supports_images(self) -> bool:
         if self._session is None:
             return False
-        from app.agent.config import provider_supports_images
+        from app.agent.capabilities import default_cache, effective_vision_support
 
-        return provider_supports_images(self._session.config.provider)
+        return effective_vision_support(self._session.config, default_cache())
 
     def _maybe_start_mission(self, text: str) -> None:
         """Auto-promote a typed, task-shaped message into a Mission, when

@@ -46,6 +46,11 @@ class Mode:
     BEDROCK = "bedrock"
     VERTEX = "vertex"
     NONE = "none"
+    #: Phase 18: a local provider (Ollama, LM Studio, Local OpenAI-
+    #: compatible) with no API key configured - the normal state for a
+    #: runtime that never asks for authentication at all, not an
+    #: incomplete setup. Available is True; secret is empty.
+    LOCAL_NO_AUTH = "local_no_auth"
 
 
 class CredentialKind:
@@ -276,7 +281,21 @@ PROVIDER_KEY_INFO: dict[str, tuple[str, str, str]] = {
     "groq": ("Groq", "GROQ_API_KEY", "groq-api-key"),
     "openrouter": ("OpenRouter", "OPENROUTER_API_KEY", "openrouter-api-key"),
     "gemini": ("Gemini", "GEMINI_API_KEY", "gemini-api-key"),
+    # Phase 18: a local runtime's key is optional, never required - see
+    # resolve_for's own branch for these three below - but still listed
+    # here so "Save API key"/"Remove stored key" in the settings dialog's
+    # shared section work unchanged for a Local OpenAI-compatible endpoint
+    # that does require one.
+    "ollama": ("Ollama", "OLLAMA_API_KEY", "ollama-api-key"),
+    "lmstudio": ("LM Studio", "LM_STUDIO_API_KEY", "lmstudio-api-key"),
+    "local_openai": ("Local OpenAI-compatible", "LOCAL_OPENAI_API_KEY", "local-openai-api-key"),
 }
+
+#: Phase 18: providers whose credential is never required to be "available" -
+#: a local runtime commonly has no authentication configured at all, and
+#: that is the normal case, not a missing-setup state the way it would be
+#: for a cloud provider. See resolve_for.
+_LOCAL_NO_KEY_REQUIRED = frozenset({"ollama", "lmstudio", "local_openai"})
 
 
 def provider_key_store(provider: str) -> ApiKeyStore:
@@ -316,5 +335,16 @@ def resolve_for(provider: str, store: ApiKeyStore | None = None) -> Credential:
     if env_key:
         return Credential(Mode.ENV_KEY, f"{label} API key from {env_var}",
                           secret=env_key, provider=provider)
+
+    if provider in _LOCAL_NO_KEY_REQUIRED:
+        # A local runtime with no key configured is the normal case, not
+        # an incomplete setup - Ollama and LM Studio never require one by
+        # default, and a self-hosted OpenAI-compatible server frequently
+        # has no auth at all. Mode.NONE would make Credential.available
+        # False, which build_session reads as "not configured" and refuses
+        # to build an agent at all - wrong here, since the endpoint (not a
+        # key) is what actually decides whether this provider can run.
+        return Credential(Mode.LOCAL_NO_AUTH, f"{label} - no API key configured (none required)",
+                          secret="", provider=provider)
 
     return Credential(Mode.NONE, f"no {label} credential configured", provider=provider)

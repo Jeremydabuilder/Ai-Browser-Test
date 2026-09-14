@@ -132,7 +132,68 @@ class TaskRunner(QObject):
         due = self._store.due_tasks(utc_now())
         if not due:
             return
-        self._fire(due[0], session)
+        task = due[0]
+        offline_reason = self._local_endpoint_offline_reason(session)
+        if offline_reason is not None:
+            # Part 18: never silently fall back to a different provider -
+            # this session's transport is whatever config.provider says,
+            # always, and nothing here ever substitutes a cloud one. Marked
+            # failed with the reason visible in Task Center, and the
+            # schedule still advances normally (the same recurrence math
+            # _on_finished uses for an ordinary failed run) so a daily/
+            # weekly task tries again next time rather than spinning on
+            # every 15s poll while the local service stays down.
+            self._fail_without_running(task, offline_reason)
+            return
+        self._fire(task, session)
+
+    def _local_endpoint_offline_reason(self, session) -> str | None:
+        """None if this task may run; otherwise the exact reason it can't.
+
+        Only ever checks reachability, never tool/vision capability - a
+        capability probe is a real extra request best reserved for an
+        explicit user action (Tools -> Configure AI Agent), not something
+        that runs on an unattended 15s poll.
+        """
+        from app.agent.config import is_local_provider
+
+        config = getattr(session, "config", None)
+        if config is None or not is_local_provider(config.provider):
+            return None
+        from app.agent.config import PROVIDER_LM_STUDIO, PROVIDER_LOCAL_OPENAI, PROVIDER_OLLAMA
+        from app.agent.local_providers import (
+            LMStudioClient, LocalOpenAICompatibleClient, OllamaClient,
+        )
+
+        client_class = {PROVIDER_OLLAMA: OllamaClient, PROVIDER_LM_STUDIO: LMStudioClient,
+                        PROVIDER_LOCAL_OPENAI: LocalOpenAICompatibleClient}.get(config.provider)
+        if client_class is None:
+            return None
+        ok, message = client_class.test_connection(
+            "", "", base_url=(config.local_endpoint or "").strip())
+        # A missing/blank model is expected here (this is a reachability
+        # check, not a real chat request) and must never itself count as
+        # "offline" - only a genuine connection failure does.
+        if ok or "choose" in message.lower():
+            return None
+        return message
+
+    def _fail_without_running(self, task: ScheduledTask, reason: str) -> None:
+        now = utc_now()
+        next_run_at = None
+        if task.schedule_kind != ScheduleKind.ONCE:
+            next_run_at_dt = compute_next_run(
+                task.schedule_kind, now=now, schedule_at=task.schedule_at,
+                time_of_day=task.time_of_day, weekday=task.weekday,
+                interval_seconds=task.interval_seconds, last_run_at=now)
+            next_run_at = next_run_at_dt.isoformat() if next_run_at_dt else None
+        state = TaskState.FAILED if task.schedule_kind == ScheduleKind.ONCE else TaskState.QUEUED
+        self._store.record_run_result(
+            task.id, state=state, next_run_at=next_run_at,
+            last_run_at=now.isoformat(), duration_s=0.0, error=reason)
+        updated = self._store.get(task.id)
+        if updated is not None:
+            self.mission_failed.emit(updated)
 
     def run_now(self, task_id: int) -> bool:
         """Force a task to run immediately, ignoring its next_run_at -

@@ -1372,11 +1372,12 @@ class MainWindow(QMainWindow):
         """
         from PySide6.QtWidgets import QMessageBox
 
-        from app.agent.config import AgentConfig, describe_provider, provider_supports_images
+        from app.agent.capabilities import default_cache, effective_vision_support
+        from app.agent.config import AgentConfig, describe_provider
 
         config = AgentConfig.from_environment(self.settings)
         provider = describe_provider(config.provider)
-        if not provider_supports_images(config.provider):
+        if not effective_vision_support(config, default_cache()):
             QMessageBox.warning(
                 self, "Images not supported by this provider",
                 f"The configured provider ({provider.label}) does not support "
@@ -1797,6 +1798,15 @@ class MainWindow(QMainWindow):
                 QMessageBox.StandardButton.Cancel)
             if choice != QMessageBox.StandardButton.Yes:
                 return
+
+        from app.agent.capabilities import default_cache, validate_skill_capability
+
+        capabilities = default_cache().get(
+            self._agent_session.config.local_endpoint, self._agent_session.config.model)
+        blocked = validate_skill_capability(skill, capabilities)
+        if blocked:
+            QMessageBox.warning(self, "Skill needs a different model", blocked)
+            return
 
         if self._side_panel is None:
             self._toggle_agent_panel()

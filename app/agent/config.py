@@ -139,6 +139,30 @@ PROVIDER_OPENAI = "openai"
 PROVIDER_GROQ = "groq"
 PROVIDER_OPENROUTER = "openrouter"
 PROVIDER_GEMINI = "gemini"
+#: Phase 18 - local/private inference. See app/agent/local_providers.py for
+#: the clients; kept as plain string constants here (not imported from that
+#: module) for the same reason every other provider id is a bare string in
+#: this file - config.py must stay importable without pulling in httpx or
+#: any client class, since the settings dialog and AgentConfig need these
+#: ids long before any network code runs.
+PROVIDER_OLLAMA = "ollama"
+PROVIDER_LM_STUDIO = "lmstudio"
+PROVIDER_LOCAL_OPENAI = "local_openai"
+
+LOCAL_PROVIDER_IDS = frozenset({PROVIDER_OLLAMA, PROVIDER_LM_STUDIO, PROVIDER_LOCAL_OPENAI})
+
+#: What each local provider's endpoint field starts pre-filled with -
+#: Ollama and LM Studio ship a real, documented default port; the generic
+#: provider has none, since there is no single "generic local server"
+#: default to guess at. The single source of truth for this mapping -
+#: app/agent/local_providers.py imports it from here rather than
+#: duplicating it, so config.py (which must stay importable without
+#: pulling in httpx or any client class) never has to import that module.
+_LOCAL_DEFAULT_ENDPOINTS: dict[str, str] = {
+    PROVIDER_OLLAMA: "http://127.0.0.1:11434",
+    PROVIDER_LM_STUDIO: "http://localhost:1234/v1",
+    PROVIDER_LOCAL_OPENAI: "",
+}
 
 DEFAULT_PROVIDER = PROVIDER_ANTHROPIC
 
@@ -170,6 +194,14 @@ class ProviderInfo:
     #: images; it is a statement about what this codebase's message
     #: translation currently builds for each wire format.
     supports_images: bool = False
+    #: Phase 18: this provider talks to a runtime the user configures the
+    #: address of, rather than one fixed cloud endpoint - see
+    #: app/agent/local_providers.py. Drives the settings dialog to show an
+    #: endpoint field instead of an API key field by default. Whether a
+    #: given configured endpoint is *actually* local (for the privacy
+    #: firewall) is decided by the endpoint's own host, never by this flag -
+    #: a "local" provider pointed at a remote URL is still remote.
+    is_local: bool = False
 
 
 PROVIDERS: tuple[ProviderInfo, ...] = (
@@ -202,6 +234,31 @@ PROVIDERS: tuple[ProviderInfo, ...] = (
         "OPENROUTER_API_KEY",
         "Several free-tier models. Get a key at openrouter.ai/keys.",
     ),
+    ProviderInfo(
+        PROVIDER_OLLAMA, "Ollama (local)",
+        "",
+        "Free, runs on this computer. Install from ollama.com, then pull a "
+        "model with e.g. `ollama pull llama3`. No API key needed.",
+        supports_images=True,
+        is_local=True,
+    ),
+    ProviderInfo(
+        PROVIDER_LM_STUDIO, "LM Studio (local)",
+        "",
+        "Free, runs on this computer. Install from lmstudio.ai, load a "
+        "model, and start its local server. No API key needed.",
+        supports_images=True,
+        is_local=True,
+    ),
+    ProviderInfo(
+        PROVIDER_LOCAL_OPENAI, "Local OpenAI-compatible",
+        "",
+        "For a self-hosted runtime with an OpenAI-compatible API (e.g. "
+        "llama.cpp server, vLLM, LocalAI). Enter its endpoint and model id; "
+        "an API key is optional.",
+        supports_images=True,
+        is_local=True,
+    ),
 )
 
 _PROVIDERS_BY_ID = {info.id: info for info in PROVIDERS}
@@ -215,6 +272,10 @@ def provider_supports_images(provider_id: str) -> bool:
     """Whether image context (a screenshot or local image file) can be sent
     to this provider today - see ProviderInfo.supports_images."""
     return describe_provider(provider_id).supports_images
+
+
+def is_local_provider(provider_id: str) -> bool:
+    return describe_provider(provider_id).is_local
 
 
 PROVIDER_IDS = frozenset(info.id for info in PROVIDERS)
@@ -231,6 +292,23 @@ def model_settings_key(provider_id: str) -> str:
     if provider_id == PROVIDER_ANTHROPIC:
         return KEY_AGENT_MODEL
     return f"{KEY_AGENT_MODEL}_{provider_id}"
+
+
+def default_local_endpoint(provider_id: str) -> str:
+    return _LOCAL_DEFAULT_ENDPOINTS.get(provider_id, "")
+
+
+def local_endpoint_settings_key(provider_id: str) -> str:
+    """Which settings-table key remembers a local provider's endpoint URL.
+
+    Not a secret - an endpoint is a plain preference like the model id
+    above, so it lives in the ordinary settings table, one key per
+    provider for the same reason model_settings_key is per-provider: each
+    local provider (Ollama, LM Studio, Local OpenAI-compatible) is
+    typically pointed somewhere different and switching between them must
+    not clobber each other's remembered address.
+    """
+    return f"agent_local_endpoint_{provider_id}"
 
 
 # ---------------------------------------------------------------------------
@@ -508,6 +586,11 @@ class AgentConfig:
     #: `anthropic-workspace-id` header; empty means "send nothing", which is
     #: correct for every ordinary key. See ClaudeClient._build_client.
     workspace_id: str = ""
+    #: Phase 18: the base URL a local provider (Ollama/LM Studio/Local
+    #: OpenAI-compatible) should be reached at. Not a secret - a plain
+    #: preference like model/effort - and meaningless for every cloud
+    #: provider, which ignores it. See app/agent/local_providers.py.
+    local_endpoint: str = ""
     cache: CacheSettings = field(default_factory=CacheSettings)
     context: ContextManagement = field(default_factory=ContextManagement)
     #: Wall-clock cap on a single Claude request.
@@ -574,6 +657,11 @@ class AgentConfig:
                     config.autonomy = stored_autonomy
                 config.workspace_id = (
                     settings.get(KEY_AGENT_WORKSPACE_ID, "") or "").strip()
+                if config.provider in LOCAL_PROVIDER_IDS:
+                    default_endpoint = _LOCAL_DEFAULT_ENDPOINTS.get(config.provider, "")
+                    config.local_endpoint = (settings.get(
+                        local_endpoint_settings_key(config.provider),
+                        default_endpoint) or default_endpoint).strip()
             except Exception:  # noqa: BLE001 - preferences are never load-bearing
                 pass
         elif config.provider != PROVIDER_ANTHROPIC:
@@ -594,6 +682,9 @@ class AgentConfig:
         workspace_id = (os.environ.get(ENV_WORKSPACE_ID) or "").strip()
         if workspace_id:
             config.workspace_id = workspace_id
+        local_endpoint = (os.environ.get(ENV_LOCAL_ENDPOINT) or "").strip()
+        if local_endpoint:
+            config.local_endpoint = local_endpoint
         cache = (os.environ.get(ENV_CACHE) or "").strip().lower()
         if cache in ("0", "off", "false", "no"):
             # An escape hatch for debugging, not a recommendation: turning
@@ -611,6 +702,9 @@ ENV_CACHE = "PYBROWSER_AGENT_CACHE"
 #: reused deliberately - one environment variable, one meaning, everywhere
 #: this codebase and the SDK agree a workspace needs naming.
 ENV_WORKSPACE_ID = "ANTHROPIC_WORKSPACE_ID"
+#: Phase 18: overrides the selected local provider's endpoint for a single
+#: run, the same escape-hatch shape as every other ENV_* override here.
+ENV_LOCAL_ENDPOINT = "PYBROWSER_AGENT_LOCAL_ENDPOINT"
 
 #: Settings-table keys. Provider, model, effort and workspace id are
 #: preferences, not secrets, so they belong in the ordinary settings table -

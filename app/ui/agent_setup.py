@@ -69,14 +69,15 @@ class _BackgroundCall(QThread):
     returned, so there is no race with the thread that produced it.
     """
 
-    def __init__(self, fn, *args, parent: QWidget | None = None) -> None:
+    def __init__(self, fn, *args, parent: QWidget | None = None, **kwargs) -> None:
         super().__init__(parent)
         self._fn = fn
         self._args = args
+        self._kwargs = kwargs
         self.result = None
 
     def run(self) -> None:
-        self.result = self._fn(*self._args)
+        self.result = self._fn(*self._args, **self._kwargs)
 
 
 class ApiKeyDialog(QDialog):
@@ -127,6 +128,9 @@ class ApiKeyDialog(QDialog):
         self._other_widget = self._other_provider_section(body)
         layout.addWidget(self._other_widget)
 
+        self._local_widget = self._local_provider_section(body)
+        layout.addWidget(self._local_widget)
+
         layout.addWidget(self._autonomy_section(body))
 
         # Without this, a QVBoxLayout inside a resizable QScrollArea gives
@@ -170,11 +174,14 @@ class ApiKeyDialog(QDialog):
     def _show_provider(self, provider_id: str) -> None:
         from app.agent.config import describe_provider
 
-        is_anthropic = describe_provider(provider_id).is_anthropic
-        self._anthropic_widget.setVisible(is_anthropic)
-        self._other_widget.setVisible(not is_anthropic)
-        if not is_anthropic:
+        info = describe_provider(provider_id)
+        self._anthropic_widget.setVisible(info.is_anthropic)
+        self._other_widget.setVisible(not info.is_anthropic and not info.is_local)
+        self._local_widget.setVisible(info.is_local)
+        if not info.is_anthropic and not info.is_local:
             self._refresh_other_section(provider_id)
+        elif info.is_local:
+            self._refresh_local_section(provider_id)
 
     # -- Anthropic: the full cascade, unchanged from before providers -----
     def _anthropic_section(self, parent: QWidget) -> QWidget:
@@ -362,6 +369,282 @@ class ApiKeyDialog(QDialog):
         self._other_result.setWordWrap(True)
         layout.addWidget(self._other_result)
         return box
+
+    # -- Ollama / LM Studio / Local OpenAI-compatible: an endpoint, not a key
+    def _local_provider_section(self, parent: QWidget) -> QWidget:
+        """One section shared by every local provider (Part 7).
+
+        Endpoint replaces API key as the primary field - Part 7: "Do not
+        show an API-key field by default for Ollama/LM Studio unless
+        needed." The optional key field is always present (a self-hosted
+        OpenAI-compatible server occasionally does require one - Part 3)
+        but never demanded: Save/Test/Refresh all work with it left blank.
+        """
+        box = QWidget(parent)
+        layout = QVBoxLayout(box)
+        layout.setContentsMargins(0, 0, 0, 0)
+
+        self._local_status = QLabel("", box)
+        self._local_status.setWordWrap(True)
+        layout.addWidget(self._local_status)
+
+        self._local_help = QLabel("", box)
+        self._local_help.setWordWrap(True)
+        layout.addWidget(self._local_help)
+
+        layout.addWidget(QLabel("<b>Endpoint</b>", box))
+        self._local_endpoint_field = QLineEdit(box)
+        layout.addWidget(self._local_endpoint_field)
+        save_endpoint = QPushButton("Save endpoint", box)
+        save_endpoint.clicked.connect(self._save_local_endpoint)
+        layout.addWidget(save_endpoint)
+
+        layout.addWidget(QLabel("<b>API key (optional)</b>", box))
+        self._local_key_field = QLineEdit(box)
+        self._local_key_field.setEchoMode(QLineEdit.EchoMode.Password)
+        self._local_key_field.setPlaceholderText("leave blank if this endpoint needs none")
+        layout.addWidget(self._local_key_field)
+        save_key = QPushButton("Save API key", box)
+        save_key.clicked.connect(self._save_local_key)
+        layout.addWidget(save_key)
+
+        layout.addWidget(QLabel("<hr><b>Model</b>", box))
+        self._local_model_box = QComboBox(box)
+        self._local_model_box.setEditable(False)
+        layout.addWidget(self._local_model_box)
+
+        self._local_custom_check = QCheckBox("Use a custom model ID instead", box)
+        self._local_custom_check.toggled.connect(self._toggle_local_custom_model)
+        layout.addWidget(self._local_custom_check)
+        self._local_custom_field = QLineEdit(box)
+        self._local_custom_field.setPlaceholderText("exact model id")
+        self._local_custom_field.setVisible(False)
+        layout.addWidget(self._local_custom_field)
+
+        model_row = QWidget(box)
+        model_layout = QVBoxLayout(model_row)
+        model_layout.setContentsMargins(0, 0, 0, 0)
+        self._local_refresh_button = QPushButton("Refresh model list", model_row)
+        self._local_refresh_button.clicked.connect(self._refresh_local_models)
+        model_layout.addWidget(self._local_refresh_button)
+        save_model = QPushButton("Save model", model_row)
+        save_model.setProperty("kind", "primary")
+        save_model.clicked.connect(self._save_local_model)
+        model_layout.addWidget(save_model)
+        self._local_test_button = QPushButton("Test connection", model_row)
+        self._local_test_button.clicked.connect(self._test_local_connection)
+        model_layout.addWidget(self._local_test_button)
+        layout.addWidget(model_row)
+
+        self._local_result = QLabel("", box)
+        self._local_result.setWordWrap(True)
+        self._local_result.setTextFormat(Qt.TextFormat.RichText)
+        layout.addWidget(self._local_result)
+        return box
+
+    def _local_client_class(self, provider_id: str | None = None):
+        from app.agent.config import PROVIDER_LM_STUDIO, PROVIDER_LOCAL_OPENAI, PROVIDER_OLLAMA
+        from app.agent.local_providers import (
+            LMStudioClient, LocalOpenAICompatibleClient, OllamaClient,
+        )
+
+        provider_id = provider_id or self._current_other_provider()
+        return {PROVIDER_OLLAMA: OllamaClient, PROVIDER_LM_STUDIO: LMStudioClient,
+               PROVIDER_LOCAL_OPENAI: LocalOpenAICompatibleClient}[provider_id]
+
+    def _remembered_local_endpoint(self, provider_id: str) -> str:
+        from app.agent.config import default_local_endpoint, local_endpoint_settings_key
+
+        default = default_local_endpoint(provider_id)
+        if self._settings is None:
+            return default
+        try:
+            return (self._settings.get(
+                local_endpoint_settings_key(provider_id), default) or default).strip()
+        except Exception:  # noqa: BLE001 - a preference read is never load-bearing
+            return default
+
+    def _current_local_endpoint(self) -> str:
+        return self._local_endpoint_field.text().strip()
+
+    def _refresh_local_section(self, provider_id: str) -> None:
+        """Populate the local-provider section for whichever provider is
+        selected - endpoint and model, then a background connection check
+        so the dialog never blocks while probing (Part 8)."""
+        from app.agent.config import describe_provider
+
+        info = describe_provider(provider_id)
+        self._local_help.setText(info.key_help)
+        self._local_endpoint_field.setText(self._remembered_local_endpoint(provider_id))
+        self._local_key_field.clear()
+        self._local_custom_check.setChecked(False)
+        self._local_custom_field.clear()
+        self._local_result.setText("")
+        self._local_status.setText("<b>Status:</b> checking…")
+
+        remembered_model = self._remembered_other_model(provider_id)
+        self._populate_local_model_combo(provider_id, [], remembered_model)
+        self._check_local_status(provider_id)
+
+    def _check_local_status(self, provider_id: str) -> None:
+        """Part 8: Running / Offline / Connecting, off the GUI thread."""
+        client_class = self._local_client_class(provider_id)
+        endpoint = self._current_local_endpoint()
+        model = self._selected_local_model()
+
+        def done(outcome: tuple) -> None:
+            ok, message = outcome
+            self._local_status.setText(
+                f"<b>Status:</b> {'Running' if ok else 'Offline'} — {message}")
+            if ok:
+                self._refresh_local_models()
+
+        self._run_other_call(client_class.test_connection, ("", model),
+                             done, kwargs={"base_url": endpoint})
+
+    def _populate_local_model_combo(self, provider_id: str, entries: list[dict],
+                                    preferred_model: str = "") -> None:
+        from app.agent.openai_compatible import pretty_label
+
+        self._local_model_box.clear()
+        for entry in entries:
+            model_id = (entry.get("id") or "").strip()
+            if not model_id:
+                continue
+            self._local_model_box.addItem(pretty_label(model_id), model_id)
+        if not entries and not preferred_model:
+            self._local_model_box.addItem(
+                "Enter the endpoint, then click Refresh model list", "")
+            self._local_model_box.setCurrentIndex(0)
+            return
+        target = preferred_model or ""
+        picked = self._local_model_box.findData(target) if target else -1
+        if picked < 0 and target:
+            self._local_model_box.addItem(pretty_label_or_id(target), target)
+            picked = self._local_model_box.count() - 1
+        if picked < 0 and self._local_model_box.count():
+            picked = 0
+        if picked >= 0:
+            self._local_model_box.setCurrentIndex(picked)
+
+    def _refresh_local_models(self) -> None:
+        """Part 4: never fails the whole provider setup because listing
+        models isn't available - an empty result just falls back to manual
+        entry, silently, since a local runtime with no models installed
+        yet is a completely normal state, not an error to alarm over."""
+        provider_id = self._current_other_provider()
+        client_class = self._local_client_class(provider_id)
+        endpoint = self._current_local_endpoint()
+        key = self._local_key_field.text().strip()
+        current = self._selected_local_model()
+
+        def done(models: list) -> None:
+            self._populate_local_model_combo(provider_id, models, current)
+
+        self._run_other_call(client_class.list_models, (key,), done,
+                             kwargs={"base_url": endpoint})
+
+    def _toggle_local_custom_model(self, checked: bool) -> None:
+        self._local_model_box.setEnabled(not checked)
+        self._local_custom_field.setVisible(checked)
+        if checked:
+            self._local_custom_field.setFocus()
+
+    def _selected_local_model(self) -> str:
+        if self._local_custom_check.isChecked():
+            return self._local_custom_field.text().strip()
+        index = self._local_model_box.currentIndex()
+        return self._local_model_box.itemData(index) if index >= 0 else ""
+
+    def _save_local_endpoint(self) -> None:
+        from app.agent.local_providers import LocalEndpointError, validate_endpoint
+
+        provider_id = self._current_other_provider()
+        raw = self._current_local_endpoint()
+        try:
+            endpoint = validate_endpoint(raw)
+        except LocalEndpointError as exc:
+            QMessageBox.warning(self, "Configure AI Agent", str(exc))
+            return
+        if self._settings is None:
+            QMessageBox.warning(
+                self, "Configure AI Agent",
+                "Settings are unavailable, so this cannot be remembered.")
+            return
+        from app.agent.config import local_endpoint_settings_key
+
+        self._settings.set(local_endpoint_settings_key(provider_id), endpoint)
+        self._set_active_provider(provider_id)
+        self.saved.emit()
+        self._check_local_status(provider_id)
+        QMessageBox.information(self, "Configure AI Agent", "Endpoint saved.")
+
+    def _save_local_key(self) -> None:
+        from app.agent.credentials import PROVIDER_KEY_INFO
+        from app.agent.keys import KeyringUnavailable
+
+        provider_id = self._current_other_provider()
+        key = self._local_key_field.text().strip()
+        _label, _env, account = PROVIDER_KEY_INFO[provider_id]
+        store = self._other_store(account)
+        if not key:
+            store.clear_key()
+            QMessageBox.information(self, "Configure AI Agent", "No key entered; cleared any stored key.")
+            return
+        try:
+            store.set_key(key)
+        except KeyringUnavailable as exc:
+            QMessageBox.warning(
+                self, "Configure AI Agent",
+                f"This system has no usable keyring, so the key was not saved.\n\nDetail: {exc}")
+            return
+        finally:
+            self._local_key_field.clear()
+        self._set_active_provider(provider_id)
+        self.saved.emit()
+        QMessageBox.information(self, "Configure AI Agent", "Key saved.")
+
+    def _save_local_model(self) -> None:
+        from app.agent.config import model_settings_key
+
+        model = self._selected_local_model()
+        if not model:
+            QMessageBox.warning(self, "Configure AI Agent", "Choose or enter a model first.")
+            return
+        if self._settings is None:
+            QMessageBox.warning(
+                self, "Configure AI Agent",
+                "Settings are unavailable, so this choice cannot be remembered.")
+            return
+        provider_id = self._current_other_provider()
+        self._set_active_provider(provider_id)
+        self._settings.set(model_settings_key(provider_id), model)
+        self.saved.emit()
+        QMessageBox.information(
+            self, "Configure AI Agent",
+            "Saved. Py picks this up as soon as you close this dialog.")
+
+    def _test_local_connection(self) -> None:
+        provider_id = self._current_other_provider()
+        client_class = self._local_client_class(provider_id)
+        endpoint = self._current_local_endpoint()
+        key = self._local_key_field.text().strip()
+        model = self._selected_local_model()
+        self._local_result.setText("Testing…")
+        self._local_test_button.setEnabled(False)
+
+        def done(outcome: tuple) -> None:
+            self._local_test_button.setEnabled(True)
+            ok, message = outcome
+            self._show_local_result(ok, message)
+
+        self._run_other_call(client_class.test_connection, (key, model), done,
+                             kwargs={"base_url": endpoint})
+
+    def _show_local_result(self, ok: bool, message: str) -> None:
+        prefix = "✓ " if ok else "✗ "
+        color = "#2a8f4e" if ok else "#c0392b"
+        self._local_result.setText(f"<span style='color:{color}'>{prefix}{message}</span>")
 
     def _wait_for_workers(self) -> None:
         """Never let a QThread this dialog started outlive it.
@@ -600,7 +883,7 @@ class ApiKeyDialog(QDialog):
 
         self._run_other_call(client_class.list_models, (key,), done)
 
-    def _run_other_call(self, fn, args: tuple, on_done) -> None:
+    def _run_other_call(self, fn, args: tuple, on_done, *, kwargs: dict | None = None) -> None:
         """Run one provider call off the GUI thread; deliver its result to
         ``on_done`` on the GUI thread once it returns.
 
@@ -610,7 +893,7 @@ class ApiKeyDialog(QDialog):
         """
         self._other_refresh_token += 1
         token = self._other_refresh_token
-        worker = _BackgroundCall(fn, *args, parent=self)
+        worker = _BackgroundCall(fn, *args, parent=self, **(kwargs or {}))
 
         def finished() -> None:
             result = worker.result
@@ -1081,11 +1364,18 @@ def build_transport(credential, config):
     Every provider client implements the same ``send()`` contract
     (``ClaudeTransport`` in claude_client.py), so this is the entire
     provider dispatch - nothing downstream (AgentSession, ToolRegistry,
-    Missions, safety.py) branches on provider at all.
+    Missions, safety.py) branches on provider at all. Phase 18's three
+    local providers slot in here exactly like every cloud one: the only
+    difference is that their client also needs ``config.local_endpoint``,
+    which each of their constructors already knows to read.
     """
     from app.agent.claude_client import ClaudeClient
     from app.agent.config import (
-        PROVIDER_GEMINI, PROVIDER_GROQ, PROVIDER_OPENAI, PROVIDER_OPENROUTER,
+        PROVIDER_GEMINI, PROVIDER_GROQ, PROVIDER_LM_STUDIO, PROVIDER_LOCAL_OPENAI,
+        PROVIDER_OLLAMA, PROVIDER_OPENAI, PROVIDER_OPENROUTER,
+    )
+    from app.agent.local_providers import (
+        LMStudioClient, LocalOpenAICompatibleClient, OllamaClient,
     )
     from app.agent.openai_compatible import (
         GeminiClient, GroqClient, OpenAIClient, OpenRouterClient,
@@ -1099,6 +1389,12 @@ def build_transport(credential, config):
         return OpenRouterClient(credential.secret or "", config)
     if credential.provider == PROVIDER_GEMINI:
         return GeminiClient(credential.secret or "", config)
+    if credential.provider == PROVIDER_OLLAMA:
+        return OllamaClient(credential.secret or "", config)
+    if credential.provider == PROVIDER_LM_STUDIO:
+        return LMStudioClient(credential.secret or "", config)
+    if credential.provider == PROVIDER_LOCAL_OPENAI:
+        return LocalOpenAICompatibleClient(credential.secret or "", config)
     return ClaudeClient(credential, config)
 
 
@@ -1129,6 +1425,13 @@ def build_session(browser, parent=None, settings=None, missions=None, mcp=None, 
                           "set ANTHROPIC_API_KEY, or add a key in "
                           "Tools \u2192 Configure AI Agent")
         return None, (f"no {credential.provider} API key is configured - add one in "
+                      "Tools \u2192 Configure AI Agent")
+    from app.agent.config import LOCAL_PROVIDER_IDS
+
+    if config.provider in LOCAL_PROVIDER_IDS and not (config.model or "").strip():
+        return None, "no model is chosen - add one in Tools \u2192 Configure AI Agent"
+    if config.provider in LOCAL_PROVIDER_IDS and not (config.local_endpoint or "").strip():
+        return None, ("no endpoint is configured for this local provider - add one in "
                       "Tools \u2192 Configure AI Agent")
     try:
         transport = build_transport(credential, config)
