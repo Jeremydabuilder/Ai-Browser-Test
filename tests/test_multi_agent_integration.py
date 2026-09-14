@@ -109,9 +109,11 @@ class MainWindowWiringTests(unittest.TestCase):
 
         transport = _StubTransport()
 
-        def fake_build_session(controller, parent, settings, missions, mcp, knowledge=None):
+        def fake_build_session(controller, parent, settings, missions, mcp, knowledge=None,
+                              graph=None):
             session = AgentSession(controller, transport, AgentConfig(provider="anthropic"),
-                                   parent, missions=missions, mcp=mcp, knowledge=knowledge)
+                                   parent, missions=missions, mcp=mcp, knowledge=knowledge,
+                                   graph=graph)
             return session, ""
 
         patcher = mock.patch("app.ui.agent_setup.build_session", fake_build_session)
