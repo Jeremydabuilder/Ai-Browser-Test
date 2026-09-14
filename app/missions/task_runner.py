@@ -20,7 +20,7 @@ arithmetic and app/storage/scheduled_tasks.py for persistence.
 from __future__ import annotations
 
 import time
-from typing import Callable
+from typing import Any, Callable
 
 from PySide6.QtCore import QObject, QTimer, Signal
 
@@ -50,10 +50,21 @@ class TaskRunner(QObject):
         session_provider: Callable[[], object | None],
         parent: QObject | None = None,
         workspace_switcher: Callable[[str], None] | None = None,
+        ownership: "Any | None" = None,
+        device_id: str = "",
     ) -> None:
         super().__init__(parent)
         self._store = store
         self._missions = missions
+        #: Phase 20 Part 11 - an OwnershipStore (app.storage.sync_store),
+        #: or None (the default, unchanged pre-sync behavior: every task
+        #: runs on whichever device polls it, since there is only ever one
+        #: device before sync exists). When given, a task synced from/to
+        #: another device and not owned by this one is skipped here -
+        #: never run twice just because its definition now exists on two
+        #: machines.
+        self._ownership = ownership
+        self._device_id = device_id
         #: Returns the window's single AgentSession, building it if this is
         #: the first use - or None if the agent has no working credential.
         #: Never builds a second session: this is the exact same accessor
@@ -130,6 +141,9 @@ class TaskRunner(QObject):
         if session is None or session.busy:
             return          # the one execution slot is busy, or there is no agent
         due = self._store.due_tasks(utc_now())
+        if self._ownership is not None:
+            due = [t for t in due
+                  if self._ownership.is_owned_by("scheduled_task", str(t.id), self._device_id)]
         if not due:
             return
         task = due[0]

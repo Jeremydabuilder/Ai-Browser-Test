@@ -25,7 +25,7 @@ import threading
 from pathlib import Path
 from typing import Any, Callable, Iterable, Sequence
 
-SCHEMA_VERSION = 25
+SCHEMA_VERSION = 26
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS history (
@@ -277,6 +277,85 @@ CREATE INDEX IF NOT EXISTS idx_knowledge_chunks_parent ON knowledge_chunks(paren
 CREATE TABLE IF NOT EXISTS settings (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
+);
+
+-- Encrypted Sync (Phase 20) - see app/sync/. This device's own identity and
+-- every device it has ever seen a record from (display name is user-
+-- editable, never authoritative for security - see app/sync/device.py).
+CREATE TABLE IF NOT EXISTS sync_devices (
+    id           TEXT PRIMARY KEY,
+    name         TEXT NOT NULL,
+    created_at   TEXT NOT NULL,
+    last_sync_at TEXT
+);
+
+-- Maps a local, per-profile autoincrement row id to the stable, globally
+-- unique id that travels in sync records - the "do not create duplicate
+-- Missions/Highlights every time a device syncs" guarantee. Allocated once,
+-- lazily, the first time a row is ever synced; never regenerated.
+CREATE TABLE IF NOT EXISTS sync_global_ids (
+    record_type TEXT NOT NULL,
+    local_id    TEXT NOT NULL,
+    global_id   TEXT NOT NULL,
+    PRIMARY KEY (record_type, local_id)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_sync_global_ids_global
+    ON sync_global_ids(record_type, global_id);
+
+-- The 3-way-merge marker for one synced record: the content hash as of the
+-- last time this device and the sync provider agreed on its state. Compared
+-- against "has local content changed since" and "has the downloaded remote
+-- content changed since" to decide apply-remote / keep-local / conflict -
+-- see app/sync/conflicts.py.
+CREATE TABLE IF NOT EXISTS sync_versions (
+    record_type    TEXT NOT NULL,
+    global_id      TEXT NOT NULL,
+    last_known_hash TEXT NOT NULL DEFAULT '',
+    local_version  INTEGER NOT NULL DEFAULT 0,
+    last_remote_version INTEGER NOT NULL DEFAULT 0,
+    updated_at     TEXT NOT NULL,
+    PRIMARY KEY (record_type, global_id)
+);
+
+-- A record deleted on some device - propagated so deletion is never
+-- silently undone by another device's stale copy. Expired (purged) only
+-- after a safe retention window - see app/sync/engine.py.
+CREATE TABLE IF NOT EXISTS sync_tombstones (
+    record_type TEXT NOT NULL,
+    global_id   TEXT NOT NULL,
+    deleted_at  TEXT NOT NULL,
+    device_id   TEXT NOT NULL,
+    PRIMARY KEY (record_type, global_id)
+);
+
+-- A same-record edit on two devices that could not be merged automatically -
+-- surfaced in Settings -> Sync for the user to resolve (keep local/keep
+-- remote/keep both). Never auto-resolved for record types conflicts.py
+-- marks "manual".
+CREATE TABLE IF NOT EXISTS sync_conflicts (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    record_type  TEXT NOT NULL,
+    global_id    TEXT NOT NULL,
+    local_payload  TEXT NOT NULL,
+    remote_payload TEXT NOT NULL,
+    detected_at  TEXT NOT NULL,
+    resolved     INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_sync_conflicts_unresolved
+    ON sync_conflicts(resolved, detected_at);
+
+-- Part 11/12: a scheduled task or Watch *definition* may sync to every
+-- device, but only its owning device may actually execute/poll it - this
+-- table is that ownership fact, kept separate from scheduled_tasks/watches
+-- themselves so a profile that never enables sync has zero schema/behavior
+-- change. No row here at all (the common case before sync is ever turned
+-- on) means "run locally, unconditionally" - today's existing behavior,
+-- untouched.
+CREATE TABLE IF NOT EXISTS sync_task_ownership (
+    record_type      TEXT NOT NULL,
+    local_id         TEXT NOT NULL,
+    execution_device TEXT NOT NULL,
+    PRIMARY KEY (record_type, local_id)
 );
 
 -- Research Graph (Phase 19) - see app/knowledge_graph/. Stores identity,
@@ -1179,6 +1258,62 @@ CREATE TABLE IF NOT EXISTS decision_alternatives (
     CREATE INDEX IF NOT EXISTS idx_kg_edges_src ON knowledge_graph_edges(src_id);
     CREATE INDEX IF NOT EXISTS idx_kg_edges_dst ON knowledge_graph_edges(dst_id);
     CREATE INDEX IF NOT EXISTS idx_kg_edges_type ON knowledge_graph_edges(edge_type);
+    """,
+    # v25 -> v26: Encrypted Sync (Phase 20) - identical to the block in
+    # _SCHEMA above.
+    25: """
+    CREATE TABLE IF NOT EXISTS sync_devices (
+        id           TEXT PRIMARY KEY,
+        name         TEXT NOT NULL,
+        created_at   TEXT NOT NULL,
+        last_sync_at TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS sync_global_ids (
+        record_type TEXT NOT NULL,
+        local_id    TEXT NOT NULL,
+        global_id   TEXT NOT NULL,
+        PRIMARY KEY (record_type, local_id)
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_sync_global_ids_global
+        ON sync_global_ids(record_type, global_id);
+
+    CREATE TABLE IF NOT EXISTS sync_versions (
+        record_type    TEXT NOT NULL,
+        global_id      TEXT NOT NULL,
+        last_known_hash TEXT NOT NULL DEFAULT '',
+        local_version  INTEGER NOT NULL DEFAULT 0,
+        last_remote_version INTEGER NOT NULL DEFAULT 0,
+        updated_at     TEXT NOT NULL,
+        PRIMARY KEY (record_type, global_id)
+    );
+
+    CREATE TABLE IF NOT EXISTS sync_tombstones (
+        record_type TEXT NOT NULL,
+        global_id   TEXT NOT NULL,
+        deleted_at  TEXT NOT NULL,
+        device_id   TEXT NOT NULL,
+        PRIMARY KEY (record_type, global_id)
+    );
+
+    CREATE TABLE IF NOT EXISTS sync_conflicts (
+        id           INTEGER PRIMARY KEY AUTOINCREMENT,
+        record_type  TEXT NOT NULL,
+        global_id    TEXT NOT NULL,
+        local_payload  TEXT NOT NULL,
+        remote_payload TEXT NOT NULL,
+        detected_at  TEXT NOT NULL,
+        resolved     INTEGER NOT NULL DEFAULT 0
+    );
+    CREATE INDEX IF NOT EXISTS idx_sync_conflicts_unresolved
+        ON sync_conflicts(resolved, detected_at);
+
+    CREATE TABLE IF NOT EXISTS sync_task_ownership (
+        record_type      TEXT NOT NULL,
+        local_id         TEXT NOT NULL,
+        execution_device TEXT NOT NULL,
+        PRIMARY KEY (record_type, local_id)
+    );
     """,
 }
 

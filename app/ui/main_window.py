@@ -138,8 +138,12 @@ class MainWindow(QMainWindow):
         # session is rebuilt when the model or credential changes - a Mission
         # outlives both. It observes the controller's action stream and never
         # drives it; see app/missions/service.py.
+        #: Kept directly (not only inside MissionService) so Phase 20
+        #: Encrypted Sync's MissionAdapter can read/write Mission rows
+        #: without MissionService growing a sync-shaped API of its own.
+        self.mission_store = MissionStore(database)
         self.missions = MissionService(
-            MissionStore(database), self.controller, self.tabs, self,
+            self.mission_store, self.controller, self.tabs, self,
             knowledge=self.knowledge_index, graph=self.knowledge_graph)
         #: MCP client core (Phase 1, read-only). Owned here for the same
         #: reason as Missions: it must outlive the agent panel and every
@@ -162,6 +166,13 @@ class MainWindow(QMainWindow):
         self._workflow_runner: "WorkflowRunner | None" = None
         self._recording_bar = None
 
+        #: Encrypted Sync (Phase 20) - off by default, never blocks startup;
+        #: constructing this only ensures a local device identity exists
+        #: (a few sqlite reads/writes). See app/sync/service.py.
+        from app.sync.service import SyncService
+
+        self.sync_service = SyncService(database, self.settings)
+
         #: Scheduled Missions (Phase 7) - a scheduling layer on top of the
         #: same MissionService/AgentSession this window already owns, never
         #: a second one. See app/missions/task_runner.py.
@@ -170,15 +181,26 @@ class MainWindow(QMainWindow):
 
         self.task_runner = TaskRunner(
             self.scheduled_tasks, self.missions, self._ensure_agent_session, self,
-            workspace_switcher=self.switch_workspace)
+            workspace_switcher=self.switch_workspace,
+            ownership=self.sync_service.ownership, device_id=self.sync_service.device.id)
 
         #: Page Watches (Phase 8) - reuses the TaskRunner's own timer (see
         #: TaskRunner.timer) rather than a second background timing system.
         self.watches = WatchStore(database)
         from app.watches.runner import WatchRunner
 
-        self.watch_runner = WatchRunner(self.watches, self._fetch_page_text_for_watch, self)
+        self.watch_runner = WatchRunner(
+            self.watches, self._fetch_page_text_for_watch, self,
+            ownership=self.sync_service.ownership, device_id=self.sync_service.device.id)
         self.watch_runner.attach_to(self.task_runner.timer)
+
+        #: Background sync (Phase 20 Part 18) - piggybacks on the same
+        #: timer, a no-op while sync is off (the default).
+        from app.sync.scheduler import BackgroundSyncScheduler
+
+        self.sync_scheduler = BackgroundSyncScheduler(
+            self.sync_service, self._sync_domain_stores)
+        self.task_runner.timer.timeout.connect(self.sync_scheduler.on_tick)
 
         #: Mission Execution Graph (Phase 10) - the persisted, restart-safe
         #: shape of the plan MissionCoordinator builds. Recovered once at
@@ -379,6 +401,7 @@ class MainWindow(QMainWindow):
                          self._show_highlights_library)
         self._add_action(tools_menu, "&Research Graph…", "Ctrl+Shift+G",
                          self._show_research_graph)
+        self._add_action(tools_menu, "&Sync…", None, self._show_sync_settings)
         self._add_action(tools_menu, "&Skills Library", "Ctrl+Shift+S",
                          self._show_skills_library)
         self._add_action(tools_menu, "&Task Center…", "Ctrl+Shift+J",
@@ -1778,6 +1801,22 @@ class MainWindow(QMainWindow):
             on_ask_py=self._ask_py_about_highlight,
             on_add_to_mission=lambda h: self._add_selection_to_mission(h.url, h.title, h.text),
             knowledge_index=self.knowledge_index, knowledge_graph=self.knowledge_graph)
+        dialog.exec()
+
+    def _sync_domain_stores(self) -> dict:
+        """Everything SyncEngine's adapters need - see app/sync/service.py's
+        SyncService.sync_now(**domain_stores)."""
+        return {
+            "missions": self.mission_store, "highlights": self.highlights,
+            "skills": self.skills, "workspaces": self.workspaces,
+            "scheduled_tasks": self.scheduled_tasks, "watches": self.watches,
+            "graph_store": self.graph_store,
+        }
+
+    def _show_sync_settings(self) -> None:
+        from app.ui.sync_settings import SyncSettingsDialog
+
+        dialog = SyncSettingsDialog(self.sync_service, self.sync_scheduler, self)
         dialog.exec()
 
     def _show_research_graph(self) -> None:

@@ -50,11 +50,17 @@ class WatchRunner(QObject):
         store: WatchStore,
         fetcher: Callable[[str, Callable[[str | None], None]], None],
         parent: QObject | None = None,
+        ownership: "object | None" = None,
+        device_id: str = "",
     ) -> None:
         super().__init__(parent)
         self._store = store
         self._fetcher = fetcher
         self._checking_id: int | None = None
+        #: Phase 20 Part 12 - same ownership gate as TaskRunner's; None
+        #: (the default) preserves today's single-device behavior exactly.
+        self._ownership = ownership
+        self._device_id = device_id
 
     def attach_to(self, timer: QTimer) -> None:
         """Piggyback on an existing timer's timeout - see the module
@@ -65,6 +71,9 @@ class WatchRunner(QObject):
         if self._checking_id is not None:
             return          # a check is already in flight - stay to one at a time
         due = self._store.due_watches(_utc_now())
+        if self._ownership is not None:
+            due = [w for w in due
+                  if self._ownership.is_owned_by("watch", str(w.id), self._device_id)]
         if not due:
             return
         self._check(due[0])
