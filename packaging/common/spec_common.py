@@ -68,6 +68,21 @@ DATAS = [
 #    Groq/OpenRouter/Gemini OpenAI-compatible paths) is a real separate PyPI
 #    package, not an alias for `httpx` - collected explicitly so it is not
 #    mistaken for the more commonly-hooked `httpx`.
+#
+# Found during the macOS Friend Preview Build Checkpoint audit (all three
+# are also lazy, function-body imports, same shape as the three above -
+# PyInstaller's static analysis finds the bare `import`/`from...import`
+# fine, but that only pulls in the .py modules, not each package's own
+# data/entry-point metadata):
+# 4. `from pypdf import PdfReader` (app/browser/pdf_context.py) - pypdf
+#    itself imports `cryptography` for encrypted-PDF support, which is the
+#    exact lazy-import-triggers-a-native-extension risk the `cffi` note in
+#    requirements.txt already documents for this same code path; collected
+#    here for the same reason cffi is declared there.
+# 5. `import docx` (app/browser/file_context.py, python-docx) - the
+#    package ships a `default.docx` template and other package data under
+#    its own install directory that a plain hiddenimport would not carry
+#    into the frozen build.
 HIDDENIMPORTS = [
     "keyring.backends",
 ]
@@ -76,6 +91,9 @@ COLLECT_ALL = [
     "keyring",
     "anthropic",
     "httpx2",
+    "pypdf",
+    "cffi",
+    "docx",
 ]
 
 # PySide6's Qt WebEngine (the Chromium process binary, locales, .pak/ICU
