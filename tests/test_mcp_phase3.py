@@ -80,6 +80,7 @@ class Phase3TestCase(unittest.TestCase):
             tab.page.deleteLater()
         self.tabs.deleteLater()
         _app.processEvents()
+        self.db.close()
         os.unlink(self._tmp.name)
 
     def add_server(self, server_id: str = "fake", *, env_overrides=None) -> McpServerConfig:

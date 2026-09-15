@@ -13,6 +13,7 @@ import os
 import sys
 import tempfile
 import unittest
+from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -134,7 +135,7 @@ class PdfAwareTabPromptTests(unittest.TestCase):
         fd, self._pdf_path = tempfile.mkstemp(suffix=".pdf", dir=self._dir.name)
         with os.fdopen(fd, "wb") as handle:
             handle.write(_make_pdf_bytes("A test PDF"))
-        pdf_tab = self.window.tabs.new_tab(f"file://{self._pdf_path}")
+        pdf_tab = self.window.tabs.new_tab(Path(self._pdf_path).as_uri())
         wait(lambda: not pdf_tab.is_loading)
         pump()
 

@@ -185,6 +185,7 @@ class ConfigPersistenceTests(unittest.TestCase):
         self.store = config.McpServerStore(self.settings)
 
     def tearDown(self):
+        self.db.close()
         os.unlink(self._tmp.name)
 
     def test_empty_store_returns_empty_list(self):
@@ -289,6 +290,7 @@ class SecretStorageTests(unittest.TestCase):
                 store.remove_server("s")
                 self.assertIsNone(config.get_secret("s"))
             finally:
+                db.close()
                 os.unlink(tmp.name)
 
 
@@ -301,6 +303,7 @@ class AuditStoreTests(unittest.TestCase):
         self.store = McpAuditStore(self.settings)
 
     def tearDown(self):
+        self.db.close()
         os.unlink(self._tmp.name)
 
     def _record(self, **overrides):

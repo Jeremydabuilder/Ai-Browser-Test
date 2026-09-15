@@ -10,6 +10,7 @@ from __future__ import annotations
 import os
 import sys
 import unittest
+from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -139,7 +140,7 @@ class ExtractPdfTests(unittest.TestCase):
             handle.write(data)
             path = handle.name
         try:
-            doc = extract_pdf(f"file://{path}")
+            doc = extract_pdf(Path(path).as_uri())
             self.assertIn("From a real file", doc.full_text)
         finally:
             os.unlink(path)

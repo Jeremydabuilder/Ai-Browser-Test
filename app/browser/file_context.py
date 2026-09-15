@@ -121,7 +121,7 @@ def read_local_file(path: str) -> FileDocument:
     if suffix == ".pdf":
         data = _read_bytes(file_path)
         try:
-            document = extract_pdf(f"file://{file_path}", data=data)
+            document = extract_pdf(file_path.resolve().as_uri(), data=data)
         except PdfExtractionError as exc:
             raise FileParsingError(str(exc)) from exc
         text = document.full_text

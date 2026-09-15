@@ -50,6 +50,7 @@ class McpUiTestCase(unittest.TestCase):
     def tearDown(self) -> None:
         self.manager.shutdown()
         _app.processEvents()
+        self.db.close()
         os.unlink(self._tmp.name)
 
 

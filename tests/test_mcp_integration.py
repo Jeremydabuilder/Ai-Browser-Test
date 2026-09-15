@@ -98,6 +98,7 @@ class McpTestCase(unittest.TestCase):
             tab.page.deleteLater()
         self.tabs.deleteLater()
         _app.processEvents()
+        self.db.close()
         os.unlink(self._tmp.name)
 
     # -- helpers ----------------------------------------------------------

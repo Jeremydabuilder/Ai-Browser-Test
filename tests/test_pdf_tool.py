@@ -11,6 +11,7 @@ import os
 import sys
 import tempfile
 import unittest
+from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -69,7 +70,7 @@ class PdfToolTestCase(unittest.TestCase):
         with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as handle:
             handle.write(data)
             self._pdf_path = handle.name
-        self.browser.open_tab(f"file://{self._pdf_path}").wait()
+        self.browser.open_tab(Path(self._pdf_path).as_uri()).wait()
 
     def open_html(self) -> None:
         self.browser.open_tab(self.server.url("/")).wait()

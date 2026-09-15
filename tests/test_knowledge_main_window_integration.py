@@ -13,6 +13,7 @@ import os
 import sys
 import tempfile
 import unittest
+from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -90,7 +91,7 @@ class MainWindowKnowledgeTests(unittest.TestCase):
         pdf_path = os.path.join(self._dir.name, "sample.pdf")
         with open(pdf_path, "wb") as handle:
             handle.write(pdf_bytes)
-        pdf_url = f"file://{pdf_path}"
+        pdf_url = Path(pdf_path).as_uri()
 
         self.window.tabs.new_tab(pdf_url)
         self.assertTrue(pump(lambda: bool(
