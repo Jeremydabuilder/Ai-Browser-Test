@@ -594,11 +594,10 @@ Full reasoning in [`docs/ai_agent.md`](docs/ai_agent.md) §10a.
 See [`docs/ai_agent.md`](docs/ai_agent.md) for the architecture, the threading
 model, context limits, and an honest account of the security limitations.
 
-## Phase 2 readiness
+## Layout: browser + AI side panel
 
 `MainWindow` lays its content out in a horizontal `QSplitter` with the tab area
-on the left and `set_side_panel()` reserved for the right. Dropping in the AI
-panel needs no structural change:
+on the left and the AI agent panel (`set_side_panel()`) on the right:
 
 ```
 ┌─────────────────────────────────────────────┐
@@ -606,12 +605,13 @@ panel needs no structural change:
 ├─────────────────────────────┬───────────────┤
 │                             │               │
 │         WEB PAGE            │   AI AGENT    │
-│      (TabManager)           │  (Phase 2)    │
+│      (TabManager)           │   (Ask Py)    │
 │                             │               │
 └─────────────────────────────┴───────────────┘
 ```
 
-The agent will drive pages through `BrowserTab.navigate()` /
+The agent drives pages through `BrowserTab.navigate()` /
 `run_javascript()` — the same API the tests use — reading the DOM and
 accessibility tree rather than screenshots. See
-[`docs/phase2_ai_architecture.md`](docs/phase2_ai_architecture.md).
+[`docs/phase2_ai_architecture.md`](docs/phase2_ai_architecture.md) for the
+original design notes.

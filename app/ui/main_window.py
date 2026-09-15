@@ -412,6 +412,10 @@ class MainWindow(QMainWindow):
             bookmarks_menu, "Show &Bookmarks", "Ctrl+Shift+O", self._show_bookmarks
         )
 
+        # Phase 24 Part 4/19: grouped into submenus by theme rather than one
+        # flat list of 15+ items - the same actions/shortcuts/slots as
+        # before, just organized so the menu itself stays scannable after
+        # 20+ phases of features. Nothing here changes what any action does.
         tools_menu: QMenu = menubar.addMenu("&Tools")
         self._add_action(tools_menu, "&Settings…", "Ctrl+,", self._show_settings)
         tools_menu.addSeparator()
@@ -420,36 +424,42 @@ class MainWindow(QMainWindow):
         self._agent_action.setCheckable(True)
         self._add_action(tools_menu, "&Configure AI Agent…", None, self._configure_agent)
         self._add_action(tools_menu, "Agent &Diagnostics…", None, self._show_diagnostics)
-        self._add_action(tools_menu, "Add &Local File to Context…", None,
-                         self._ask_py_about_local_file)
-        self._add_action(tools_menu, "Add &Image to Context…", None,
-                         self._ask_py_about_local_image)
-        self._add_action(tools_menu, "Ask Py about a &Screenshot", None,
-                         self._ask_py_about_screenshot)
         tools_menu.addSeparator()
-        self._add_action(tools_menu, "&Mission Library", "Ctrl+Shift+M",
+
+        context_menu: QMenu = tools_menu.addMenu("Add to &Context")
+        self._add_action(context_menu, "&Local File…", None, self._ask_py_about_local_file)
+        self._add_action(context_menu, "&Image…", None, self._ask_py_about_local_image)
+        self._add_action(context_menu, "&Screenshot", None, self._ask_py_about_screenshot)
+
+        libraries_menu: QMenu = tools_menu.addMenu("&Libraries")
+        self._add_action(libraries_menu, "&Mission Library", "Ctrl+Shift+M",
                          self._show_mission_library)
-        self._add_action(tools_menu, "&Highlights Library", "Ctrl+Shift+H",
+        self._add_action(libraries_menu, "&Highlights Library", "Ctrl+Shift+H",
                          self._show_highlights_library)
-        self._add_action(tools_menu, "&Research Graph…", "Ctrl+Shift+G",
-                         self._show_research_graph)
-        self._add_action(tools_menu, "&Sync…", None, self._show_sync_settings)
-        self._add_action(tools_menu, "&Collaboration…", None, self._show_collaboration)
-        self._add_action(tools_menu, "&Skills Library", "Ctrl+Shift+S",
+        self._add_action(libraries_menu, "&Skills Library", "Ctrl+Shift+S",
                          self._show_skills_library)
-        self._add_action(tools_menu, "&Task Center…", "Ctrl+Shift+J",
+        self._add_action(libraries_menu, "&Research Graph…", "Ctrl+Shift+G",
+                         self._show_research_graph)
+
+        automation_menu: QMenu = tools_menu.addMenu("&Automation")
+        self._add_action(automation_menu, "&Task Center…", "Ctrl+Shift+J",
                          self._show_task_center)
-        self._add_action(tools_menu, "&Record Workflow", "Ctrl+Shift+R",
+        self._add_action(automation_menu, "&Record Workflow", "Ctrl+Shift+R",
                          self._toggle_workflow_recording)
-        self._add_action(tools_menu, "&Watches…", "Ctrl+Shift+W",
+        self._add_action(automation_menu, "&Watches…", "Ctrl+Shift+W",
                          self._show_watches)
-        self._add_action(tools_menu, "Run as &Multi-Agent Mission…", None,
+        self._add_action(automation_menu, "Run as &Multi-Agent Mission…", None,
                          self._run_multi_agent_mission)
+        automation_menu.addSeparator()
         self._teach_action = self._add_action(
-            tools_menu, "&Teach Py", "Ctrl+Shift+T", self._toggle_teaching)
+            automation_menu, "&Teach Py", "Ctrl+Shift+T", self._toggle_teaching)
         self._teach_action.setCheckable(True)
         self._teach_action.setToolTip(
             "Record what Py does next as a reusable Routine on the active mission")
+
+        collab_menu: QMenu = tools_menu.addMenu("Co&llaboration")
+        self._add_action(collab_menu, "&Sync…", None, self._show_sync_settings)
+        self._add_action(collab_menu, "&Collaboration…", None, self._show_collaboration)
 
         help_menu: QMenu = menubar.addMenu("&Help")
         self._add_action(help_menu, "&Keyboard Shortcuts", "Ctrl+/", self._show_shortcuts)
