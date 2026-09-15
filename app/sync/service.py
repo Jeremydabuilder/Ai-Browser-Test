@@ -46,7 +46,7 @@ class SyncNotConfigured(Exception):
 
 class SyncService:
     def __init__(self, db: "Database", settings: "SettingsStore", *,
-                key_store: "ApiKeyStore | None" = None) -> None:
+                key_store: "ApiKeyStore | None" = None, force_disabled: bool = False) -> None:
         from app.storage.sync_store import (
             ConflictStore, GlobalIdStore, SyncDeviceStore, SyncVersionStore,
             OwnershipStore, TombstoneStore,
@@ -55,6 +55,11 @@ class SyncService:
         self._db = db
         self._settings = settings
         self._key_store = key_store or ApiKeyStore(account=_MASTER_KEY_ACCOUNT)
+        #: Phase 22 Safe Mode (Part 14) - overrides the saved on/off
+        #: setting to OFF for this run only, without touching it, so
+        #: turning Safe Mode off again later leaves sync exactly as the
+        #: user configured it.
+        self._force_disabled = force_disabled
         self.devices = SyncDeviceStore(db)
         self.global_ids = GlobalIdStore(db)
         self.versions = SyncVersionStore(db)
@@ -67,6 +72,8 @@ class SyncService:
     # -- configuration -----------------------------------------------------
     @property
     def enabled(self) -> bool:
+        if self._force_disabled:
+            return False
         return (self._settings.get(SETTINGS_KEY_ENABLED, "") or "") == "1"
 
     @property

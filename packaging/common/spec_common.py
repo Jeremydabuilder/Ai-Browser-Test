@@ -83,18 +83,32 @@ DATAS = [
 #    package ships a `default.docx` template and other package data under
 #    its own install directory that a plain hiddenimport would not carry
 #    into the frozen build.
+#
+# Found during the Phase 22 packaging audit (Phases 16-21: collaboration,
+# encrypted sync, knowledge graph, local providers, automation, security,
+# MCP client/server):
+# 6. `from cryptography.hazmat...` (app/sync/crypto.py, Phase 20/21) -
+#    cryptography's hazmat backends are themselves a cffi-based native
+#    extension resolved through the same kind of dynamic backend loading
+#    keyring uses - the exact risk collect_all exists for. It was already
+#    present transitively (pypdf's own optional dependency on it, per the
+#    cffi note above), which is precisely why it had gone unnoticed as a
+#    *direct* dependency needing its own explicit collection.
+COLLECT_ALL_AUDITED = frozenset({
+    "keyring", "anthropic", "httpx2", "pypdf", "cffi", "docx", "cryptography",
+})
+#: Everything else inspected in this audit (automation recorder, security/
+#: redaction, MCP client+server, local model providers, knowledge graph,
+#: sync's non-crypto modules, collaboration) uses only stdlib or modules
+#: already covered above - no further hidden imports or lazy native
+#: extensions found (verified by grepping app/ for `importlib`,
+#: `__import__`, and every `import`/`from ... import` inside a function
+#: body, not just at module scope).
 HIDDENIMPORTS = [
     "keyring.backends",
 ]
 
-COLLECT_ALL = [
-    "keyring",
-    "anthropic",
-    "httpx2",
-    "pypdf",
-    "cffi",
-    "docx",
-]
+COLLECT_ALL = sorted(COLLECT_ALL_AUDITED)
 
 # PySide6's Qt WebEngine (the Chromium process binary, locales, .pak/ICU
 # resources) is handled by PyInstaller's own built-in Qt hooks as long as

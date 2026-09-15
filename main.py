@@ -1,6 +1,9 @@
 """Entry point for the browser.
 
 Run with:  python main.py [url ...]
+Add --safe-mode to start with MCP/sync/schedules disabled and one blank
+tab (see app/startup_state.py) - useful when a bad plugin/provider/session
+state is causing repeated startup failures.
 """
 
 from __future__ import annotations
@@ -8,7 +11,6 @@ from __future__ import annotations
 import argparse
 import logging
 import logging.handlers
-import os
 import signal
 import sys
 
@@ -17,12 +19,13 @@ import sys
 from PySide6.QtCore import QCoreApplication, QUrl  # noqa: F401  (import order matters)
 from PySide6.QtGui import QIcon
 from PySide6.QtWebEngineCore import QWebEngineProfile  # noqa: F401
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QMessageBox
 
 from app import APP_NAME, ORG_NAME, __version__
 from app.browser.newtab import register_scheme
 from app.browser.profile import BrowserProfile
 from app.config import database_path, icon_path, log_path
+from app.startup_state import mark_session_clean, mark_session_started, resolve_safe_mode
 from app.storage import Database
 from app.ui import theme
 from app.ui.main_window import MainWindow
@@ -60,7 +63,19 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(prog="pybrowser", description=f"{APP_NAME} - a Python desktop web browser")
     parser.add_argument("urls", nargs="*", help="URLs to open on startup")
     parser.add_argument("--version", action="version", version=f"{APP_NAME} {__version__}")
+    parser.add_argument(
+        "--safe-mode", action="store_true",
+        help="Start with MCP connections, scheduled tasks/watches, and sync disabled, "
+             "and one blank tab - use this if PyBrowser is failing to start normally.")
     return parser.parse_args(argv)
+
+
+def _show_fatal_startup_error(app: QApplication, message: str) -> None:
+    box = QMessageBox()
+    box.setIcon(QMessageBox.Icon.Critical)
+    box.setWindowTitle(f"{APP_NAME} cannot start")
+    box.setText(message)
+    box.exec()
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -87,15 +102,51 @@ def main(argv: list[str] | None = None) -> int:
     # the Qt event loop.
     signal.signal(signal.SIGINT, signal.SIG_DFL)
 
+    # Phase 22 Part 15: fail with a friendly dialog rather than a raw
+    # traceback if the environment itself is broken (unwritable profile
+    # dir, a database that cannot be opened/migrated, WebEngine missing).
+    from app.startup_checks import fatal_failures, run_all
+
+    checks = run_all()
+    failures = fatal_failures(checks)
+    if failures:
+        _show_fatal_startup_error(
+            app, "\n\n".join(f.message for f in failures))
+        return 1
+
+    # Phase 22 Part 13/14: did the previous session end cleanly? Bumps a
+    # crash counter used below to auto-trigger Safe Mode after repeated
+    # crashes, independent of whether --safe-mode was passed explicitly.
+    session_start = mark_session_started()
+    safe_mode = resolve_safe_mode(cli_flag=args.safe_mode, crash_count=session_start.crash_count)
+
+    start_urls = args.urls or None
+    if session_start.crashed_last_session and not safe_mode.enabled and not args.urls:
+        # Part 13: offer to restore, never silently replay uncertain
+        # state - "restore" here means the ordinary tab/workspace session
+        # restore MainWindow already does (start_urls=None); declining it
+        # opens one blank tab instead, the same "start fresh" MainWindow
+        # gives Safe Mode itself.
+        choice = QMessageBox.question(
+            None, f"{APP_NAME} didn't close cleanly",
+            f"{APP_NAME} may have crashed or been force-quit last time.\n\n"
+            "Restore your previous browsing session?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes)
+        if choice == QMessageBox.StandardButton.No:
+            start_urls = ["about:blank"]
+
     database = Database(database_path())
     profile = BrowserProfile(app)
 
-    window = MainWindow(profile, database, start_urls=args.urls or None)
+    window = MainWindow(profile, database, start_urls=start_urls, safe_mode=safe_mode)
     window.show()
     window.show_first_run_if_needed()
 
     exit_code = app.exec()
     database.close()
+    if exit_code == 0:
+        mark_session_clean()
     return exit_code
 
 

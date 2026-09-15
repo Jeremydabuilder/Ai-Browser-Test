@@ -1,0 +1,421 @@
+name: Release build
+
+# Builds Windows and macOS, computes checksums, and generates a release
+# manifest (docs/release_manifest.md) - never publishes on its own. Runs
+# on a manual trigger (choose a channel) or a version tag (defaults to
+# "preview" - see the channel step below); either way the result is a set
+# of workflow artifacts someone downloads and tests, not something pushed
+# to a public release automatically. Add a publish step only once a build
+# has actually been through packaging/windows/README.md and
+# packaging/macos/README.md's checklists.
+#
+# Signing/notarization: conditional on the relevant secrets existing (see
+# each job's "Check for signing credentials" step) - never faked when
+# absent. A run without them still succeeds and uploads a build; each
+# job's own "Report signing status" step and the job summary say plainly
+# whether that run's artifact is signed or an unsigned preview build. See
+# packaging/SIGNING.md for exactly what those secrets would need to be.
+on:
+  workflow_dispatch:
+    inputs:
+      channel:
+        description: "Build channel"
+        type: choice
+        options: [preview, stable, nightly]
+        default: preview
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      signed: ${{ steps.signing_check.outputs.has_cert }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install "pyinstaller>=6.0" "pyinstaller-hooks-contrib>=2024.0"
+
+      - name: Run the test suite
+        # A packaging change that breaks the app is worse than no packaging
+        # change - build only on a green suite. unittest, not pytest: the
+        # project's own README documents `python -m unittest discover` as
+        # the way to run these tests, and pytest is not one of its
+        # dependencies - matching that instead of introducing an
+        # undeclared one.
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: python -m unittest discover -s tests -v
+
+      - name: Read the app version and channel
+        id: version
+        shell: pwsh
+        run: |
+          $v = (python -c "from app import __version__; print(__version__)").Trim()
+          echo "version=$v" >> $env:GITHUB_OUTPUT
+          $channel = "${{ inputs.channel }}"
+          if ([string]::IsNullOrEmpty($channel)) { $channel = "preview" }
+          echo "channel=$channel" >> $env:GITHUB_OUTPUT
+          echo "commit=${{ github.sha }}" >> $env:GITHUB_OUTPUT
+
+      - name: Build with PyInstaller
+        env:
+          PYBROWSER_CHANNEL: ${{ steps.version.outputs.channel }}
+          PYBROWSER_BUILD_COMMIT: ${{ github.sha }}
+        run: pyinstaller packaging/windows/pybrowser.spec --noconfirm
+
+      - name: Smoke test - launch the frozen exe
+        # This is NOT a substitute for a human clicking through the app - it
+        # is the one thing CI can honestly verify without a GUI session: that
+        # the packaged exe starts, survives past whatever would make it crash
+        # immediately (a missing DLL, a Qt WebEngine resource PyInstaller's
+        # hook failed to collect, an import error with no console to print
+        # to), and stays alive. A real first-run checklist still has to be
+        # run by a person - see packaging/windows/README.md.
+        #
+        # Part 10: also fails on a traceback/error signature appearing in
+        # the captured output even if the process happened to stay alive
+        # (e.g. an exception on a background thread that doesn't kill the
+        # main process) - a launch that "stayed running" while quietly
+        # logging an unhandled exception is still a real release bug.
+        shell: pwsh
+        run: |
+          $env:PYBROWSER_DATA_DIR = "$env:RUNNER_TEMP\pybrowser-smoke"
+          $OUT = "$env:RUNNER_TEMP\pybrowser-smoke-stdout.log"
+          $proc = Start-Process -FilePath "dist\PyBrowser\PyBrowser.exe" -PassThru `
+              -RedirectStandardOutput $OUT -RedirectStandardError "$OUT.err"
+          Start-Sleep -Seconds 15
+          $log = "$env:PYBROWSER_DATA_DIR\logs\pybrowser.log"
+          if ($proc.HasExited) {
+            Write-Host "PyBrowser exited early (code $($proc.ExitCode)) - this is a real release bug, not a flaky test."
+            if (Test-Path $log) { Get-Content $log } else { Write-Host "(no log file was written at $log)" }
+            throw "PyBrowser.exe did not stay running"
+          }
+          Write-Host "PyBrowser.exe ran for 15s without exiting."
+          Stop-Process -Id $proc.Id -Force
+          foreach ($f in @($OUT, "$OUT.err", $log)) {
+            if (Test-Path $f) {
+              $text = Get-Content $f -Raw
+              if ($text -match "Traceback \(most recent call last\)" -or $text -match "ModuleNotFoundError" -or $text -match "ImportError") {
+                Write-Host "--- $f ---"
+                Write-Host $text
+                throw "Smoke test output contains a traceback/missing-module error - see log above."
+              }
+            }
+          }
+
+      - name: Build installer with Inno Setup
+        run: |
+          choco install innosetup -y --no-progress
+          & "C:\Program Files (x86)\Inno Setup 6\iscc.exe" "/DMyAppVersion=${{ steps.version.outputs.version }}" packaging\windows\installer.iss
+        shell: pwsh
+
+      - name: Check for signing credentials
+        id: signing_check
+        shell: pwsh
+        run: |
+          $hasCert = -not [string]::IsNullOrEmpty("${{ secrets.WINDOWS_CERT_BASE64 }}")
+          echo "has_cert=$($hasCert.ToString().ToLower())" >> $env:GITHUB_OUTPUT
+
+      - name: Sign the executable and installer (Authenticode)
+        # Only runs when secrets.WINDOWS_CERT_BASE64/WINDOWS_CERT_PASSWORD
+        # are configured - see packaging/SIGNING.md for what those secrets
+        # are and how to generate them. Never fakes a signature when they
+        # are absent; the step above simply does not run.
+        if: steps.signing_check.outputs.has_cert == 'true'
+        shell: pwsh
+        run: |
+          $certBytes = [Convert]::FromBase64String("${{ secrets.WINDOWS_CERT_BASE64 }}")
+          $certPath = "$env:RUNNER_TEMP\signing-cert.pfx"
+          [IO.File]::WriteAllBytes($certPath, $certBytes)
+          foreach ($file in @("dist\PyBrowser\PyBrowser.exe", (Get-ChildItem "packaging\windows\output\*.exe").FullName)) {
+            & signtool sign /fd sha256 /tr http://timestamp.digicert.com /td sha256 `
+                /f $certPath /p "${{ secrets.WINDOWS_CERT_PASSWORD }}" $file
+          }
+          Remove-Item $certPath -Force
+
+      - name: Report signing status
+        shell: pwsh
+        run: |
+          if ("${{ steps.signing_check.outputs.has_cert }}" -eq "true") {
+            echo "::notice::Windows build is Authenticode SIGNED (channel: ${{ steps.version.outputs.channel }})."
+          } else {
+            echo "::warning::Windows build is UNSIGNED (no signing credentials configured) - SmartScreen will warn. This is a preview build, not a release-ready artifact. See packaging/SIGNING.md."
+          }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PyBrowser-Windows-Setup-${{ steps.version.outputs.version }}
+          path: packaging/windows/output/*.exe
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PyBrowser-Windows-x64-${{ steps.version.outputs.version }}
+          path: dist/PyBrowser/
+          if-no-files-found: error
+
+  build-macos:
+    runs-on: macos-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      signed: ${{ steps.signing_check.outputs.has_cert }}
+      notarized: ${{ steps.notarize_check.outputs.will_notarize }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install "pyinstaller>=6.0" "pyinstaller-hooks-contrib>=2024.0"
+
+      - name: Run the test suite
+        # unittest, not pytest - see the Windows job's comment on the same
+        # step: this matches the project's own documented test command
+        # instead of adding an undeclared dependency.
+        #
+        # A real macOS CI run (macOS Friend Preview Build Checkpoint,
+        # run 34884973061) found a benign-but-fatal wrinkle: after all
+        # tests report through to a clean "OK" summary, the process
+        # segfaults while CPython tears down the last few QWebEngineView
+        # instances (Qt WebEngine's GPU/Skia compositor loses its context
+        # mid-teardown). So: capture the run, and only forgive a nonzero
+        # exit when the log shows unittest's own clean "OK" summary with
+        # no FAIL:/ERROR: lines and no "FAILED (" summary anywhere -
+        # Chromium's own bracketed "[pid:tid:...ERROR:file] message"
+        # logging never matches those patterns, so this cannot mask a
+        # real mid-suite crash or failure.
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          set +e
+          python -m unittest discover -s tests -v > /tmp/pybrowser-test-output.log 2>&1
+          STATUS=$?
+          set -e
+          cat /tmp/pybrowser-test-output.log
+          if [ "$STATUS" -eq 0 ]; then
+            exit 0
+          fi
+          if grep -qE '^OK$' /tmp/pybrowser-test-output.log \
+              && grep -qE '^Ran [0-9]+ tests? in' /tmp/pybrowser-test-output.log \
+              && ! grep -qE '^(FAIL|ERROR): |^FAILED \(' /tmp/pybrowser-test-output.log; then
+            echo "::warning::Test suite reported a clean OK but the interpreter exited with status $STATUS - a known benign Qt WebEngine post-suite teardown crash, not a test failure. Treating this run as passed."
+            exit 0
+          fi
+          echo "::error::Test suite failed for real (interpreter exit $STATUS, no clean OK summary found) - see log above."
+          exit "$STATUS"
+
+      - name: Read the app version and channel
+        id: version
+        run: |
+          echo "version=$(python3 -c 'from app import __version__; print(__version__)')" >> "$GITHUB_OUTPUT"
+          echo "channel=${{ inputs.channel || 'preview' }}" >> "$GITHUB_OUTPUT"
+
+      - name: Build the .icns app icon
+        run: bash packaging/macos/make_icns.sh
+
+      - name: Build with PyInstaller
+        env:
+          PYBROWSER_CHANNEL: ${{ steps.version.outputs.channel }}
+          PYBROWSER_BUILD_COMMIT: ${{ github.sha }}
+        run: pyinstaller packaging/macos/pybrowser.spec --noconfirm
+
+      - name: Check for signing credentials
+        id: signing_check
+        run: |
+          if [ -n "${{ secrets.MACOS_CERT_BASE64 }}" ]; then
+            echo "has_cert=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_cert=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Sign with Developer ID (hardened runtime)
+        # Only runs when secrets.MACOS_CERT_BASE64/MACOS_CERT_PASSWORD/
+        # MACOS_SIGNING_IDENTITY are configured - see packaging/SIGNING.md.
+        # Never fakes a real signature when they are absent.
+        if: steps.signing_check.outputs.has_cert == 'true'
+        run: |
+          KEYCHAIN_PATH="$RUNNER_TEMP/signing.keychain-db"
+          KEYCHAIN_PASSWORD="$(uuidgen)"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          echo "${{ secrets.MACOS_CERT_BASE64 }}" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" -P "${{ secrets.MACOS_CERT_PASSWORD }}" \
+              -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+          security list-keychain -d user -s "$KEYCHAIN_PATH"
+          security set-key-partition-list -S apple-tool:,apple: -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          codesign --force --deep --options runtime \
+              --sign "${{ secrets.MACOS_SIGNING_IDENTITY }}" dist/PyBrowser.app
+          rm -f "$RUNNER_TEMP/cert.p12"
+
+      - name: Ad-hoc sign for local testing (unsigned builds only)
+        # NOT a real signature - satisfies nothing but this runner's own
+        # Gatekeeper check well enough to smoke-test the .app. Skipped
+        # when a real Developer ID signature was just applied above.
+        if: steps.signing_check.outputs.has_cert != 'true'
+        run: codesign --force --deep --sign - dist/PyBrowser.app
+
+      - name: Smoke test - launch the app bundle
+        # Same honest limitation as the Windows job: this proves the
+        # frozen .app actually starts on a real Mac and survives past
+        # whatever would crash it immediately, not that a person clicked
+        # through the UI. See packaging/macos/README.md for the real
+        # first-run checklist.
+        #
+        # Launches the bootloader binary directly (not `open`) so it
+        # stays a normal child process: PYBROWSER_DATA_DIR reaches it and
+        # a crash's stdout/stderr is captured, and (Part 10) the captured
+        # output is scanned for a traceback/missing-module signature even
+        # if the process happened to stay alive.
+        run: |
+          export PYBROWSER_DATA_DIR="$RUNNER_TEMP/pybrowser-smoke"
+          OUT="$RUNNER_TEMP/pybrowser-smoke-stdout.log"
+          "dist/PyBrowser.app/Contents/MacOS/PyBrowser" > "$OUT" 2>&1 &
+          APP_PID=$!
+          sleep 15
+          LOG="$PYBROWSER_DATA_DIR/logs/pybrowser.log"
+          if kill -0 "$APP_PID" 2>/dev/null; then
+            echo "PyBrowser.app ran for 15s without exiting."
+            kill "$APP_PID"
+          else
+            wait "$APP_PID" && STATUS=0 || STATUS=$?
+            echo "PyBrowser.app exited early (status $STATUS) - this is a real release bug, not a flaky test."
+            echo "--- stdout/stderr ---"
+            cat "$OUT" || true
+            echo "--- $LOG ---"
+            if [ -f "$LOG" ]; then cat "$LOG"; else echo "(no log file was written at $LOG)"; fi
+            exit 1
+          fi
+          for f in "$OUT" "$LOG"; do
+            if [ -f "$f" ] && grep -qE "Traceback \(most recent call last\)|ModuleNotFoundError|ImportError: " "$f"; then
+              echo "--- $f ---"
+              cat "$f"
+              echo "::error::Smoke test output contains a traceback/missing-module error."
+              exit 1
+            fi
+          done
+
+      - name: Install create-dmg
+        run: brew install create-dmg
+
+      - name: Build the .dmg
+        run: |
+          mkdir -p packaging/macos/output
+          create-dmg \
+            --volname "PyBrowser" \
+            --window-size 540 380 \
+            --icon-size 96 \
+            --icon "PyBrowser.app" 140 160 \
+            --app-drop-link 400 160 \
+            "packaging/macos/output/PyBrowser-macOS-${{ steps.version.outputs.version }}.dmg" \
+            "dist/PyBrowser.app"
+
+      - name: Check for notarization credentials
+        id: notarize_check
+        run: |
+          if [ -n "${{ secrets.APPLE_NOTARIZE_API_KEY }}" ] && [ "${{ steps.signing_check.outputs.has_cert }}" = "true" ]; then
+            echo "will_notarize=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "will_notarize=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Notarize and staple
+        # Only runs with a real Developer ID signature AND notarization
+        # credentials (secrets.APPLE_NOTARIZE_API_KEY/_ISSUER_ID/_KEY_ID) -
+        # see packaging/SIGNING.md. Never faked when absent.
+        if: steps.notarize_check.outputs.will_notarize == 'true'
+        run: |
+          echo "${{ secrets.APPLE_NOTARIZE_API_KEY }}" > "$RUNNER_TEMP/notary_key.p8"
+          xcrun notarytool submit "packaging/macos/output/PyBrowser-macOS-${{ steps.version.outputs.version }}.dmg" \
+              --key "$RUNNER_TEMP/notary_key.p8" \
+              --key-id "${{ secrets.APPLE_NOTARIZE_KEY_ID }}" \
+              --issuer "${{ secrets.APPLE_NOTARIZE_ISSUER_ID }}" \
+              --wait
+          xcrun stapler staple "packaging/macos/output/PyBrowser-macOS-${{ steps.version.outputs.version }}.dmg"
+          rm -f "$RUNNER_TEMP/notary_key.p8"
+
+      - name: Report signing/notarization status
+        run: |
+          if [ "${{ steps.notarize_check.outputs.will_notarize }}" = "true" ]; then
+            echo "::notice::macOS build is Developer ID SIGNED + NOTARIZED + STAPLED (channel: ${{ steps.version.outputs.channel }})."
+          elif [ "${{ steps.signing_check.outputs.has_cert }}" = "true" ]; then
+            echo "::warning::macOS build is signed with a Developer ID but NOT notarized (no notarization credentials configured) - Gatekeeper will still refuse it. See packaging/SIGNING.md."
+          else
+            echo "::warning::macOS build is UNSIGNED (ad-hoc signature only, no Developer ID configured) - Gatekeeper will refuse to open it without a right-click -> Open. This is a preview build, not a release-ready artifact. See packaging/SIGNING.md."
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PyBrowser-macOS-${{ steps.version.outputs.version }}
+          path: packaging/macos/output/*.dmg
+          if-no-files-found: error
+
+  manifest:
+    # Part 17/18: combine both platforms' checksums into one release
+    # manifest, once both builds have finished (or failed) - `if: always()`
+    # so a genuine failure on one platform still lets the other's checksum
+    # be reported, rather than silently dropping the whole manifest step.
+    needs: [build-windows, build-macos]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: "PyBrowser-Windows-Setup-*"
+          path: artifacts/windows
+        continue-on-error: true
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: "PyBrowser-macOS-*"
+          path: artifacts/macos
+        continue-on-error: true
+
+      - name: Generate the release manifest
+        run: |
+          VERSION="${{ needs.build-windows.outputs.version || needs.build-macos.outputs.version }}"
+          CHANNEL="${{ inputs.channel || 'preview' }}"
+          WIN_FILE=$(find artifacts/windows -name "*.exe" 2>/dev/null | head -n1 || true)
+          MAC_FILE=$(find artifacts/macos -name "*.dmg" 2>/dev/null | head -n1 || true)
+          ARGS="--version $VERSION --channel $CHANNEL --out manifest.json"
+          ARGS="$ARGS --notes-url https://github.com/${{ github.repository }}/releases/tag/v$VERSION"
+          if [ -n "$WIN_FILE" ]; then
+            ARGS="$ARGS --windows-url https://github.com/${{ github.repository }}/releases/latest/download/$(basename "$WIN_FILE") --windows-file $WIN_FILE"
+          fi
+          if [ -n "$MAC_FILE" ]; then
+            ARGS="$ARGS --macos-url https://github.com/${{ github.repository }}/releases/latest/download/$(basename "$MAC_FILE") --macos-file $MAC_FILE"
+          fi
+          python scripts/generate_manifest.py $ARGS
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-manifest
+          path: manifest.json
+          if-no-files-found: error

@@ -31,3 +31,12 @@ cffi
 # Local file context (app/browser/file_context.py): reading a .docx file the
 # user explicitly attached. TXT/MD/JSON/CSV need nothing beyond the stdlib.
 python-docx
+
+# Encrypted Sync / Collaboration (app/sync/crypto.py): AES-256-GCM and
+# scrypt for the sync master key and per-Mission collaboration keys.
+# Already installed transitively via pypdf's own optional dependency on
+# it, but declared explicitly here since app/sync/crypto.py imports it
+# directly as a first-class dependency, not merely through pypdf - see
+# packaging/common/spec_common.py's COLLECT_ALL for why it also needs
+# collecting at packaging time, same reasoning as cffi above.
+cryptography

@@ -63,10 +63,18 @@ class MainWindow(QMainWindow):
         profile: BrowserProfile,
         database: Database,
         start_urls: list[str] | None = None,
+        safe_mode=None,
     ) -> None:
         super().__init__()
         self.setWindowTitle(APP_NAME)
         self.resize(1280, 820)
+
+        from app.startup_state import SafeModeFlags
+
+        #: Phase 22 Part 14 - Safe Mode. Disabled unless main.py resolved
+        #: it (an explicit flag, env var, or repeated-crash auto-trigger)
+        #: and passed it in; see resolve_safe_mode.
+        self.safe_mode = safe_mode or SafeModeFlags(enabled=False)
 
         self._profile = profile
         self._db = database
@@ -171,7 +179,8 @@ class MainWindow(QMainWindow):
         #: (a few sqlite reads/writes). See app/sync/service.py.
         from app.sync.service import SyncService
 
-        self.sync_service = SyncService(database, self.settings)
+        self.sync_service = SyncService(
+            database, self.settings, force_disabled=self.safe_mode.disable_sync)
 
         #: Scheduled Missions (Phase 7) - a scheduling layer on top of the
         #: same MissionService/AgentSession this window already owns, never
@@ -193,6 +202,13 @@ class MainWindow(QMainWindow):
             self.watches, self._fetch_page_text_for_watch, self,
             ownership=self.sync_service.ownership, device_id=self.sync_service.device.id)
         self.watch_runner.attach_to(self.task_runner.timer)
+
+        #: Safe Mode (Part 14): scheduled Missions and Watches share this
+        #: one timer, so stopping it here covers both - a bad scheduled
+        #: task or watch that crashes the app every launch must not get
+        #: another chance to run just because Safe Mode was requested.
+        if self.safe_mode.disable_schedules:
+            self.task_runner.timer.stop()
 
         #: Background sync (Phase 20 Part 18) - piggybacks on the same
         #: timer, a no-op while sync is off (the default).
@@ -285,7 +301,14 @@ class MainWindow(QMainWindow):
         if _current_workspace is not None:
             self._apply_workspace_environment(_current_workspace)
 
-        if (start_urls is None and _current_workspace is not None
+        if self.safe_mode.enabled:
+            # Part 14: "open one blank tab" - deliberately skips pinned
+            # tabs, tab groups, and the workspace's own remembered session
+            # entirely. Whatever state made the last session crash
+            # repeatedly (a bad pinned tab, a corrupt group) must not be
+            # replayed the one time the user is trying to get in safely.
+            self.tabs.new_tab("about:blank")
+        elif (start_urls is None and _current_workspace is not None
                 and not _current_workspace.tab_state.is_empty):
             # A workspace remembers its own tabs/pinned/groups in full (see
             # app/workspaces/model.py's TabState) - once it has actually
@@ -430,6 +453,10 @@ class MainWindow(QMainWindow):
 
         help_menu: QMenu = menubar.addMenu("&Help")
         self._add_action(help_menu, "&Keyboard Shortcuts", "Ctrl+/", self._show_shortcuts)
+        self._add_action(help_menu, "Check for &Updates…", None, self._show_update_check)
+        help_menu.addSeparator()
+        self._add_action(help_menu, "&Open Data Folder", None, self._open_data_folder)
+        self._add_action(help_menu, "&Reset PyBrowser…", None, self._reset_pybrowser)
         help_menu.addSeparator()
         self._add_action(help_menu, f"&About {APP_NAME}", None, self._show_about)
 
@@ -2435,19 +2462,53 @@ class MainWindow(QMainWindow):
         dialog.exec()
 
     def _show_about(self) -> None:
-        from PySide6.QtCore import qVersion
+        from app.ui.about_dialog import AboutDialog
 
-        from app import __version__
+        AboutDialog(self).exec()
 
-        QMessageBox.about(
-            self,
-            f"About {APP_NAME}",
-            f"<b>{APP_NAME}</b> {__version__} — the browser that finishes internet tasks.<br>"
-            "Browse normally, or give Py a goal and let it research, compare, "
-            "and act across the web.<br><br>"
-            "Built with Python and Qt WebEngine.<br><br>"
-            f"Qt {qVersion()}",
-        )
+    def _show_update_check(self) -> None:
+        from app.ui.update_dialog import UpdateCheckDialog
+
+        UpdateCheckDialog(self).exec()
+
+    def _open_data_folder(self) -> None:
+        """Part 16 - never hidden: a user should always be able to find
+        exactly where their profile/database/logs live."""
+        from PySide6.QtCore import QUrl
+        from PySide6.QtGui import QDesktopServices
+
+        from app.config import user_data_dir
+
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(user_data_dir())))
+
+    def _reset_pybrowser(self) -> None:
+        """Part 16 - explicit, confirmed, and never automatic: uninstalling
+        or updating PyBrowser must never silently delete this folder, so
+        the only path that does is this one, behind a typed confirmation."""
+        from app.config import user_data_dir
+
+        data_dir = user_data_dir()
+        confirm = QMessageBox.warning(
+            self, "Reset PyBrowser",
+            f"This will permanently delete all PyBrowser data - history, bookmarks, "
+            f"Missions, settings, saved credentials, and everything else in:\n\n"
+            f"{data_dir}\n\n"
+            f"This cannot be undone. {APP_NAME} will close afterward.\n\n"
+            f"Continue?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Cancel)
+        if confirm != QMessageBox.StandardButton.Yes:
+            return
+        import shutil
+
+        from PySide6.QtWidgets import QApplication
+
+        self._db.close()
+        try:
+            shutil.rmtree(data_dir)
+        except OSError as exc:
+            QMessageBox.critical(self, "Reset PyBrowser", f"Could not delete all data: {exc}")
+        QApplication.instance().quit()
 
     # ------------------------------------------------------------------
     # The AI agent panel
@@ -2465,7 +2526,8 @@ class MainWindow(QMainWindow):
 
         if self._agent_session is None:
             self._agent_session, reason = build_session(
-                self.controller, self, self.settings, self.missions, self.mcp,
+                self.controller, self, self.settings, self.missions,
+                None if self.safe_mode.disable_mcp else self.mcp,
                 knowledge=self.knowledge_index, graph=self.knowledge_graph, collab=self.collab_service)
             if self._agent_session is None:
                 self._agent_unavailable = True
@@ -2619,7 +2681,8 @@ class MainWindow(QMainWindow):
         from app.ui.agent_setup import build_session
 
         session, reason = build_session(
-            self.controller, self, self.settings, self.missions, self.mcp,
+            self.controller, self, self.settings, self.missions,
+            None if self.safe_mode.disable_mcp else self.mcp,
             knowledge=self.knowledge_index, graph=self.knowledge_graph, collab=self.collab_service)
         if session is None:
             self._show_status(f"A Multi-Agent worker could not start: {reason}")

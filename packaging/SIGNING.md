@@ -20,10 +20,14 @@ later without redesigning the build.
       dist\PyBrowser\PyBrowser.exe
   ```
   Sign the installer `.exe` too, after Inno Setup builds it.
-- In CI: the `.pfx` (base64-encoded) and its password as GitHub Actions
-  secrets, decoded to a temp file for the `signtool` step, then deleted.
-  **Not present in `release-windows.yml`** - there is no certificate to
-  reference yet.
+- In CI: `secrets.WINDOWS_CERT_BASE64` (the `.pfx`, base64-encoded) and
+  `secrets.WINDOWS_CERT_PASSWORD`, decoded to a temp file for the
+  `signtool` step in `.github/workflows/release.yml`'s `build-windows`
+  job, then deleted. **The step exists and is wired up, but is
+  conditional on those secrets being present** (its "Check for signing
+  credentials" step gates it) - a run with no certificate configured
+  simply skips it and uploads an unsigned build, which that job's final
+  "Report signing status" step states plainly in the run's log.
 
 **SmartScreen**: an unsigned or newly-signed executable will still show a
 "Windows protected your PC" warning until it accumulates enough download
@@ -60,17 +64,25 @@ around it by disabling SmartScreen or asking users to.
   ```bash
   xcrun stapler staple PyBrowser-0.1.0.dmg
   ```
-- In CI: the Developer ID certificate + private key (as a base64 `.p12` +
-  password) and the notarization credentials, all as GitHub Actions
-  secrets. **Not present in `release-macos.yml`** - it only does a local,
-  throwaway ad-hoc signature (`codesign --sign -`) so the CI-built `.app`
-  can be smoke-tested on the runner; that signature satisfies nothing on a
-  real user's Mac.
+- In CI: `secrets.MACOS_CERT_BASE64` (the Developer ID `.p12`, base64-
+  encoded), `secrets.MACOS_CERT_PASSWORD`, `secrets.MACOS_SIGNING_IDENTITY`
+  (the exact "Developer ID Application: Name (TEAMID)" string), and for
+  notarization `secrets.APPLE_NOTARIZE_API_KEY`/`_KEY_ID`/`_ISSUER_ID` -
+  all read by the conditional "Sign with Developer ID", "Notarize and
+  staple" steps in `.github/workflows/release.yml`'s `build-macos` job.
+  **Wired up and conditional on those secrets being present**: absent
+  them, the job falls back to a local, throwaway ad-hoc signature
+  (`codesign --sign -`) so the CI-built `.app` can still be smoke-tested
+  on the runner - that signature satisfies nothing on a real user's Mac,
+  and the job's final "Report signing/notarization status" step states
+  the actual outcome (unsigned / signed-not-notarized / signed+notarized)
+  plainly in the run's log every time.
 
 ## What this means today
 
-Neither workflow publishes a signed artifact. Anyone running a build from
-here will see:
+As of this writing, no signing/notarization secrets are configured in
+this repository, so every build the `release.yml` workflow produces is
+still:
 - **Windows**: a SmartScreen warning ("Windows protected your PC" -> More
   info -> Run anyway).
 - **macOS**: Gatekeeper refusing to open the app at all
@@ -79,4 +91,6 @@ here will see:
   signature first.
 
 This is the correct, honest state before a certificate exists - it is not a
-build defect to fix by disabling these checks.
+build defect to fix by disabling these checks. Once real credentials are
+added as the repository secrets named above, the very next run signs (and,
+for macOS, notarizes) automatically - no workflow changes needed.
