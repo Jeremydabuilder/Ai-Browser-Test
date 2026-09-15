@@ -12,6 +12,8 @@ stays as the advanced, all-clients-at-once view from Phase 11.
 
 from __future__ import annotations
 
+import gc
+
 from PySide6.QtCore import QObject, Qt, QThread, Signal
 from PySide6.QtWidgets import (
     QApplication,
@@ -228,6 +230,19 @@ class ClientSetupDialog(QDialog):
         url = client_configs.mcp_url(self._server.host, self._server.port)
         self.verify_button.setEnabled(False)
         self.status_label.setText("Verifying…")
+        # Suspends the cyclic GC for the whole round trip, re-enabled in
+        # _on_verified() below. Confirmed by reproduction: this is a real
+        # HTTP round trip (Verifier's own QThread) into this same process's
+        # MCP server, whose handler calls back onto the GUI thread via
+        # GuiBridge's cross-thread queued Signal(object) - and a cyclic
+        # collection landing anywhere in that window, on either thread, has
+        # been reproduced to crash the interpreter outright (Qt's queued
+        # delivery of an arbitrary Python object isn't itself tracked by
+        # Python's refcounting the way a normal reference is). Refcounting
+        # keeps everything alive regardless; only cycle collection is
+        # paused, and only for the single-digit milliseconds this takes.
+        self._gc_was_enabled = gc.isenabled()
+        gc.disable()
         self._thread = QThread(self)
         # Kept as an attribute (not passed through functools.partial) so
         # Qt's automatic queued-connection detection sees a plain bound
@@ -241,6 +256,8 @@ class ClientSetupDialog(QDialog):
         self._thread.start()
 
     def _on_verified(self, result) -> None:
+        if getattr(self, "_gc_was_enabled", False):
+            gc.enable()
         if self._client_id is not None:
             self._server.store.record_verification(self._client_id, result.status.value)
         self.status_label.setText(

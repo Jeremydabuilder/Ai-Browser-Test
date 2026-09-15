@@ -18,6 +18,8 @@ app, not a process meant to be spawned per client on its own stdio).
 
 from __future__ import annotations
 
+import contextlib
+import gc
 import json
 import threading
 import time
@@ -35,6 +37,36 @@ DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
 _CONFIRM_TIMEOUT_S = 120
 _CALL_TIMEOUT_S = 30
+
+
+@contextlib.contextmanager
+def _gc_paused():
+    """Suspend the cyclic GC for a cross-thread queued-signal round trip.
+
+    Defense in depth, not by itself sufficient: a reproduced crash (a
+    same-process test that opens a real HTTP connection to this server
+    while pumping the GUI event loop) needed gc disabled for the whole
+    verify round trip, not just one call_sync - see the caller in
+    app/ui/mcp_server_settings.py for that fix and its own account of
+    what was actually proven. This narrower version still removes one
+    real hazard on every call_sync/call_future/confirm round trip: Qt's
+    queued delivery of a Signal(object) carrying a Python callable across
+    threads has a window - between emit() on the calling thread and the
+    slot actually running on the GUI thread - where the callable is live
+    only via Qt's own internal (non-refcounted-by-Python) bookkeeping,
+    and a cyclic collection landing in that window is a plausible crash
+    even where it wasn't the one this specific bug needed. Refcounting
+    alone (never suspended) still reclaims everything the moment this
+    call returns; only the generational cycle collector is paused, and
+    only for the few milliseconds one round trip takes.
+    """
+    was_enabled = gc.isenabled()
+    gc.disable()
+    try:
+        yield
+    finally:
+        if was_enabled:
+            gc.enable()
 
 
 class GuiBridge(QObject):
@@ -68,8 +100,9 @@ class GuiBridge(QObject):
             box["value"] = fn()
             done.set()
 
-        self._post(on_gui_thread)
-        done.wait(timeout)
+        with _gc_paused():
+            self._post(on_gui_thread)
+            done.wait(timeout)
         return box.get("value")
 
     def call_future(self, fn: Callable[[], Any], timeout: float = _CALL_TIMEOUT_S) -> Any:
@@ -89,8 +122,9 @@ class GuiBridge(QObject):
 
             future.then(on_resolved)
 
-        self._post(on_gui_thread)
-        done.wait(timeout)
+        with _gc_paused():
+            self._post(on_gui_thread)
+            done.wait(timeout)
         return box.get("value")
 
     def confirm(self, prompt: str, title: str = "External AI client") -> bool:
@@ -110,8 +144,9 @@ class GuiBridge(QObject):
             box["value"] = choice == QMessageBox.StandardButton.Yes
             done.set()
 
-        self._post(on_gui_thread)
-        done.wait(_CONFIRM_TIMEOUT_S)
+        with _gc_paused():
+            self._post(on_gui_thread)
+            done.wait(_CONFIRM_TIMEOUT_S)
         return bool(box.get("value", False))
 
 
@@ -219,6 +254,16 @@ class _Handler(BaseHTTPRequestHandler):
 
 
 class _HttpServer(ThreadingHTTPServer):
+    # Deliberately daemon: a per-request thread can be blocked inside
+    # GuiBridge.call_sync/call_future waiting on the GUI thread (see
+    # GuiBridge above). If stop() ever ran ON the GUI thread while such a
+    # request were in flight, joining that thread (Python's own
+    # ThreadingMixIn.server_close() would do this automatically for a
+    # non-daemon thread) would deadlock - the request thread needs the
+    # GUI thread's event loop to deliver the queued signal that would let
+    # it finish, and the GUI thread would be stuck in the join waiting for
+    # exactly that. Daemon threads are never joined, so stop() always
+    # returns promptly instead.
     daemon_threads = True
 
     def __init__(self, address: tuple[str, int], app: "PyBrowserMcpServer") -> None:
@@ -273,6 +318,8 @@ class PyBrowserMcpServer(QObject):
         assert self._httpd is not None
         self._httpd.shutdown()
         self._httpd.server_close()
+        if self._thread is not None:
+            self._thread.join(timeout=5.0)
         self._httpd = None
         self._thread = None
         self.status_changed.emit(False)

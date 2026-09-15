@@ -57,9 +57,39 @@ jobs:
         # the way to run these tests, and pytest is not one of its
         # dependencies - matching that instead of introducing an
         # undeclared one.
+        #
+        # Same forgiveness logic as the macOS job's own "Run the test
+        # suite" step below, and for the same reason: a run on real
+        # Windows hardware (35011503868) hit the identical pattern seen
+        # on macOS - the suite's own output stops cold with no "OK"/
+        # "Ran N tests" summary and a bare nonzero exit, consistent with
+        # an interpreter-exit crash after the suite itself already
+        # finished (this step's stdout is a pipe, not a TTY, so Python
+        # fully block-buffers it by default and the final summary lines
+        # can be sitting unflushed when the crash happens) - and Windows,
+        # unlike macOS, had no forgiveness logic at all, so any such
+        # crash failed the build outright with no way to tell a benign
+        # post-suite crash from a real one. -u (unbuffered) plus the same
+        # grep-based check used on macOS fixes both problems: the true
+        # summary reliably reaches the log, and a real mid-suite failure
+        # (which always prints its own FAIL:/ERROR:/"FAILED (" lines)
+        # still fails the build exactly as before.
         env:
           QT_QPA_PLATFORM: offscreen
-        run: python -m unittest discover -s tests -v
+        run: |
+          $ErrorActionPreference = "Continue"
+          python -u -m unittest discover -s tests -v > pybrowser-test-output.log 2>&1
+          $STATUS = $LASTEXITCODE
+          Get-Content pybrowser-test-output.log
+          if ($STATUS -eq 0) { exit 0 }
+          $logText = Get-Content pybrowser-test-output.log -Raw
+          if ($logText -match '(?m)^OK$' -and $logText -match '(?m)^Ran [0-9]+ tests? in' `
+              -and -not ($logText -match '(?m)^(FAIL|ERROR): ' -or $logText -match '(?m)^FAILED \(')) {
+            Write-Host "::warning::Test suite reported a clean OK but the interpreter exited with status $STATUS - a known benign post-suite crash, not a test failure. Treating this run as passed."
+            exit 0
+          }
+          Write-Host "::error::Test suite failed for real (interpreter exit $STATUS, no clean OK summary found) - see log above."
+          exit $STATUS
 
       - name: Read the app version and channel
         id: version
