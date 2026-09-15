@@ -172,8 +172,9 @@
         <li>Your open tabs</li>
         <li>Text you've selected</li>
         <li>Mission findings &amp; sources</li>
-        <li class="bring-in-soon">Screenshots <span class="soon-tag">Coming soon</span></li>
-        <li class="bring-in-soon">PDFs &amp; local files <span class="soon-tag">Coming soon</span></li>
+        <li>Highlights you've saved</li>
+        <li>Screenshots</li>
+        <li>PDFs, files &amp; images</li>
       </ul>
       <div class="bring-in-arrow" aria-hidden="true">
         <svg viewBox="0 0 48 16" width="48" height="16"><path d="M0 8h44M36 2l8 6-8 6" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
@@ -336,7 +337,10 @@
 
     <p class="section-note section-note--center">Missions keep their goal,
       constraints, progress, findings, sources, and result together — so
-      picking a task back up doesn't mean starting over.</p>
+      picking a task back up doesn't mean starting over. Missions live inside
+      a Workspace — a separate set of tabs, history, and Missions you can
+      switch between — and a Mission can be shared with someone else on
+      request. <span class="soon-tag">Experimental</span></p>
   </div>
 </section>
 
@@ -371,16 +375,17 @@
   </div>
 </section>
 
-<!-- ============================= CONNECT TOOLS (MCP, coming soon) ============================= -->
+<!-- ============================= CONNECT TOOLS (MCP) ============================= -->
 <section class="section section--muted" id="tools">
   <div class="wrap">
     <div class="section-head" data-reveal>
-      <p class="kicker">Connect your tools <span class="soon-tag soon-tag--kicker">Coming soon</span></p>
+      <p class="kicker">Connected Tools <span class="soon-tag soon-tag--kicker">Preview</span></p>
       <h2>Connect Py to your tools.</h2>
-      <p class="section-sub">Connect Py to the tools you already use, so a
-        Mission can combine the web with your files, code, documents, and
-        apps. Not available yet — this is the direction PyBrowser is built
-        toward next.</p>
+      <p class="section-sub">PyBrowser can connect to external tools over the
+        Model Context Protocol (MCP), so a Mission can combine the web with
+        whatever an MCP server exposes — your files, code, or apps. Every
+        connection is something you set up yourself, and every write still
+        goes through the same approval step described below.</p>
     </div>
 
     <div class="mcp-flow" data-reveal>
@@ -399,16 +404,17 @@
     </div>
 
     <ul class="mcp-examples" data-reveal>
-      <li>GitHub</li>
-      <li>Google Drive</li>
-      <li>Notion</li>
+      <li>Any MCP-compatible server</li>
       <li>Local files</li>
       <li>Databases</li>
-      <li>Custom MCP servers</li>
+      <li>Your own custom tools</li>
     </ul>
     <p class="section-note section-note--center mcp-tech-note">Powered by the
       Model Context Protocol (MCP) — an open standard for connecting an AI
-      assistant to external tools.</p>
+      assistant to external tools. Requires a compatible MCP server you
+      configure yourself; PyBrowser doesn't bundle connectors for specific
+      third-party services. You can also expose PyBrowser itself as an MCP
+      server to another AI client you trust.</p>
   </div>
 </section>
 
@@ -452,8 +458,14 @@
           <p>Turn any of the above into a persistent, resumable piece of work with its own goal and result.</p>
         </div>
       </div>
+      <div class="tier-row" data-reveal>
+        <div>
+          <h3>Skills</h3>
+          <p>Record a workflow once and let Py replay it — a repeatable task saved as a reusable skill, not a one-off Mission. <span class="soon-tag">Preview</span></p>
+        </div>
+      </div>
     </div>
-    <p class="section-note section-note--center">Later: built-in skills, skills you define yourself, and skills a connected MCP server provides.</p>
+    <p class="section-note section-note--center">Skills can be recorded from your own actions, written by hand, or provided by a connected MCP server.</p>
   </div>
 </section>
 
@@ -483,6 +495,10 @@
       <div class="tech-row" data-reveal>
         <p class="tech-name">OpenRouter</p>
         <p class="tech-desc">Access to several models through one key.</p>
+      </div>
+      <div class="tech-row" data-reveal>
+        <p class="tech-name">Local models <span class="soon-tag">Local</span></p>
+        <p class="tech-desc">Point PyBrowser at Ollama or LM Studio and run a model entirely on your own machine — no API key, no data leaving your device.</p>
       </div>
     </div>
     <p class="section-note section-note--center">You choose the model and effort level yourself — PyBrowser doesn't yet pick one for you automatically.</p>
@@ -576,9 +592,15 @@
         tracking built in, and no server of its own that your browsing is
         sent to.</li>
       <li data-reveal>Connected tools (see "Connect Py to your tools" above)
-        are not available yet — once they are, a connected tool only sees
-        what a Mission actually sends it, and every write still goes through
-        the same approval step described above.</li>
+        only see what a Mission actually sends them, and every write still
+        goes through the same approval step described above. <span class="soon-tag">Preview</span></li>
+      <li data-reveal>Sync between your own devices goes through a folder you
+        control (for example a folder inside your existing cloud storage) —
+        PyBrowser encrypts what it writes there itself, and there's no
+        PyBrowser-hosted server involved. <span class="soon-tag">Experimental</span></li>
+      <li data-reveal>Shared Missions are opt-in and scoped to the Mission you
+        choose to share — nothing else on your Workspace is exposed by
+        sharing one Mission. <span class="soon-tag">Experimental</span></li>
     </ul>
   </div>
 </section>
@@ -726,11 +748,12 @@
   <div class="wrap">
     <div class="access-card" data-reveal>
       <div class="access-copy">
-        <p class="kicker">Download</p>
+        <p class="kicker">Download <span class="soon-tag soon-tag--kicker">Preview</span></p>
         <h2>Get PyBrowser</h2>
-        <p>PyBrowser 0.1.0 is a preview release. Windows has been installed
-          and used on a real machine; the macOS build passed its automated
-          checks and is still pending a full manual pass.</p>
+        <p>PyBrowser is currently available as a friends &amp; family preview.
+          macOS builds are not yet notarized and Windows builds are not yet
+          Authenticode-signed — your OS will warn you on first launch, and
+          the release notes explain how to open them anyway.</p>
         <div class="hero-ctas">
           <a class="btn btn-primary btn-lg" href="https://github.com/Jeremydabuilder/Ai-Browser-Test/releases/latest/download/PyBrowser-Windows-Setup-0.1.0.exe">Download for Windows</a>
           <a class="btn btn-ghost btn-lg" href="https://github.com/Jeremydabuilder/Ai-Browser-Test/releases/latest/download/PyBrowser-macOS-0.1.0.dmg">Mac preview — test build</a>
