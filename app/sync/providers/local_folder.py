@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from urllib.parse import quote
 
 from app.sync.providers.base import RemoteEntry, SyncProvider, SyncProviderUnavailable
 
@@ -29,10 +30,13 @@ from app.sync.providers.base import RemoteEntry, SyncProvider, SyncProviderUnava
 def _safe_filename(key: str) -> str:
     """Keys are always our own generated ids (record_type:global_id), never
     user-controlled path fragments - but treat them as untrusted anyway:
-    reject a key that would escape ``records/``."""
+    reject a key that would escape ``records/``. The key's own ":" (and any
+    other character Windows reserves in filenames - * ? " < > |) is
+    percent-encoded for the on-disk name only; the manifest and every
+    caller still use the raw key."""
     if "/" in key or "\\" in key or key in ("", ".", ".."):
         raise ValueError(f"unsafe sync record key: {key!r}")
-    return key + ".enc"
+    return quote(key, safe="") + ".enc"
 
 
 class LocalFolderProvider(SyncProvider):
