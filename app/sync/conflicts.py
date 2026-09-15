@@ -39,6 +39,14 @@ POLICY_BY_RECORD_TYPE: dict[str, str] = {
     RecordType.GRAPH_NODE: ConflictPolicy.NEWER_WINS,
     RecordType.GRAPH_EDGE: ConflictPolicy.NEWER_WINS,
     RecordType.SETTINGS: ConflictPolicy.NEWER_WINS,
+    # Phase 21 - append-only/immutable once created, same as findings/highlights.
+    RecordType.MISSION_COMMENT: ConflictPolicy.KEEP_BOTH,
+    RecordType.MISSION_ACTIVITY: ConflictPolicy.KEEP_BOTH,
+    #: A role change or removal only ever comes from the owner, so a real
+    #: concurrent edit is rare; "the most recent write wins" is a
+    #: reasonable default rather than building manual resolution for a
+    #: single-writer field (Part 9: "start with simple rules").
+    RecordType.MISSION_PARTICIPANT: ConflictPolicy.NEWER_WINS,
 }
 
 

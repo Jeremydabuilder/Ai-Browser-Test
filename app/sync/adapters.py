@@ -36,29 +36,60 @@ MAX_SYNCED_ROWS = 20_000
 class MissionAdapter(SyncAdapter):
     record_type = RecordType.MISSION
 
-    def __init__(self, store: "MissionStore") -> None:
+    def __init__(self, store: "MissionStore", *, mission_ids: "set[int] | None" = None,
+                share_workspace: bool = True) -> None:
+        #: Phase 21: when given, this adapter only ever syncs these
+        #: specific Missions - how a collaboration-scoped SyncEngine (one
+        #: Mission, one collaboration key, one shared folder) reuses the
+        #: exact same adapter as the personal, whole-profile sync in
+        #: Phase 20 rather than needing a second implementation.
         self._store = store
+        self._mission_ids = mission_ids
+        #: Phase 21 Part 10: a shared Mission's workspace placement is
+        #: local metadata, never forced onto a collaborator - a Mission's
+        #: workspace_id is one device's own local workspace's id, which
+        #: rarely even exists on a peer device (and could fail a foreign
+        #: key if it doesn't). True (the default) preserves Phase 20's
+        #: exact whole-profile personal-sync behavior, where every device
+        #: is this same user's own and workspace_id really is shared
+        #: state; CollaborationService passes False.
+        self._share_workspace = share_workspace
 
     def iter_local_ids(self) -> list[str]:
-        return [str(m.id) for m in self._store.recent(limit=MAX_SYNCED_ROWS, with_pages=False)
-               if not self._store.is_deleted(m.id)]
+        ids = [m.id for m in self._store.recent(limit=MAX_SYNCED_ROWS, with_pages=False)
+              if not self._store.is_deleted(m.id)]
+        if self._mission_ids is not None:
+            ids = [i for i in ids if i in self._mission_ids]
+        return [str(i) for i in ids]
+
+    def in_scope(self, local_id: str, global_id: str) -> bool:
+        if self._mission_ids is None:
+            return True
+        try:
+            return int(local_id) in self._mission_ids
+        except ValueError:
+            return False
 
     def build_payload(self, local_id: str) -> dict | None:
         mission = self._store.get(int(local_id), with_pages=False)
         if mission is None or self._store.is_deleted(mission.id):
             return None
-        return {
+        payload = {
             "title": mission.title, "goal": mission.goal, "status": mission.status,
             "constraints": list(mission.constraints), "result": mission.result,
-            "follow_ups": list(mission.follow_ups), "workspace_id": mission.workspace_id,
+            "follow_ups": list(mission.follow_ups),
         }
+        if self._share_workspace:
+            payload["workspace_id"] = mission.workspace_id
+        return payload
 
     def apply_create_or_update(self, payload: dict, *, local_id: str | None,
                               global_id: str = "") -> str | None:
         if local_id is None:
+            workspace_id = payload.get("workspace_id") if self._share_workspace else None
             mission = self._store.create(payload.get("title", "") or "Untitled Mission",
                                          payload.get("goal", ""),
-                                         workspace_id=payload.get("workspace_id"))
+                                         workspace_id=workspace_id)
             if mission is None:
                 return None
             local_id = str(mission.id)
@@ -87,14 +118,30 @@ class MissionFindingAdapter(SyncAdapter):
 
     record_type = RecordType.MISSION_FINDING
 
-    def __init__(self, store: "MissionStore", global_ids: "GlobalIdStore") -> None:
+    def __init__(self, store: "MissionStore", global_ids: "GlobalIdStore", *,
+                mission_ids: "set[int] | None" = None,
+                graph: "object | None" = None, origin_device_id: str | None = None) -> None:
         self._store = store
         self._global_ids = global_ids
+        self._mission_ids = mission_ids
+        #: Phase 21 Part 9: when given, a newly-arrived (peer-authored)
+        #: finding is also entered into the local Knowledge Graph, tagged
+        #: Provenance.COLLABORATOR_CONTENT rather than the ordinary
+        #: TRUSTED_APP_STATE a locally-typed finding gets - see
+        #: app.knowledge_graph.builder.GraphBuilder.on_finding_saved.
+        #: ``origin_device_id`` is this adapter's OWN device id, stamped
+        #: onto payloads it builds so a peer receiving them can label the
+        #: contributor; it is never used to tag graph nodes built here,
+        #: since those nodes come from findings created by OTHERS.
+        self._graph = graph
+        self._origin_device_id = origin_device_id
 
     def iter_local_ids(self) -> list[str]:
         ids: list[str] = []
         for mission in self._store.recent(limit=MAX_SYNCED_ROWS, with_pages=False):
             if self._store.is_deleted(mission.id):
+                continue
+            if self._mission_ids is not None and mission.id not in self._mission_ids:
                 continue
             for finding in self._store.findings(mission.id):
                 ids.append(str(finding.id))
@@ -107,7 +154,11 @@ class MissionFindingAdapter(SyncAdapter):
         mission_global_id = self._global_ids.get_global_id(RecordType.MISSION, str(finding.mission_id))
         if mission_global_id is None:
             return None  # parent Mission not yet synced from this device either
-        return {"mission_global_id": mission_global_id, "text": finding.text}
+        payload = {"mission_global_id": mission_global_id, "text": finding.text,
+                  "source_url": finding.source_url, "source_title": finding.source_title}
+        if self._origin_device_id:
+            payload["contributed_by"] = self._origin_device_id
+        return payload
 
     def apply_create_or_update(self, payload: dict, *, local_id: str | None,
                               global_id: str = "") -> str | None:
@@ -118,11 +169,44 @@ class MissionFindingAdapter(SyncAdapter):
         if local_id is not None:
             self._store.edit_finding(int(local_id), payload.get("text", ""))
             return local_id
-        _outcome, finding = self._store.add_finding(int(mission_local_id), payload.get("text", ""))
+        page_id = None
+        source_url = payload.get("source_url", "")
+        if source_url:
+            from app.missions.model import PageOutcome, PageSource
+
+            page = self._store.add_page(int(mission_local_id), source_url,
+                                        payload.get("source_title", ""), PageSource.READ,
+                                        outcome=PageOutcome.USEFUL)
+            page_id = page.id if page is not None else None
+        _outcome, finding = self._store.add_finding(int(mission_local_id), payload.get("text", ""),
+                                                    page_id)
+        if finding is not None and self._graph is not None:
+            from app.security.provenance import Provenance
+
+            mission = self._store.get(int(mission_local_id), with_pages=False)
+            if mission is not None:
+                self._graph.on_finding_saved(
+                    finding_id=finding.id, mission=mission, text=finding.text,
+                    source_url=source_url, source_title=payload.get("source_title", ""),
+                    provenance=Provenance.COLLABORATOR_CONTENT,
+                    contributed_by=payload.get("contributed_by"))
         return str(finding.id) if finding is not None else None
 
     def apply_delete(self, local_id: str) -> None:
         self._store.remove_finding(int(local_id))
+
+    def in_scope(self, local_id: str, global_id: str) -> bool:
+        if self._mission_ids is None:
+            return True
+        finding = self._store.get_finding(int(local_id)) if local_id.isdigit() else None
+        if finding is None:
+            # Already gone locally, and there is no surviving row to say
+            # which Mission it belonged to - conservatively leave its
+            # tombstone to whichever engine (e.g. the Phase 20 personal,
+            # whole-profile one, which is always in-scope) can still
+            # resolve it, rather than guessing.
+            return False
+        return finding.mission_id in self._mission_ids
 
 
 # ---------------------------------------------------------------------------

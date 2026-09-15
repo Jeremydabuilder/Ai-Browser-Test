@@ -95,6 +95,21 @@ class SyncAdapter(ABC):
     def apply_delete(self, local_id: str) -> None:
         """Remove the local row entirely - a remote tombstone applied."""
 
+    def in_scope(self, local_id: str, global_id: str) -> bool:
+        """Does this (local id, global id) pair belong to what this
+        adapter instance is responsible for? True for every Phase 20
+        adapter (a personal, whole-profile sync legitimately owns every
+        record of its type). Overridden by a Phase 21 collaboration
+        adapter, which is deliberately scoped to one Mission: the
+        underlying GlobalIdStore table is shared across every sync engine
+        (stable global ids are reused, not duplicated per engine), so a
+        Mission-scoped engine must recognise a global id belonging to
+        some OTHER shared Mission as out of scope, never as "missing
+        locally, therefore deleted" (which would wrongly tombstone a
+        record this engine was never responsible for - see
+        _push_one_type)."""
+        return True
+
 
 @dataclass
 class SyncResult:
@@ -326,6 +341,8 @@ class SyncEngine:
         existing_local_ids = set(adapter.iter_local_ids())
 
         for local_id, global_id in self._global_ids.all_for_type(record_type):
+            if not adapter.in_scope(local_id, global_id):
+                continue  # belongs to a different Mission/scope this engine doesn't own
             if local_id in existing_local_ids:
                 continue
             if self._tombstones.is_deleted(record_type, global_id):

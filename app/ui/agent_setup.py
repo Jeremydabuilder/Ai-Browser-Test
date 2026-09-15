@@ -1430,7 +1430,7 @@ def build_transport(credential, config):
 
 
 def build_session(browser, parent=None, settings=None, missions=None, mcp=None, knowledge=None,
-                  graph=None):
+                  graph=None, collab=None):
     """Create an AgentSession if the agent can run, else return (None, reason).
 
     Every failure path here is soft. A missing SDK or credential must leave a
@@ -1468,7 +1468,7 @@ def build_session(browser, parent=None, settings=None, missions=None, mcp=None, 
     try:
         transport = build_transport(credential, config)
         return AgentSession(browser, transport, config, parent, missions=missions, mcp=mcp,
-                           knowledge=knowledge, graph=graph), ""
+                           knowledge=knowledge, graph=graph, collab=collab), ""
     except BaseException as exc:  # noqa: BLE001
         # Nothing the agent does may take the browser down with it.
         if isinstance(exc, (KeyboardInterrupt, SystemExit)):

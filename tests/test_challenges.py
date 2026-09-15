@@ -503,7 +503,8 @@ class ToolTests(unittest.TestCase):
                                  "mission_save_challenge", "mission_save_ghost_run",
                                  "mission_set_progress", "mission_save_result",
                                  "mission_save_question", "mission_resolve_question",
-                                 "mission_note_source", "mission_save_constraints"})
+                                 "mission_note_source", "mission_save_constraints",
+                                 "mission_comments_read"})
 
 
 class PermissionTests(unittest.TestCase):

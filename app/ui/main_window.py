@@ -202,6 +202,15 @@ class MainWindow(QMainWindow):
             self.sync_service, self._sync_domain_stores)
         self.task_runner.timer.timeout.connect(self.sync_scheduler.on_tick)
 
+        #: Collaboration / Shared Missions (Phase 21) - built on the same
+        #: MissionStore/database this window already owns, never a second
+        #: Mission model. Off/no-op until a Mission is actually shared.
+        #: See app/collaboration/service.py.
+        from app.collaboration.service import CollaborationService
+
+        self.collab_service = CollaborationService(
+            database, self.settings, self.missions, graph=self.knowledge_graph)
+
         #: Mission Execution Graph (Phase 10) - the persisted, restart-safe
         #: shape of the plan MissionCoordinator builds. Recovered once at
         #: startup (see _restore_pinned_tabs below for where startup work
@@ -402,6 +411,7 @@ class MainWindow(QMainWindow):
         self._add_action(tools_menu, "&Research Graph…", "Ctrl+Shift+G",
                          self._show_research_graph)
         self._add_action(tools_menu, "&Sync…", None, self._show_sync_settings)
+        self._add_action(tools_menu, "&Collaboration…", None, self._show_collaboration)
         self._add_action(tools_menu, "&Skills Library", "Ctrl+Shift+S",
                          self._show_skills_library)
         self._add_action(tools_menu, "&Task Center…", "Ctrl+Shift+J",
@@ -1819,6 +1829,17 @@ class MainWindow(QMainWindow):
         dialog = SyncSettingsDialog(self.sync_service, self.sync_scheduler, self)
         dialog.exec()
 
+    def _show_collaboration(self) -> None:
+        if self.missions.active is None:
+            QMessageBox.information(
+                self, "Collaboration", "Open or start a Mission first, then share it here.")
+            return
+        from app.ui.collaboration_ui import CollaborationDialog
+
+        mission = self.missions.active
+        dialog = CollaborationDialog(self.collab_service, mission.id, mission.title, self)
+        dialog.exec()
+
     def _show_research_graph(self) -> None:
         from app.ui.research_graph import ResearchGraphDialog
 
@@ -2445,7 +2466,7 @@ class MainWindow(QMainWindow):
         if self._agent_session is None:
             self._agent_session, reason = build_session(
                 self.controller, self, self.settings, self.missions, self.mcp,
-                knowledge=self.knowledge_index, graph=self.knowledge_graph)
+                knowledge=self.knowledge_index, graph=self.knowledge_graph, collab=self.collab_service)
             if self._agent_session is None:
                 self._agent_unavailable = True
                 self._show_status(f"AI agent unavailable: {reason}")
@@ -2599,7 +2620,7 @@ class MainWindow(QMainWindow):
 
         session, reason = build_session(
             self.controller, self, self.settings, self.missions, self.mcp,
-            knowledge=self.knowledge_index, graph=self.knowledge_graph)
+            knowledge=self.knowledge_index, graph=self.knowledge_graph, collab=self.collab_service)
         if session is None:
             self._show_status(f"A Multi-Agent worker could not start: {reason}")
             return None

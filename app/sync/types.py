@@ -37,10 +37,23 @@ class RecordType:
     GRAPH_NODE = "graph_node"
     GRAPH_EDGE = "graph_edge"
     SETTINGS = "settings"
+    #: Phase 21 - Mission collaboration. Both are append-only/immutable
+    #: once created (a comment is never edited in place; an activity entry
+    #: is a fact about something that already happened), so they merge by
+    #: stable id exactly like MISSION_FINDING/HIGHLIGHT.
+    MISSION_COMMENT = "mission_comment"
+    MISSION_ACTIVITY = "mission_activity"
+    #: Phase 21 - who is on a shared Mission and what role they hold. A
+    #: participant row's natural key (mission, device) is already globally
+    #: meaningful (device ids are unique per Phase 20 device identity), so
+    #: this uses deterministic ids like MISSION_COMMENT/MISSION_ACTIVITY -
+    #: see app.collaboration.adapters.ParticipantAdapter.
+    MISSION_PARTICIPANT = "mission_participant"
 
     ALL = frozenset({
         MISSION, MISSION_FINDING, HIGHLIGHT, SKILL, WORKSPACE, SCHEDULED_TASK,
-        WATCH, GRAPH_NODE, GRAPH_EDGE, SETTINGS,
+        WATCH, GRAPH_NODE, GRAPH_EDGE, SETTINGS, MISSION_COMMENT, MISSION_ACTIVITY,
+        MISSION_PARTICIPANT,
     })
 
 

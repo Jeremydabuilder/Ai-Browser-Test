@@ -25,7 +25,7 @@ import threading
 from pathlib import Path
 from typing import Any, Callable, Iterable, Sequence
 
-SCHEMA_VERSION = 26
+SCHEMA_VERSION = 27
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS history (
@@ -357,6 +357,73 @@ CREATE TABLE IF NOT EXISTS sync_task_ownership (
     execution_device TEXT NOT NULL,
     PRIMARY KEY (record_type, local_id)
 );
+
+-- Collaboration / Shared Missions (Phase 21) - see app/collaboration/.
+-- Deliberately not a second Mission model: this table only records
+-- *sharing state* for a Mission that already lives in `missions`
+-- (folder_path/since_token are this device's own collaboration-sync
+-- settings for that Mission, separate from the personal-profile sync in
+-- Phase 20 - a Mission can be part of both, or either, independently).
+CREATE TABLE IF NOT EXISTS mission_collaboration (
+    mission_id       INTEGER PRIMARY KEY REFERENCES missions(id) ON DELETE CASCADE,
+    global_id        TEXT NOT NULL,
+    owner_device_id  TEXT NOT NULL,
+    folder_path      TEXT NOT NULL DEFAULT '',
+    since_token      TEXT,
+    viewers_may_comment INTEGER NOT NULL DEFAULT 0,
+    created_at       TEXT NOT NULL,
+    stopped_at       TEXT
+);
+
+-- Who has (or had) access to a shared Mission, and in what role - see
+-- app/collaboration/types.py's Role. removed_at marks a participant the
+-- owner has revoked *future* access for (Part 17) - their row is kept,
+-- never deleted, so the activity feed/comment history still shows who
+-- they were.
+CREATE TABLE IF NOT EXISTS mission_participants (
+    mission_id   INTEGER NOT NULL REFERENCES missions(id) ON DELETE CASCADE,
+    device_id    TEXT NOT NULL,
+    display_name TEXT NOT NULL DEFAULT '',
+    role         TEXT NOT NULL DEFAULT 'editor',
+    joined_at    TEXT NOT NULL,
+    removed_at   TEXT,
+    PRIMARY KEY (mission_id, device_id)
+);
+
+-- A comment's own id (a uuid) IS its sync global id (Part 6) - simpler
+-- than a separate id-mapping row, and correct because a comment is
+-- created once and never renumbered. target_type/target_id let a
+-- comment attach to the Mission itself, a Finding, a source, or the
+-- result (Part 6); target_id is a stable global id, never a local
+-- autoincrement one, so it means the same thing on every device.
+CREATE TABLE IF NOT EXISTS mission_comments (
+    id               TEXT PRIMARY KEY,
+    mission_id       INTEGER NOT NULL REFERENCES missions(id) ON DELETE CASCADE,
+    target_type      TEXT NOT NULL,
+    target_id        TEXT NOT NULL,
+    author_device_id TEXT NOT NULL,
+    author_name      TEXT NOT NULL DEFAULT '',
+    body             TEXT NOT NULL,
+    created_at       TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_mission_comments_mission
+    ON mission_comments(mission_id, created_at);
+
+-- The collaboration activity feed (Part 7) - one row per notable event,
+-- immutable once written. Also how a device announces itself as a new
+-- participant (kind="participant_joined") without a second, separate
+-- invitation-acknowledgement protocol - see app/collaboration/service.py.
+CREATE TABLE IF NOT EXISTS mission_activity (
+    id               TEXT PRIMARY KEY,
+    mission_id       INTEGER NOT NULL REFERENCES missions(id) ON DELETE CASCADE,
+    kind             TEXT NOT NULL,
+    actor_device_id  TEXT NOT NULL,
+    actor_name       TEXT NOT NULL DEFAULT '',
+    summary          TEXT NOT NULL,
+    created_at       TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_mission_activity_mission
+    ON mission_activity(mission_id, created_at);
 
 -- Research Graph (Phase 19) - see app/knowledge_graph/. Stores identity,
 -- relationships and lightweight metadata only; full content stays in the
@@ -1314,6 +1381,55 @@ CREATE TABLE IF NOT EXISTS decision_alternatives (
         execution_device TEXT NOT NULL,
         PRIMARY KEY (record_type, local_id)
     );
+    """,
+    # v26 -> v27: Collaboration / Shared Missions (Phase 21) - identical to
+    # the block in _SCHEMA above.
+    26: """
+    CREATE TABLE IF NOT EXISTS mission_collaboration (
+        mission_id       INTEGER PRIMARY KEY REFERENCES missions(id) ON DELETE CASCADE,
+        global_id        TEXT NOT NULL,
+        owner_device_id  TEXT NOT NULL,
+        folder_path      TEXT NOT NULL DEFAULT '',
+        since_token      TEXT,
+        viewers_may_comment INTEGER NOT NULL DEFAULT 0,
+        created_at       TEXT NOT NULL,
+        stopped_at       TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS mission_participants (
+        mission_id   INTEGER NOT NULL REFERENCES missions(id) ON DELETE CASCADE,
+        device_id    TEXT NOT NULL,
+        display_name TEXT NOT NULL DEFAULT '',
+        role         TEXT NOT NULL DEFAULT 'editor',
+        joined_at    TEXT NOT NULL,
+        removed_at   TEXT,
+        PRIMARY KEY (mission_id, device_id)
+    );
+
+    CREATE TABLE IF NOT EXISTS mission_comments (
+        id               TEXT PRIMARY KEY,
+        mission_id       INTEGER NOT NULL REFERENCES missions(id) ON DELETE CASCADE,
+        target_type      TEXT NOT NULL,
+        target_id        TEXT NOT NULL,
+        author_device_id TEXT NOT NULL,
+        author_name      TEXT NOT NULL DEFAULT '',
+        body             TEXT NOT NULL,
+        created_at       TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_mission_comments_mission
+        ON mission_comments(mission_id, created_at);
+
+    CREATE TABLE IF NOT EXISTS mission_activity (
+        id               TEXT PRIMARY KEY,
+        mission_id       INTEGER NOT NULL REFERENCES missions(id) ON DELETE CASCADE,
+        kind             TEXT NOT NULL,
+        actor_device_id  TEXT NOT NULL,
+        actor_name       TEXT NOT NULL DEFAULT '',
+        summary          TEXT NOT NULL,
+        created_at       TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_mission_activity_mission
+        ON mission_activity(mission_id, created_at);
     """,
 }
 

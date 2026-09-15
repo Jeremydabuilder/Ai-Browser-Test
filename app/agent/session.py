@@ -289,6 +289,7 @@ class AgentSession(QObject):
         mcp=None,
         knowledge=None,
         graph=None,
+        collab=None,
     ) -> None:
         super().__init__(parent)
         self.config = config or AgentConfig()
@@ -306,10 +307,12 @@ class AgentSession(QObject):
         self._knowledge = knowledge
         #: Phase 19 KnowledgeGraphService, or None - same reasoning.
         self._graph = graph
+        #: Phase 21 CollaborationService, or None - same reasoning.
+        self._collab = collab
         self._tools = ToolRegistry(browser, self.config.limits, missions,
                                   autonomy=self.config.autonomy, mcp=mcp, knowledge=knowledge,
                                   vision_capable=provider_supports_images(self.config.provider),
-                                  graph=graph)
+                                  graph=graph, collab=collab)
 
         # -- agent state, deliberately separate from browser state -------
         self._messages: list[dict[str, Any]] = []
@@ -534,7 +537,7 @@ class AgentSession(QObject):
                                    autonomy=self.config.autonomy, mcp=self._mcp,
                                    allowed_tools=allowed_tools, knowledge=self._knowledge,
                                    vision_capable=provider_supports_images(self.config.provider),
-                                   graph=self._graph)
+                                   graph=self._graph, collab=self._collab)
 
     def cancel(self) -> None:
         """Stop the current task.

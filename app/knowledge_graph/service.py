@@ -106,10 +106,16 @@ class KnowledgeGraphService:
 
     # -- event hooks - call these at the existing save/index/complete points --
     def on_finding_saved(self, *, finding_id: int, mission, text: str,
-                         source_url: str = "", source_title: str = ""):
+                         source_url: str = "", source_title: str = "",
+                         provenance: str | None = None, contributed_by: str | None = None):
+        kwargs = {}
+        if provenance is not None:
+            kwargs["provenance"] = provenance
+        if contributed_by is not None:
+            kwargs["contributed_by"] = contributed_by
         return self._builder.on_finding_saved(
             finding_id=finding_id, mission=mission, text=text,
-            source_url=source_url, source_title=source_title)
+            source_url=source_url, source_title=source_title, **kwargs)
 
     def on_highlight_created(self, highlight):
         return self._builder.on_highlight_created(highlight)

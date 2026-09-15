@@ -225,16 +225,28 @@ class GraphBuilder:
 
     # -- event hooks -------------------------------------------------------
     def on_finding_saved(self, *, finding_id: int, mission, text: str,
-                         source_url: str = "", source_title: str = ""
+                         source_url: str = "", source_title: str = "",
+                         provenance: str = Provenance.TRUSTED_APP_STATE,
+                         contributed_by: str | None = None
                          ) -> tuple[GraphNode, "GraphNode | None"]:
+        """``provenance``/``contributed_by`` let Phase 21 collaboration
+        sync (see app.sync.adapters.MissionFindingAdapter) tag a finding
+        that arrived from a peer device as Provenance.COLLABORATOR_CONTENT
+        rather than this method's own default of TRUSTED_APP_STATE - a
+        finding this device typed itself is authoritative app state; one
+        that arrived over a shared folder from someone else's device is
+        not, and the graph should say so (Part 9)."""
         mission_node = self.ensure_mission_node(mission)
+        node_data = {"text": text[:500]}
+        if contributed_by:
+            node_data["contributed_by_device"] = contributed_by
         finding_node = self._store.upsert_node(GraphNode(
             id=finding_node_id(finding_id), node_type=NodeType.FINDING,
-            title=text[:160], data={"text": text[:500]},
-            provenance=Provenance.TRUSTED_APP_STATE, mission_id=mission.id,
+            title=text[:160], data=node_data,
+            provenance=provenance, mission_id=mission.id,
             workspace_id=mission.workspace_id, extraction_method="direct"))
         self.link(EdgeType.MISSION_HAS_FINDING, mission_node.id, finding_node.id,
-                  provenance=Provenance.TRUSTED_APP_STATE, mission_id=mission.id,
+                  provenance=provenance, mission_id=mission.id,
                   workspace_id=mission.workspace_id)
 
         source_node = None
@@ -243,10 +255,10 @@ class GraphBuilder:
                 NodeType.WEBPAGE, source_url, title=source_title,
                 mission_id=mission.id, workspace_id=mission.workspace_id)
             self.link(EdgeType.MISSION_USED_SOURCE, mission_node.id, source_node.id,
-                      provenance=Provenance.TRUSTED_APP_STATE, mission_id=mission.id,
+                      provenance=provenance, mission_id=mission.id,
                       workspace_id=mission.workspace_id)
             self.link(EdgeType.DERIVED_FROM, finding_node.id, source_node.id,
-                      provenance=Provenance.TRUSTED_APP_STATE, mission_id=mission.id,
+                      provenance=provenance, mission_id=mission.id,
                       workspace_id=mission.workspace_id)
 
         self.link_topics(finding_node.id, text, mission_id=mission.id,

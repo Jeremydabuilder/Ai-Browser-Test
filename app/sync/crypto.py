@@ -185,16 +185,38 @@ class WrappedKey:
         return cls(salt=salt, nonce=nonce, ciphertext=ciphertext)
 
 
+def wrap_key(payload_key: bytes, secret: str, *, context: bytes = b"pybrowser-wrapped-key") -> WrappedKey:
+    """Encrypt any raw key (a sync master key, a Phase 21 per-Mission
+    collaboration key, ...) under a key derived from ``secret`` (a
+    recovery code, an invite passphrase) - the one generic primitive both
+    Phase 20's recovery flow and Phase 21's invite flow are built on, so
+    neither reinvents its own wrapping scheme. ``context`` is bound as
+    AEAD associated data purely to keep the two use sites' ciphertexts
+    from being interchangeable even if a secret were ever reused."""
+    salt = os.urandom(SALT_LENGTH)
+    wrapping_key = derive_key_from_passphrase(_normalise_recovery_key(secret).decode("ascii"), salt)
+    nonce = os.urandom(NONCE_LENGTH)
+    ciphertext = AESGCM(wrapping_key).encrypt(nonce, payload_key, context)
+    return WrappedKey(salt=salt, nonce=nonce, ciphertext=ciphertext)
+
+
+def unwrap_key(wrapped: WrappedKey, secret: str, *,
+               context: bytes = b"pybrowser-wrapped-key") -> bytes:
+    """The inverse of wrap_key. Raises CryptoError for a wrong secret -
+    the same "no oracle" reasoning as decrypt_payload."""
+    wrapping_key = derive_key_from_passphrase(_normalise_recovery_key(secret).decode("ascii"),
+                                              wrapped.salt)
+    try:
+        return AESGCM(wrapping_key).decrypt(wrapped.nonce, wrapped.ciphertext, context)
+    except InvalidTag as exc:
+        raise CryptoError("Wrong secret.") from exc
+
+
 def wrap_master_key(master_key: bytes, recovery_key: str) -> WrappedKey:
     """Encrypt ``master_key`` under a key derived from the recovery code,
     for safekeeping in the sync folder/backup - never the master key
     itself in plaintext (Part 3)."""
-    salt = os.urandom(SALT_LENGTH)
-    wrapping_key = derive_key_from_passphrase("", salt) if not recovery_key else \
-        derive_key_from_passphrase(_normalise_recovery_key(recovery_key).decode("ascii"), salt)
-    nonce = os.urandom(NONCE_LENGTH)
-    ciphertext = AESGCM(wrapping_key).encrypt(nonce, master_key, b"pybrowser-sync-master-key")
-    return WrappedKey(salt=salt, nonce=nonce, ciphertext=ciphertext)
+    return wrap_key(master_key, recovery_key, context=b"pybrowser-sync-master-key")
 
 
 def unwrap_master_key(wrapped: WrappedKey, recovery_key: str) -> bytes:
@@ -202,10 +224,4 @@ def unwrap_master_key(wrapped: WrappedKey, recovery_key: str) -> bytes:
     wrapped key from the sync folder, recover the master key. Raises
     CryptoError for a wrong recovery code - the same "no oracle" reasoning
     as decrypt_payload."""
-    wrapping_key = derive_key_from_passphrase(
-        _normalise_recovery_key(recovery_key).decode("ascii"), wrapped.salt)
-    try:
-        return AESGCM(wrapping_key).decrypt(
-            wrapped.nonce, wrapped.ciphertext, b"pybrowser-sync-master-key")
-    except InvalidTag as exc:
-        raise CryptoError("Wrong recovery key.") from exc
+    return unwrap_key(wrapped, recovery_key, context=b"pybrowser-sync-master-key")
