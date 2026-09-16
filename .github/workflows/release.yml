@@ -76,6 +76,7 @@ jobs:
         # still fails the build exactly as before.
         env:
           QT_QPA_PLATFORM: offscreen
+          PYTHONFAULTHANDLER: "1"
         run: |
           $ErrorActionPreference = "Continue"
           python -u -m unittest discover -s tests -v > pybrowser-test-output.log 2>&1
@@ -83,7 +84,11 @@ jobs:
           Get-Content pybrowser-test-output.log
           if ($STATUS -eq 0) { exit 0 }
           $logText = Get-Content pybrowser-test-output.log -Raw
-          if ($logText -match '(?m)^OK$' -and $logText -match '(?m)^Ran [0-9]+ tests? in' `
+          # unittest prints a bare "OK" only when nothing was skipped/expected-
+          # failed; otherwise it's "OK (skipped=1)", "OK (expected failures=2)",
+          # etc. - still a clean pass, just with a parenthetical suffix. Match
+          # both, but keep requiring no FAIL:/ERROR:/"FAILED (" anywhere.
+          if ($logText -match '(?m)^OK( \(.*\))?$' -and $logText -match '(?m)^Ran [0-9]+ tests? in' `
               -and -not ($logText -match '(?m)^(FAIL|ERROR): ' -or $logText -match '(?m)^FAILED \(')) {
             Write-Host "::warning::Test suite reported a clean OK but the interpreter exited with status $STATUS - a known benign post-suite crash, not a test failure. Treating this run as passed."
             exit 0
@@ -237,6 +242,7 @@ jobs:
         # real mid-suite crash or failure.
         env:
           QT_QPA_PLATFORM: offscreen
+          PYTHONFAULTHANDLER: "1"
         run: |
           set +e
           # -u (unbuffered): stdout is redirected to a file below, which
@@ -255,7 +261,11 @@ jobs:
           if [ "$STATUS" -eq 0 ]; then
             exit 0
           fi
-          if grep -qE '^OK$' /tmp/pybrowser-test-output.log \
+          # unittest prints a bare "OK" only when nothing was skipped/expected-
+          # failed; otherwise it's "OK (skipped=1)", "OK (expected failures=2)",
+          # etc. - still a clean pass, just with a parenthetical suffix. Match
+          # both, but keep requiring no FAIL:/ERROR:/"FAILED (" anywhere.
+          if grep -qE '^OK( \(.*\))?$' /tmp/pybrowser-test-output.log \
               && grep -qE '^Ran [0-9]+ tests? in' /tmp/pybrowser-test-output.log \
               && ! grep -qE '^(FAIL|ERROR): |^FAILED \(' /tmp/pybrowser-test-output.log; then
             echo "::warning::Test suite reported a clean OK but the interpreter exited with status $STATUS - a known benign Qt WebEngine post-suite teardown crash, not a test failure. Treating this run as passed."
