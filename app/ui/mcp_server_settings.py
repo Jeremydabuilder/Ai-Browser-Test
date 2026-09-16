@@ -83,6 +83,20 @@ class _Verifier(QObject):
 
     def run(self) -> None:
         self.done.emit(verify_connection(self._url, self._token))
+        # Request our own deletion from right here, inside run() - i.e.
+        # still on our own thread's stack, at the same loop level the
+        # `started` signal invoked us at. deleteLater() posts a
+        # QEvent::DeferredDelete that Qt only delivers to a loop at or
+        # below the level it was posted from; calling it later from the
+        # GUI-thread slot that "done" is queued-connected to is a *cross*
+        # thread postEvent racing against that same slot's thread.quit(),
+        # and there is no guarantee the deferred-delete gets flushed
+        # before the worker's exec() loop actually exits (this raced and
+        # lost - reliably, 100% of the time - on real Windows/macOS Qt
+        # event dispatchers, though never locally on Linux/glib). Posting
+        # it here removes the race: it is queued before this method even
+        # returns, well before anything asks the loop to quit.
+        self.deleteLater()
 
 
 class ClientSetupDialog(QDialog):
@@ -264,23 +278,12 @@ class ClientSetupDialog(QDialog):
             f"{VerificationStatus.labels().get(result.status, result.status.value)}"
             + (f" - {result.detail}" if result.detail else ""))
         self.verify_button.setEnabled(True)
-        # Order matters: deleteLater() only works by posting a deferred-
-        # deletion event to the *target object's own thread* - here, the
-        # worker QThread the verifier was moved to. That only gets
-        # delivered if that thread's event loop is still pumping when the
-        # event is posted. Calling thread.quit()+wait() FIRST (as this used
-        # to) stops that loop before the request is ever posted, so the
-        # verifier is never deleted the safe way; it instead gets destroyed
-        # later from whatever thread happens to drop the last Python
-        # reference (usually the GUI thread), while its Qt-internal thread
-        # affinity still points at an already-exited thread - a real,
-        # reproducible native crash (SIGSEGV / access violation), not a
-        # theoretical one. Requesting the verifier's deletion BEFORE
-        # quit()/wait() posts it while that loop is still alive, so it is
-        # actually processed on the right thread before the thread stops.
-        if self._verifier is not None:
-            self._verifier.deleteLater()
-            self._verifier = None
+        # The verifier schedules its own deleteLater() from inside run(),
+        # on its own thread, before this slot ever runs (see _Verifier.run)
+        # - so by construction that request was already posted to the
+        # worker thread's queue before anything here asks that thread to
+        # quit. Just drop our reference; don't delete it a second time.
+        self._verifier = None
         if self._thread is not None:
             self._thread.quit()
             self._thread.wait(2000)

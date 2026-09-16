@@ -391,6 +391,19 @@ class AgentSession(QObject):
         self._worker.responded.connect(self._on_response)     # queued: worker -> GUI
         self._worker.failed.connect(self._on_failure)
         self._worker.text_delta.connect(self._on_text_delta)
+        # finished() is emitted by the thread itself, from its own stack,
+        # right before it actually stops - connecting the worker's
+        # deleteLater() to it (both live on that thread, so this is a
+        # direct call) requests the deletion from inside the worker
+        # thread's own teardown, before the thread can exit. Doing this
+        # from shutdown() instead - a cross-thread deleteLater() call from
+        # the GUI thread, racing an immediate quit()/wait() - was found to
+        # lose that race reliably on real Windows/macOS Qt event
+        # dispatchers (though never on Linux/glib locally): the deferred-
+        # delete event isn't guaranteed to be flushed before the worker's
+        # exec() loop exits, so the object was later destroyed unsafely
+        # from a thread other than its own affinity's already-exited one.
+        self._thread.finished.connect(self._worker.deleteLater)
         self._thread.start()
 
     # -- public API -------------------------------------------------------
@@ -671,36 +684,31 @@ class AgentSession(QObject):
     def shutdown(self) -> None:
         """Stop the worker thread. Called when the window closes.
 
-        Requests the worker's deletion before stopping its thread, not
-        after: deleteLater() posts a deferred-deletion event to the
-        object's own thread, which is only ever delivered while that
-        thread's event loop is still pumping. Calling thread.quit()+
-        wait() first (as this used to) stops that loop before the
-        request can be posted, so the worker is never deleted the safe
-        way - it lingers until Python drops the last reference to it
-        (usually from the GUI thread, whenever this session itself gets
-        garbage collected), destroying a QObject from a thread other than
-        its own affinity thread, whose thread has itself already exited.
-        That is a real, reproducible native crash, not a theoretical one
-        (see the near-identical bug fixed in app/ui/mcp_server_settings.py
-        - ClientSetupDialog - for the reproduction that found this class
-        of bug in the first place).
+        The worker's deleteLater() is requested via thread.finished (see
+        the __init__ wiring above), not from here: finished() is emitted
+        by the worker thread itself, from its own stack, right before it
+        stops - so that connection posts the deferred-deletion request
+        from inside the thread's own teardown, guaranteed before it can
+        exit. Requesting it from here instead - a cross-thread call from
+        the GUI thread, racing an immediate quit()/wait() - was found to
+        lose that race reliably on real Windows/macOS Qt event
+        dispatchers: the worker was then destroyed later, unsafely, from
+        a thread other than its own affinity's already-exited one (a
+        real, reproducible native crash, not a theoretical one; see the
+        near-identical bug in app/ui/mcp_server_settings.py -
+        ClientSetupDialog - for the reproduction that found this class of
+        bug in the first place).
 
         Idempotent: callers (a window close plus an explicit
         addCleanup(), in at least one test) can legitimately call this
-        more than once. quit()/wait() already tolerated that; deleteLater()
-        does not - calling it twice raises, since the first call's
-        deferred deletion has often already run by the time the second
-        one arrives. Guarded the same way _on_verified() guards its own
-        one-shot cleanup: only act once.
+        more than once. quit()/wait() already tolerate that, and
+        thread.finished only fires once per run regardless of how many
+        times quit() is called, so no extra guard is needed here.
         """
         self._cancelled = True
         if self._retry_timer is not None:
             self._retry_timer.stop()
             self._retry_timer = None
-        if self._worker is not None:
-            self._worker.deleteLater()
-            self._worker = None
         self._thread.quit()
         self._thread.wait(3000)
 
