@@ -264,13 +264,27 @@ class ClientSetupDialog(QDialog):
             f"{VerificationStatus.labels().get(result.status, result.status.value)}"
             + (f" - {result.detail}" if result.detail else ""))
         self.verify_button.setEnabled(True)
+        # Order matters: deleteLater() only works by posting a deferred-
+        # deletion event to the *target object's own thread* - here, the
+        # worker QThread the verifier was moved to. That only gets
+        # delivered if that thread's event loop is still pumping when the
+        # event is posted. Calling thread.quit()+wait() FIRST (as this used
+        # to) stops that loop before the request is ever posted, so the
+        # verifier is never deleted the safe way; it instead gets destroyed
+        # later from whatever thread happens to drop the last Python
+        # reference (usually the GUI thread), while its Qt-internal thread
+        # affinity still points at an already-exited thread - a real,
+        # reproducible native crash (SIGSEGV / access violation), not a
+        # theoretical one. Requesting the verifier's deletion BEFORE
+        # quit()/wait() posts it while that loop is still alive, so it is
+        # actually processed on the right thread before the thread stops.
+        if self._verifier is not None:
+            self._verifier.deleteLater()
+            self._verifier = None
         if self._thread is not None:
             self._thread.quit()
             self._thread.wait(2000)
             self._thread = None
-        if self._verifier is not None:
-            self._verifier.deleteLater()
-            self._verifier = None
 
 
 class PairClientDialog(QDialog):

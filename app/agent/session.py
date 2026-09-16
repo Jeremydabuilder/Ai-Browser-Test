@@ -669,11 +669,28 @@ class AgentSession(QObject):
         future.then(on_reassessed)
 
     def shutdown(self) -> None:
-        """Stop the worker thread. Called when the window closes."""
+        """Stop the worker thread. Called when the window closes.
+
+        Requests the worker's deletion before stopping its thread, not
+        after: deleteLater() posts a deferred-deletion event to the
+        object's own thread, which is only ever delivered while that
+        thread's event loop is still pumping. Calling thread.quit()+
+        wait() first (as this used to) stops that loop before the
+        request can be posted, so the worker is never deleted the safe
+        way - it lingers until Python drops the last reference to it
+        (usually from the GUI thread, whenever this session itself gets
+        garbage collected), destroying a QObject from a thread other than
+        its own affinity thread, whose thread has itself already exited.
+        That is a real, reproducible native crash, not a theoretical one
+        (see the near-identical bug fixed in app/ui/mcp_server_settings.py
+        - ClientSetupDialog - for the reproduction that found this class
+        of bug in the first place).
+        """
         self._cancelled = True
         if self._retry_timer is not None:
             self._retry_timer.stop()
             self._retry_timer = None
+        self._worker.deleteLater()
         self._thread.quit()
         self._thread.wait(3000)
 
