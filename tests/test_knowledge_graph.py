@@ -69,12 +69,14 @@ class _Highlight:
         self.text = text
 
 
-def _service() -> tuple[Database, KnowledgeGraphService]:
+def _service(test: unittest.TestCase | None = None) -> tuple[Database, KnowledgeGraphService]:
     tmp = tempfile.TemporaryDirectory()
     db = Database(os.path.join(tmp.name, "graph.db"))
     store = GraphStore(db)
     svc = KnowledgeGraphService(store)
     svc._tmp = tmp  # keep the tempdir alive for the test's lifetime
+    if test is not None:
+        test.addCleanup(db.close)
     return db, svc
 
 
@@ -84,7 +86,7 @@ def _service() -> tuple[Database, KnowledgeGraphService]:
 
 class NodeEdgeTests(unittest.TestCase):
     def setUp(self):
-        self.db, self.svc = _service()
+        self.db, self.svc = _service(self)
 
     def test_finding_saved_creates_mission_finding_source_nodes(self):
         mission = _Mission()
@@ -139,7 +141,7 @@ class NodeEdgeTests(unittest.TestCase):
 
 class DocumentAndTopicTests(unittest.TestCase):
     def setUp(self):
-        self.db, self.svc = _service()
+        self.db, self.svc = _service(self)
 
     def test_highlight_creates_node_and_source_edge(self):
         highlight = _Highlight()
@@ -198,7 +200,7 @@ class DocumentAndTopicTests(unittest.TestCase):
 
 class ClaimTests(unittest.TestCase):
     def setUp(self):
-        self.db, self.svc = _service()
+        self.db, self.svc = _service(self)
 
     def test_claim_only_created_with_evidence(self):
         mission = _Mission()
@@ -296,7 +298,7 @@ class ClaimTests(unittest.TestCase):
 
 class DeletionAndScopingTests(unittest.TestCase):
     def setUp(self):
-        self.db, self.svc = _service()
+        self.db, self.svc = _service(self)
 
     def test_remove_mission_removes_finding_but_keeps_shared_source(self):
         mission = _Mission()
@@ -367,6 +369,7 @@ class UserCorrectionTests(unittest.TestCase):
     def setUp(self):
         tmp = tempfile.TemporaryDirectory()
         self.db = Database(os.path.join(tmp.name, "graph.db"))
+        self.addCleanup(self.db.close)
         store = GraphStore(self.db)
         self.svc = KnowledgeGraphService(store, rejections=RejectionStore())
         self.svc._tmp = tmp
@@ -411,7 +414,7 @@ class UserCorrectionTests(unittest.TestCase):
 
 class QueryCapTests(unittest.TestCase):
     def setUp(self):
-        self.db, self.svc = _service()
+        self.db, self.svc = _service(self)
 
     def test_neighbors_are_capped(self):
         mission = _Mission()
@@ -445,7 +448,7 @@ class _FakeBrowser:
 
 class GraphToolTests(unittest.TestCase):
     def setUp(self):
-        self.db, self.svc = _service()
+        self.db, self.svc = _service(self)
         self.registry = ToolRegistry(_FakeBrowser(), graph=self.svc)
 
     def test_graph_search_tool_returns_fenced_results(self):
@@ -513,7 +516,7 @@ class GraphToolTests(unittest.TestCase):
 
 class ContextComposerGraphTests(unittest.TestCase):
     def setUp(self):
-        self.db, self.svc = _service()
+        self.db, self.svc = _service(self)
 
     def test_graph_action_item_appears_when_graph_given(self):
         from app.agent.context_items import ACTION_GRAPH, ContextComposer
@@ -565,7 +568,7 @@ class SemanticHistoryOffTests(unittest.TestCase):
                              f"{module.__name__} must not import the semantic index")
 
     def test_finding_saved_builds_graph_regardless_of_toggle(self):
-        db, svc = _service()
+        db, svc = _service(self)
         mission = _Mission()
         finding, _claim = svc.on_finding_saved(
             finding_id=1, mission=mission, text="x", source_url="https://a.example/x")
@@ -578,7 +581,7 @@ class SemanticHistoryOffTests(unittest.TestCase):
 
 class HistoricalContextTests(unittest.TestCase):
     def setUp(self):
-        self.db, self.svc = _service()
+        self.db, self.svc = _service(self)
 
     def test_historical_context_finds_prior_mission_on_similar_topic(self):
         old_mission = _Mission(id=1, goal="Research MCP permission scoping approaches")

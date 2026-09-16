@@ -180,6 +180,7 @@ class NoSecretsTests(unittest.TestCase):
 
         tmp = tempfile.TemporaryDirectory()
         db = Database(os.path.join(tmp.name, "s.db"))
+        self.addCleanup(db.close)
         settings = SettingsStore(db)
         settings.set("some_other_local_only_key", "should never sync")
         adapter = SettingsAdapter(settings)
@@ -196,6 +197,7 @@ class DeviceIdentityTests(unittest.TestCase):
     def test_ensure_local_device_is_stable_across_calls(self):
         tmp = tempfile.TemporaryDirectory()
         db = Database(os.path.join(tmp.name, "d.db"))
+        self.addCleanup(db.close)
         settings = SettingsStore(db)
         devices = SyncDeviceStore(db)
         first = ensure_local_device(settings, devices)
@@ -205,6 +207,7 @@ class DeviceIdentityTests(unittest.TestCase):
     def test_device_name_is_editable(self):
         tmp = tempfile.TemporaryDirectory()
         db = Database(os.path.join(tmp.name, "d.db"))
+        self.addCleanup(db.close)
         settings = SettingsStore(db)
         devices = SyncDeviceStore(db)
         device = ensure_local_device(settings, devices)
@@ -215,9 +218,11 @@ class DeviceIdentityTests(unittest.TestCase):
         tmp = tempfile.TemporaryDirectory()
         path = os.path.join(tmp.name, "d.db")
         db1 = Database(path)
+        self.addCleanup(db1.close)
         device = ensure_local_device(SettingsStore(db1), SyncDeviceStore(db1))
         db1.close()
         db2 = Database(path)
+        self.addCleanup(db2.close)
         device_again = ensure_local_device(SettingsStore(db2), SyncDeviceStore(db2))
         self.assertEqual(device.id, device_again.id)
 
@@ -311,12 +316,18 @@ class _Device:
         return engine, engine.sync_once()
 
 
-def _two_devices():
+def _two_devices(test: unittest.TestCase):
+    """Each Database opens its own background writer thread - leaving
+    those unclosed across this file's ~25 call sites left as many
+    lingering daemon threads live during the suite, which a real CI run
+    (not just a local sandbox) showed can pile up enough to matter."""
     tmp = tempfile.TemporaryDirectory()
     backing = SharedMemoryBacking()
     key = crypto.generate_master_key()
     a = _Device(os.path.join(tmp.name, "a.db"), "device-a", backing)
     b = _Device(os.path.join(tmp.name, "b.db"), "device-b", backing)
+    test.addCleanup(a.db.close)
+    test.addCleanup(b.db.close)
     return tmp, key, a, b
 
 
@@ -326,7 +337,7 @@ def _two_devices():
 
 class MissionSyncTests(unittest.TestCase):
     def test_mission_created_on_a_appears_on_b(self):
-        _tmp, key, a, b = _two_devices()
+        _tmp, key, a, b = _two_devices(self)
         mission = a.missions.create("Trip planning", "Plan a trip to Japan")
         a.sync(key)
         b.sync(key)
@@ -335,7 +346,7 @@ class MissionSyncTests(unittest.TestCase):
         self.assertEqual(synced[0].title, "Trip planning")
 
     def test_finding_merges_by_stable_id_not_duplicated(self):
-        _tmp, key, a, b = _two_devices()
+        _tmp, key, a, b = _two_devices(self)
         mission = a.missions.create("Research", "Research something")
         a.missions.add_finding(mission.id, "Found fact one")
         a.sync(key)
@@ -348,7 +359,7 @@ class MissionSyncTests(unittest.TestCase):
         self.assertEqual(len(b.missions.findings(b_mission.id)), 1)
 
     def test_findings_from_both_devices_all_merge_in(self):
-        _tmp, key, a, b = _two_devices()
+        _tmp, key, a, b = _two_devices(self)
         mission = a.missions.create("Research", "Research something")
         a.sync(key)
         b.sync(key)
@@ -362,7 +373,7 @@ class MissionSyncTests(unittest.TestCase):
         self.assertEqual(texts, {"From A", "From B"})
 
     def test_deleting_a_mission_propagates(self):
-        _tmp, key, a, b = _two_devices()
+        _tmp, key, a, b = _two_devices(self)
         mission = a.missions.create("Temp", "Temp goal")
         a.sync(key)
         b.sync(key)
@@ -378,7 +389,7 @@ class MissionSyncTests(unittest.TestCase):
 
 class HighlightSyncTests(unittest.TestCase):
     def test_highlight_syncs_and_deletion_propagates(self):
-        _tmp, key, a, b = _two_devices()
+        _tmp, key, a, b = _two_devices(self)
         a.highlights.add("https://example.com", "Example", "quoted text")
         a.sync(key)
         b.sync(key)
@@ -392,7 +403,7 @@ class HighlightSyncTests(unittest.TestCase):
         """Part 20: a device that has not yet seen a deletion must not
         bring a deleted item back to life just because it re-uploads its
         own (already superseded) copy in a later, unrelated sync."""
-        _tmp, key, a, b = _two_devices()
+        _tmp, key, a, b = _two_devices(self)
         a.highlights.add("https://example.com", "Example", "quoted text")
         a.sync(key)
         b.sync(key)
@@ -413,7 +424,7 @@ class SkillSyncTests(unittest.TestCase):
     def test_custom_skill_syncs(self):
         from app.agent.skills import Skill
 
-        _tmp, key, a, b = _two_devices()
+        _tmp, key, a, b = _two_devices(self)
         a.skills.save(Skill(id="s1", name="Summarizer", description="", instructions="Summarize."))
         a.sync(key)
         b.sync(key)
@@ -424,7 +435,7 @@ class SkillSyncTests(unittest.TestCase):
     def test_skill_with_output_schema_syncs(self):
         from app.agent.skills import Skill
 
-        _tmp, key, a, b = _two_devices()
+        _tmp, key, a, b = _two_devices(self)
         a.skills.save(Skill(id="s2", name="Extract", description="", instructions="Extract JSON.",
                             output_schema={"type": "object"}))
         a.sync(key)
@@ -434,7 +445,7 @@ class SkillSyncTests(unittest.TestCase):
     def test_skill_deletion_propagates(self):
         from app.agent.skills import Skill
 
-        _tmp, key, a, b = _two_devices()
+        _tmp, key, a, b = _two_devices(self)
         a.skills.save(Skill(id="s3", name="Temp", description="", instructions="x"))
         a.sync(key)
         b.sync(key)
@@ -452,7 +463,7 @@ class WorkspaceSyncTests(unittest.TestCase):
     def test_workspace_metadata_and_tabs_sync(self):
         from app.workspaces.model import TabRecord, TabState
 
-        _tmp, key, a, b = _two_devices()
+        _tmp, key, a, b = _two_devices(self)
         ws = Workspace(id="w1", name="Coding", tab_state=TabState(
             tabs=(TabRecord(url="https://a.example"),), active_index=0))
         a.workspaces.save(ws)
@@ -467,7 +478,7 @@ class WorkspaceSyncTests(unittest.TestCase):
         """Part 13: "Workspaces sync, login sessions do not." An isolated
         workspace's cookie-bearing profile must never travel to another
         device - only the workspace's ordinary metadata does."""
-        _tmp, key, a, b = _two_devices()
+        _tmp, key, a, b = _two_devices(self)
         ws = Workspace(id="w2", name="Banking", isolated_profile=True,
                        profile_storage_name="isolated-w2-secret-path")
         a.workspaces.save(ws)
@@ -480,7 +491,7 @@ class WorkspaceSyncTests(unittest.TestCase):
     def test_isolated_profile_choice_is_never_overwritten_by_a_peer(self):
         """A device that already isolated a workspace keeps that choice
         even after pulling a peer's copy of the same workspace."""
-        _tmp, key, a, b = _two_devices()
+        _tmp, key, a, b = _two_devices(self)
         ws = Workspace(id="w3", name="Banking")
         a.workspaces.save(ws)
         a.sync(key)
@@ -503,7 +514,7 @@ class WorkspaceSyncTests(unittest.TestCase):
 
 class OwnershipTests(unittest.TestCase):
     def test_scheduled_task_created_on_a_is_owned_by_a_not_b(self):
-        _tmp, key, a, b = _two_devices()
+        _tmp, key, a, b = _two_devices(self)
         task = a.scheduled_tasks.create(goal="Daily digest", schedule_kind="daily",
                                         time_of_day="09:00")
         a.sync(key)
@@ -514,7 +525,7 @@ class OwnershipTests(unittest.TestCase):
             b.ownership.is_owned_by(RecordType.SCHEDULED_TASK, str(synced.id), "device-b"))
 
     def test_watch_created_on_a_is_owned_by_a_not_b(self):
-        _tmp, key, a, b = _two_devices()
+        _tmp, key, a, b = _two_devices(self)
         watch = a.watches.create(title="Price watch", url="https://example.com/product",
                                  target_type="page", condition="changed",
                                  check_interval_seconds=3600)
@@ -527,6 +538,7 @@ class OwnershipTests(unittest.TestCase):
     def test_no_ownership_row_means_run_locally_the_pre_sync_default(self):
         tmp = tempfile.TemporaryDirectory()
         db = Database(os.path.join(tmp.name, "o.db"))
+        self.addCleanup(db.close)
         ownership = OwnershipStore(db)
         self.assertTrue(ownership.is_owned_by("scheduled_task", "999", "any-device"))
 
@@ -535,6 +547,7 @@ class OwnershipTests(unittest.TestCase):
 
         tmp = tempfile.TemporaryDirectory()
         db = Database(os.path.join(tmp.name, "t.db"))
+        self.addCleanup(db.close)
         store = ScheduledTaskStore(db)
         ownership = OwnershipStore(db)
         task = store.create(goal="g", schedule_kind="once",
@@ -556,6 +569,7 @@ class OwnershipTests(unittest.TestCase):
 
         tmp = tempfile.TemporaryDirectory()
         db = Database(os.path.join(tmp.name, "t.db"))
+        self.addCleanup(db.close)
         store = ScheduledTaskStore(db)
         ownership = OwnershipStore(db)
         task = store.create(goal="g", schedule_kind="once",
@@ -580,7 +594,7 @@ class GraphSyncTests(unittest.TestCase):
     def test_topic_node_syncs_with_stable_id(self):
         from app.knowledge_graph.builder import GraphBuilder
 
-        _tmp, key, a, b = _two_devices()
+        _tmp, key, a, b = _two_devices(self)
         GraphBuilder(a.graph).ensure_topic_node("MCP")
         a.sync(key)
         b.sync(key)
@@ -594,7 +608,7 @@ class GraphSyncTests(unittest.TestCase):
         from app.knowledge_graph.builder import GraphBuilder
         from app.knowledge_graph.types import EdgeType, NodeType, webpage_node_id
 
-        _tmp, key, a, b = _two_devices()
+        _tmp, key, a, b = _two_devices(self)
         builder = GraphBuilder(a.graph)
         source = builder.ensure_source_node(NodeType.WEBPAGE, "https://example.com/mcp")
         builder.link_topics(source.id, "MCP permission scoping is useful")
@@ -609,7 +623,7 @@ class GraphSyncTests(unittest.TestCase):
         """Only content-derived node types travel (Topic/WebPage/PDF/File/
         Claim) - Mission/Finding graph nodes embed a local row id and are
         intentionally excluded from this adapter."""
-        _tmp, key, a, b = _two_devices()
+        _tmp, key, a, b = _two_devices(self)
         mission = a.missions.create("Research", "goal")
         a.missions.add_finding(mission.id, "text", )
         from app.knowledge_graph.builder import GraphBuilder
@@ -629,7 +643,7 @@ class GraphSyncTests(unittest.TestCase):
 class ConflictTests(unittest.TestCase):
     def test_mission_goal_edit_on_both_devices_is_a_manual_conflict(self):
         self.assertEqual(policy_for(RecordType.MISSION), ConflictPolicy.MANUAL)
-        _tmp, key, a, b = _two_devices()
+        _tmp, key, a, b = _two_devices(self)
         mission = a.missions.create("Trip", "Plan a trip")
         a.sync(key)
         b.sync(key)
@@ -644,7 +658,7 @@ class ConflictTests(unittest.TestCase):
         self.assertEqual(b.missions.get(b_mission.id).goal, "Plan a trip to Peru")
 
     def test_resolve_keep_local(self):
-        _tmp, key, a, b = _two_devices()
+        _tmp, key, a, b = _two_devices(self)
         mission = a.missions.create("Trip", "Plan a trip")
         a.sync(key)
         b.sync(key)
@@ -659,7 +673,7 @@ class ConflictTests(unittest.TestCase):
         self.assertEqual(b.conflicts.unresolved(), [])
 
     def test_resolve_keep_remote(self):
-        _tmp, key, a, b = _two_devices()
+        _tmp, key, a, b = _two_devices(self)
         mission = a.missions.create("Trip", "Plan a trip")
         a.sync(key)
         b.sync(key)
@@ -673,7 +687,7 @@ class ConflictTests(unittest.TestCase):
         self.assertEqual(b.missions.get(b_mission.id).goal, "Goal A")
 
     def test_resolve_keep_both(self):
-        _tmp, key, a, b = _two_devices()
+        _tmp, key, a, b = _two_devices(self)
         mission = a.missions.create("Trip", "Plan a trip")
         a.sync(key)
         b.sync(key)
@@ -697,13 +711,13 @@ class ConflictTests(unittest.TestCase):
 
 class OfflineTests(unittest.TestCase):
     def test_offline_provider_returns_offline_status_without_crashing(self):
-        _tmp, key, a, _b = _two_devices()
+        _tmp, key, a, _b = _two_devices(self)
         a.provider.set_unavailable(True)
         _engine, result = a.sync(key)
         self.assertEqual(result.status, SyncStatus.OFFLINE)
 
     def test_local_changes_queue_and_sync_once_back_online(self):
-        _tmp, key, a, b = _two_devices()
+        _tmp, key, a, b = _two_devices(self)
         a.provider.set_unavailable(True)
         a.highlights.add("https://example.com", "Example", "text")
         _engine, offline_result = a.sync(key)
@@ -721,7 +735,7 @@ class OfflineTests(unittest.TestCase):
 
 class ReplayProtectionTests(unittest.TestCase):
     def test_stale_version_is_ignored_not_reapplied(self):
-        _tmp, key, a, b = _two_devices()
+        _tmp, key, a, b = _two_devices(self)
         a.highlights.add("https://example.com", "Example", "v1")
         a.sync(key)
         b.sync(key)
@@ -763,10 +777,12 @@ class MiscEngineTests(unittest.TestCase):
         tmp = tempfile.TemporaryDirectory()
         path = os.path.join(tmp.name, "g.db")
         db1 = Database(path)
+        self.addCleanup(db1.close)
         global_ids1 = GlobalIdStore(db1)
         gid = global_ids1.ensure_global_id(RecordType.HIGHLIGHT, "5")
         db1.close()
         db2 = Database(path)
+        self.addCleanup(db2.close)
         global_ids2 = GlobalIdStore(db2)
         self.assertEqual(global_ids2.get_global_id(RecordType.HIGHLIGHT, "5"), gid)
 
@@ -774,10 +790,12 @@ class MiscEngineTests(unittest.TestCase):
         tmp = tempfile.TemporaryDirectory()
         path = os.path.join(tmp.name, "s.db")
         db1 = Database(path)
+        self.addCleanup(db1.close)
         settings1 = SettingsStore(db1)
         settings1.set("sync_since_token", "42")
         db1.close()
         db2 = Database(path)
+        self.addCleanup(db2.close)
         settings2 = SettingsStore(db2)
         self.assertEqual(settings2.get("sync_since_token", ""), "42")
 

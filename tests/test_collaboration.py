@@ -94,6 +94,7 @@ class CollaborationTests(unittest.TestCase):
         self.tmp = tempfile.mkdtemp(prefix="pybrowser-collab-devices-")
         self.folder = tempfile.mkdtemp(prefix="pybrowser-collab-folder-")
         self.a = Device(self.tmp, "a")
+        self.addCleanup(self.a.db.close)
 
     # -- 1/2/3: create, invite, join -----------------------------------
     def test_create_shared_mission(self):
@@ -122,6 +123,7 @@ class CollaborationTests(unittest.TestCase):
         invite = self.a.collab.create_invite(mid, role=Role.EDITOR)
 
         b = Device(self.tmp, "b")
+        self.addCleanup(b.db.close)
         mid_b = b.collab.join_mission(invite.data, invite.passphrase)
         self.assertTrue(b.collab.is_shared(mid_b))
         self.assertEqual(b.collab.role_for(mid_b), Role.EDITOR)
@@ -141,6 +143,7 @@ class CollaborationTests(unittest.TestCase):
         self.a.collab.sync_now(mid)
         invite_viewer = self.a.collab.create_invite(mid, role=Role.VIEWER)
         c = Device(self.tmp, "c")
+        self.addCleanup(c.db.close)
         mid_c = c.collab.join_mission(invite_viewer.data, invite_viewer.passphrase)
         with self.assertRaises(CollaborationError):
             c.collab.add_comment(mid_c, "mission", str(mid_c), "hi")
@@ -354,6 +357,7 @@ class CollaborationTests(unittest.TestCase):
         invite = self.a.collab.create_invite(mid, role=Role.EDITOR)
 
         b = Device(self.tmp, "workspace-b")
+        self.addCleanup(b.db.close)
         b_mid = b.collab.join_mission(invite.data, invite.passphrase)
         mission_b = b.missions.get(b_mid, with_pages=False)
         # B has no workspace named "Client X" at all - the shared Mission
@@ -378,6 +382,7 @@ class CollaborationTests(unittest.TestCase):
         invite = self.a.collab.create_invite(mid, role=Role.EDITOR)
 
         d = Device(self.tmp, "d", graph=True)
+        self.addCleanup(d.db.close)
         d_mid = d.collab.join_mission(invite.data, invite.passphrase)
         d.collab.sync_now(d_mid)
 
@@ -452,6 +457,7 @@ class CollaborationTests(unittest.TestCase):
         self.a.collab.sync_now(mid)
         invite = self.a.collab.create_invite(mid, role=Role.EDITOR)
         self.b = Device(self.tmp, "b")
+        self.addCleanup(self.b.db.close)
         self._b_mission_id = self.b.collab.join_mission(invite.data, invite.passphrase)
         return mid
 
