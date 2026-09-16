@@ -685,12 +685,22 @@ class AgentSession(QObject):
         (see the near-identical bug fixed in app/ui/mcp_server_settings.py
         - ClientSetupDialog - for the reproduction that found this class
         of bug in the first place).
+
+        Idempotent: callers (a window close plus an explicit
+        addCleanup(), in at least one test) can legitimately call this
+        more than once. quit()/wait() already tolerated that; deleteLater()
+        does not - calling it twice raises, since the first call's
+        deferred deletion has often already run by the time the second
+        one arrives. Guarded the same way _on_verified() guards its own
+        one-shot cleanup: only act once.
         """
         self._cancelled = True
         if self._retry_timer is not None:
             self._retry_timer.stop()
             self._retry_timer = None
-        self._worker.deleteLater()
+        if self._worker is not None:
+            self._worker.deleteLater()
+            self._worker = None
         self._thread.quit()
         self._thread.wait(3000)
 
