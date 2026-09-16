@@ -55,31 +55,21 @@ jobs:
         # change - build only on a green suite. unittest, not pytest: the
         # project's own README documents `python -m unittest discover` as
         # the way to run these tests, and pytest is not one of its
-        # dependencies - matching that instead of introducing an
-        # undeclared one.
-        #
-        # Same forgiveness logic as the macOS job's own "Run the test
-        # suite" step below, and for the same reason: a run on real
-        # Windows hardware (35011503868) hit the identical pattern seen
-        # on macOS - the suite's own output stops cold with no "OK"/
-        # "Ran N tests" summary and a bare nonzero exit, consistent with
-        # an interpreter-exit crash after the suite itself already
-        # finished (this step's stdout is a pipe, not a TTY, so Python
-        # fully block-buffers it by default and the final summary lines
-        # can be sitting unflushed when the crash happens) - and Windows,
-        # unlike macOS, had no forgiveness logic at all, so any such
-        # crash failed the build outright with no way to tell a benign
-        # post-suite crash from a real one. -u (unbuffered) plus the same
-        # grep-based check used on macOS fixes both problems: the true
-        # summary reliably reaches the log, and a real mid-suite failure
-        # (which always prints its own FAIL:/ERROR:/"FAILED (" lines)
-        # still fails the build exactly as before.
+        # dependencies (tests/_ci_runner.py wraps the same discovery +
+        # TextTestRunner unittest itself uses, then exits via os._exit()
+        # to sidestep a known Qt WebEngine post-suite teardown crash -
+        # see the macOS job's own "Run the test suite" step for the full
+        # story, including a real Windows run, 35049517256, that hit the
+        # same crash landing BEFORE the "OK" summary line, which is why
+        # the fix is os._exit() rather than a wider grep). The grep below
+        # stays as a defensive fallback for a crash landing inside the
+        # runner itself, before os._exit() - not the primary mechanism.
         env:
           QT_QPA_PLATFORM: offscreen
           PYTHONFAULTHANDLER: "1"
         run: |
           $ErrorActionPreference = "Continue"
-          python -u -m unittest discover -s tests -v > pybrowser-test-output.log 2>&1
+          python -u tests/_ci_runner.py > pybrowser-test-output.log 2>&1
           $STATUS = $LASTEXITCODE
           Get-Content pybrowser-test-output.log
           if ($STATUS -eq 0) { exit 0 }
@@ -227,14 +217,29 @@ jobs:
       - name: Run the test suite
         # unittest, not pytest - see the Windows job's comment on the same
         # step: this matches the project's own documented test command
-        # instead of adding an undeclared dependency.
+        # instead of adding an undeclared dependency (tests/_ci_runner.py
+        # wraps the same discovery + TextTestRunner unittest itself uses).
         #
         # A real macOS CI run (macOS Friend Preview Build Checkpoint,
         # run 34884973061) found a benign-but-fatal wrinkle: after all
         # tests report through to a clean "OK" summary, the process
         # segfaults while CPython tears down the last few QWebEngineView
         # instances (Qt WebEngine's GPU/Skia compositor loses its context
-        # mid-teardown). So: capture the run, and only forgive a nonzero
+        # mid-teardown). A run on real Windows hardware (35049517256)
+        # then showed the same crash can also land BEFORE the "OK" line
+        # is flushed - pure timing, racing the exact same post-suite
+        # teardown against unittest's own final print - which a grep on
+        # the log genuinely cannot tell apart from a real failure that
+        # happened to produce no output at all.
+        #
+        # tests/_ci_runner.py sidesteps the race instead of forgiving it:
+        # it flushes the result the moment the suite finishes, then calls
+        # os._exit() immediately - skipping atexit hooks, GC finalizers and
+        # Qt/WebEngine's own static destructors entirely, so that teardown
+        # path (and its crash) never runs, on either platform. The grep
+        # below stays as a defensive fallback for the (not yet observed
+        # since this change) case where a crash still lands inside the
+        # runner itself, before os._exit() - it only forgives a nonzero
         # exit when the log shows unittest's own clean "OK" summary with
         # no FAIL:/ERROR: lines and no "FAILED (" summary anywhere -
         # Chromium's own bracketed "[pid:tid:...ERROR:file] message"
@@ -245,16 +250,7 @@ jobs:
           PYTHONFAULTHANDLER: "1"
         run: |
           set +e
-          # -u (unbuffered): stdout is redirected to a file below, which
-          # makes Python fully block-buffer it instead of line-buffering as
-          # it would to a TTY - so if the interpreter crashes moments after
-          # the suite finishes (the known benign post-suite teardown crash
-          # this step exists to forgive), the final "OK"/"Ran N tests" lines
-          # can be sitting in an unflushed buffer and never reach the log,
-          # which defeats the grep below and turns a benign crash into a
-          # false failure. Unbuffered output guarantees those lines land
-          # before the crash does.
-          python -u -m unittest discover -s tests -v > /tmp/pybrowser-test-output.log 2>&1
+          python -u tests/_ci_runner.py > /tmp/pybrowser-test-output.log 2>&1
           STATUS=$?
           set -e
           cat /tmp/pybrowser-test-output.log
