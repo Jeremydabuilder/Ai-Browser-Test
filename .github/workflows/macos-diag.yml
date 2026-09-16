@@ -1,0 +1,78 @@
+name: macOS diagnostic - intermittent verify-dialog crash
+
+# TEMPORARY: chasing an intermittent (roughly 1-in-3) native SIGSEGV on real
+# macOS CI hardware in test_mcp_client_setup_ui.ClientSetupDialogTests.
+# test_verifying_a_real_pairing_reaches_verified, never reproduced on Linux
+# locally. Manual trigger only, entirely separate from release.yml so this
+# never affects the real release pipeline. Delete this file once the crash
+# is root-caused and fixed (or definitively shown to be a test-harness-only
+# artifact with no production impact).
+#
+# Runs the single failing test many times in a row under lldb's batch mode
+# so a crash - if it happens during this run - captures a native
+# all-threads backtrace, plus PYBROWSER_VERIFY_DIAG=1's own lifecycle trace
+# (QObject/QThread creation, thread affinity, signal emit/deliver,
+# deleteLater, socket/server shutdown - see app/ui/mcp_server_settings.py
+# and app/mcp_server/server.py's _diag()) and PYTHONFAULTHANDLER=1's
+# per-thread Python stack dump on any fatal signal.
+
+on:
+  workflow_dispatch:
+    inputs:
+      attempts:
+        description: "How many times to run the test in a row"
+        type: number
+        default: 50
+
+jobs:
+  macos-diag:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Confirm lldb is available
+        run: lldb --version
+
+      - name: Run the failing test repeatedly under lldb
+        env:
+          QT_QPA_PLATFORM: offscreen
+          PYTHONFAULTHANDLER: "1"
+          PYBROWSER_VERIFY_DIAG: "1"
+        run: |
+          set +e
+          ATTEMPTS="${{ inputs.attempts }}"
+          for i in $(seq 1 "$ATTEMPTS"); do
+            echo "::group::attempt $i"
+            lldb --batch -o "run" -o "thread backtrace all" -o "quit" -- \
+              python3 -m unittest \
+              tests.test_mcp_client_setup_ui.ClientSetupDialogTests.test_verifying_a_real_pairing_reaches_verified \
+              -v > "/tmp/attempt_$i.log" 2>&1
+            status=$?
+            echo "exit=$status"
+            echo "::endgroup::"
+            if [ "$status" -ne 0 ]; then
+              echo "::error::Attempt $i failed/crashed (exit $status) - full log follows"
+              cat "/tmp/attempt_$i.log"
+              echo "$i" > /tmp/crashed_attempt.txt
+              break
+            fi
+          done
+          echo "Ran $([ -f /tmp/crashed_attempt.txt ] && cat /tmp/crashed_attempt.txt || echo "$ATTEMPTS") attempt(s) before stopping."
+
+      - name: Upload all attempt logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-diag-logs
+          path: /tmp/attempt_*.log
+          if-no-files-found: warn

@@ -9,13 +9,14 @@ from __future__ import annotations
 import os
 import sys
 import tempfile
+import threading
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import QTimer  # noqa: E402
+from PySide6.QtCore import QEventLoop, QTimer  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
 from app.mcp_server.server import PyBrowserMcpServer  # noqa: E402
@@ -107,16 +108,54 @@ class ClientSetupDialogTests(unittest.TestCase):
         self.assertEqual(client.connection_method, "direct_http")
 
     def test_verifying_a_real_pairing_reaches_verified(self) -> None:
+        # Chasing an intermittent native crash in this exact test on real
+        # macOS CI hardware (never reproduced on Linux locally): waits on
+        # the verifier's own completion signal via a real nested QEventLoop
+        # instead of a manual `while not done: processEvents()` busy loop -
+        # the crash's own backtrace showed the crashing thread stuck inside
+        # that pump loop, and repeated re-entrant processEvents() calls are
+        # a plausible source of the kind of Qt event-delivery re-entrancy
+        # this crash resembles. A QEventLoop tied to one concrete signal
+        # only ever processes one more event before returning, rather than
+        # spinning the dispatcher in a tight native loop.
+        before_threads = {t.ident for t in threading.enumerate()}
         dialog = ClientSetupDialog(ClientType.CURSOR, self.server)
         dialog.preset_combo.setCurrentIndex(0)  # read_only - has read_tabs
         dialog._apply_preset_to_checks()
         dialog._on_pair()
         dialog._on_verify()
-        self.assertTrue(pump(lambda: "Verified" in dialog.status_label.text()
-                            or "Authentication" in dialog.status_label.text(), 8000))
+
+        loop = QEventLoop()
+        # Connected AFTER _on_verify() creates _verifier, and after this
+        # dialog's own _on_verified is already connected to `done` - so by
+        # Qt's in-order delivery to a signal's slots, _on_verified (which
+        # does the real cleanup: clears the label, drops the verifier
+        # reference, quits and waits on the thread) always runs before this
+        # loop.quit(), same as the old pump()'s predicate check did.
+        self.assertIsNotNone(dialog._verifier)
+        dialog._verifier.done.connect(loop.quit)
+        timeout_timer = QTimer()
+        timeout_timer.setSingleShot(True)
+        timeout_timer.timeout.connect(loop.quit)
+        timeout_timer.start(8000)
+        loop.exec()
+        timeout_timer.stop()
+
         self.assertEqual(dialog.status_label.text(), "Verified - Connected and verified.")
         client = self.store.list_clients()[0]
         self.assertEqual(client.last_verified_status, VerificationStatus.VERIFIED.value)
+
+        # Thread-lifetime diagnostic only (not asserted): a per-request HTTP
+        # handler daemon thread can still be finishing its own exit right
+        # after the response was sent, so "extra thread present" isn't by
+        # itself a bug - but it's useful context alongside the VERIFYDIAG
+        # trace when PYBROWSER_VERIFY_DIAG=1.
+        if os.environ.get("PYBROWSER_VERIFY_DIAG") == "1":
+            after_threads = {t.ident for t in threading.enumerate()}
+            leaked = after_threads - before_threads
+            leaked_names = [t.name for t in threading.enumerate() if t.ident in leaked]
+            print(f"VERIFYDIAG [test] threads still alive after verify: {leaked_names}",
+                  file=sys.stderr, flush=True)
 
     def test_generic_client_uses_live_capabilities_not_a_client_specific_generator(self) -> None:
         dialog = ClientSetupDialog(ClientType.GENERIC, self.server)

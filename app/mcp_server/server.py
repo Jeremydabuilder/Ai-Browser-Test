@@ -21,6 +21,8 @@ from __future__ import annotations
 import contextlib
 import gc
 import json
+import os
+import sys
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -37,6 +39,16 @@ DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
 _CONFIRM_TIMEOUT_S = 120
 _CALL_TIMEOUT_S = 30
+
+# Same temporary diagnostic switch as app/ui/mcp_server_settings.py - see
+# there for what it's chasing. Off by default.
+_VERIFY_DIAG = os.environ.get("PYBROWSER_VERIFY_DIAG") == "1"
+
+
+def _diag(msg: str) -> None:
+    if _VERIFY_DIAG:
+        t = threading.current_thread()
+        print(f"VERIFYDIAG [{t.name}/{t.ident}] {msg}", file=sys.stderr, flush=True)
 
 
 @contextlib.contextmanager
@@ -82,12 +94,17 @@ class GuiBridge(QObject):
     def __init__(self) -> None:
         super().__init__()
         self._invoke.connect(self._run)
+        _diag(f"GuiBridge.__init__ id={id(self)} thread={self.thread()}")
 
     def _run(self, callback: Callable[[], None]) -> None:
+        _diag(f"GuiBridge._run entered id={id(self)} callback={callback!r}")
         callback()
+        _diag(f"GuiBridge._run callback returned id={id(self)}")
 
     def _post(self, callback: Callable[[], None]) -> None:
+        _diag(f"GuiBridge._post emitting id={id(self)} callback={callback!r}")
         self._invoke.emit(callback)
+        _diag(f"GuiBridge._post emit() returned id={id(self)}")
 
     def call_sync(self, fn: Callable[[], Any], timeout: float = _CALL_TIMEOUT_S) -> Any:
         """Run ``fn`` on the GUI thread and return its value. ``fn`` must
@@ -97,12 +114,16 @@ class GuiBridge(QObject):
         done = threading.Event()
 
         def on_gui_thread() -> None:
+            _diag(f"GuiBridge.call_sync on_gui_thread running id={id(self)}")
             box["value"] = fn()
             done.set()
+            _diag(f"GuiBridge.call_sync on_gui_thread done.set() id={id(self)}")
 
         with _gc_paused():
+            _diag(f"GuiBridge.call_sync posting id={id(self)} fn={fn!r} timeout={timeout}")
             self._post(on_gui_thread)
-            done.wait(timeout)
+            waited = done.wait(timeout)
+            _diag(f"GuiBridge.call_sync done.wait() returned {waited} id={id(self)}")
         return box.get("value")
 
     def call_future(self, fn: Callable[[], Any], timeout: float = _CALL_TIMEOUT_S) -> Any:
@@ -308,6 +329,8 @@ class PyBrowserMcpServer(QObject):
             return False
         self._thread = threading.Thread(
             target=self._httpd.serve_forever, name="mcp-server", daemon=True)
+        _diag(f"PyBrowserMcpServer.start starting accept thread id={id(self)} "
+              f"port={self.port}")
         self._thread.start()
         self.status_changed.emit(True)
         return True
@@ -315,11 +338,17 @@ class PyBrowserMcpServer(QObject):
     def stop(self) -> None:
         if not self.running:
             return
+        _diag(f"PyBrowserMcpServer.stop entered id={id(self)}")
         assert self._httpd is not None
         self._httpd.shutdown()
+        _diag(f"PyBrowserMcpServer.stop httpd.shutdown() returned id={id(self)}")
         self._httpd.server_close()
+        _diag(f"PyBrowserMcpServer.stop httpd.server_close() returned id={id(self)}")
         if self._thread is not None:
             self._thread.join(timeout=5.0)
+            _diag(f"PyBrowserMcpServer.stop accept thread joined, "
+                  f"alive={self._thread.is_alive()} id={id(self)}")
         self._httpd = None
         self._thread = None
         self.status_changed.emit(False)
+        _diag(f"PyBrowserMcpServer.stop returning id={id(self)}")

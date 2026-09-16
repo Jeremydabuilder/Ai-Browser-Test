@@ -13,6 +13,9 @@ stays as the advanced, all-clients-at-once view from Phase 11.
 from __future__ import annotations
 
 import gc
+import os
+import sys
+import threading
 
 from PySide6.QtCore import QObject, Qt, QThread, Signal
 from PySide6.QtWidgets import (
@@ -67,6 +70,18 @@ _CLIENT_SETUP: dict[ClientType, dict] = {
 
 _PRESET_ORDER = ["read_only", "research", "mission_assistant", "full_access"]
 
+# Temporary diagnostic instrumentation for the intermittent macOS crash in
+# ClientSetupDialogTests.test_verifying_a_real_pairing_reaches_verified.
+# Off by default (PYBROWSER_VERIFY_DIAG unset) - a normal test/production
+# run never touches this. Remove once the crash is root-caused.
+_VERIFY_DIAG = os.environ.get("PYBROWSER_VERIFY_DIAG") == "1"
+
+
+def _diag(msg: str) -> None:
+    if _VERIFY_DIAG:
+        t = threading.current_thread()
+        print(f"VERIFYDIAG [{t.name}/{t.ident}] {msg}", file=sys.stderr, flush=True)
+
 
 class _Verifier(QObject):
     """Runs verify_connection() on a background thread. Verification
@@ -80,9 +95,15 @@ class _Verifier(QObject):
         super().__init__()
         self._url = url
         self._token = token
+        _diag(f"_Verifier.__init__ id={id(self)} thread={self.thread()}")
 
     def run(self) -> None:
-        self.done.emit(verify_connection(self._url, self._token))
+        _diag(f"_Verifier.run start id={id(self)} qthread={QThread.currentThread()} "
+              f"affinity={self.thread()}")
+        result = verify_connection(self._url, self._token)
+        _diag(f"_Verifier.run got result id={id(self)} status={result.status!r} - emitting done")
+        self.done.emit(result)
+        _diag(f"_Verifier.run done.emit returned id={id(self)}")
         # Request our own deletion from right here, inside run() - i.e.
         # still on our own thread's stack, at the same loop level the
         # `started` signal invoked us at. deleteLater() posts a
@@ -97,6 +118,7 @@ class _Verifier(QObject):
         # it here removes the race: it is queued before this method even
         # returns, well before anything asks the loop to quit.
         self.deleteLater()
+        _diag(f"_Verifier.run deleteLater() posted id={id(self)}, run() returning")
 
 
 class ClientSetupDialog(QDialog):
@@ -258,6 +280,7 @@ class ClientSetupDialog(QDialog):
         self._gc_was_enabled = gc.isenabled()
         gc.disable()
         self._thread = QThread(self)
+        _diag(f"_on_verify creating QThread id={id(self._thread)} for dialog id={id(self)}")
         # Kept as an attribute (not passed through functools.partial) so
         # Qt's automatic queued-connection detection sees a plain bound
         # slot on this dialog (GUI thread) - a partial-wrapped slot is not
@@ -265,11 +288,17 @@ class ClientSetupDialog(QDialog):
         # which is what caused "Thread tried to wait on itself" below.
         self._verifier = _Verifier(url, self._token)
         self._verifier.moveToThread(self._thread)
+        _diag(f"_on_verify moved verifier id={id(self._verifier)} to thread id={id(self._thread)}, "
+              f"new affinity={self._verifier.thread()}")
         self._thread.started.connect(self._verifier.run)
         self._verifier.done.connect(self._on_verified)
+        _diag(f"_on_verify starting QThread id={id(self._thread)}")
         self._thread.start()
+        _diag(f"_on_verify QThread.start() returned id={id(self._thread)} "
+              f"isRunning={self._thread.isRunning()}")
 
     def _on_verified(self, result) -> None:
+        _diag(f"_on_verified entered on qthread={QThread.currentThread()} status={result.status!r}")
         if getattr(self, "_gc_was_enabled", False):
             gc.enable()
         if self._client_id is not None:
@@ -283,11 +312,17 @@ class ClientSetupDialog(QDialog):
         # - so by construction that request was already posted to the
         # worker thread's queue before anything here asks that thread to
         # quit. Just drop our reference; don't delete it a second time.
+        _diag(f"_on_verified dropping verifier ref id={id(self._verifier) if self._verifier else None}")
         self._verifier = None
         if self._thread is not None:
+            _diag(f"_on_verified calling thread.quit() id={id(self._thread)} "
+                  f"isRunning={self._thread.isRunning()}")
             self._thread.quit()
-            self._thread.wait(2000)
+            waited_ok = self._thread.wait(2000)
+            _diag(f"_on_verified thread.wait(2000) returned {waited_ok} "
+                  f"isFinished={self._thread.isFinished()} id={id(self._thread)}")
             self._thread = None
+        _diag("_on_verified returning")
 
 
 class PairClientDialog(QDialog):
