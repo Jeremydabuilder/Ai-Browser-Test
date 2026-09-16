@@ -43,6 +43,21 @@ def setUpModule() -> None:
     _profile = shared_profile()
 
 
+def _pump_until_requested(fake, timeout_ms: int = 2000) -> None:
+    """turn_watch_change_into_mission() dispatches to the agent session
+    asynchronously - a single processEvents() call happened to be enough
+    for this to land in every local run, but is not guaranteed to be
+    (this raced and lost on a real CI run: ``fake.requests`` was still
+    empty after just one call). Pump until the fake transport actually
+    has the request, the same way every other async-UI test in this
+    suite waits on a predicate rather than a fixed number of ticks."""
+    import time
+
+    deadline = time.monotonic() + timeout_ms / 1000
+    while not fake.requests and time.monotonic() < deadline:
+        _app.processEvents()
+
+
 def _past_iso() -> str:
     return (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
 
@@ -169,7 +184,7 @@ class TurnIntoMissionSecurityTests(unittest.TestCase):
         history = self.window.watches.history_for(watch.id, limit=1)
 
         self.window.turn_watch_change_into_mission(watch, history[0])
-        _app.processEvents()
+        _pump_until_requested(fake)
 
         self.assertTrue(fake.requests)
         sent_text = fake.requests[0]["messages"][-1]["content"]
@@ -217,7 +232,7 @@ class TurnIntoMissionSecurityTests(unittest.TestCase):
         history = self.window.watches.history_for(watch.id, limit=1)
 
         self.window.turn_watch_change_into_mission(watch, history[0])
-        _app.processEvents()
+        _pump_until_requested(fake)
 
         sent_text = fake.requests[0]["messages"][-1]["content"]
         self.assertEqual(sent_text.count("</untrusted_web_page_content>"), 1)
