@@ -75,7 +75,15 @@ jobs:
             # $1 = label, remaining args = module list (target always last)
             local label="$1"; shift
             echo "::group::sequence [$label]: $* $TARGET"
-            lldb --batch -o "run" -o "thread backtrace all" -o "quit" -- \
+            # lldb's batch "run" stops at the process's own initial exec
+            # event (dyld startup, before any Python code runs) - this
+            # produced a false "crash" for prefix_1 in run 35169289870
+            # (2.6s total, backtrace of nothing but `dyld\`_dyld_start`).
+            # The extra continues are harmless no-ops once the process is
+            # already running or has exited.
+            lldb --batch \
+              -o "run" -o "continue" -o "continue" -o "continue" \
+              -o "thread backtrace all" -o "quit" -- \
               python3 -m unittest "$@" "$TARGET" -v \
               > "/tmp/seq_${label}.log" 2>&1
             local status=$?

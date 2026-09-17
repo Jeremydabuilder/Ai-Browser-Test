@@ -46,22 +46,54 @@ jobs:
         run: |
           set +e
           ATTEMPTS="${{ inputs.attempts }}"
+
+          # lldb's batch "run" stops at the process's own initial exec
+          # event (dyld startup, before any Python code runs) - confirmed
+          # separately in macos-mcp-sequence-diag.yml's run 35169289870,
+          # where a "crash" reproduced in 2.6s with a backtrace of nothing
+          # but `dyld\`_dyld_start`. Without a "continue" past that first
+          # benign stop, "run" never lets the debuggee actually execute,
+          # so this loop was never actually running the test file at all.
+          # The extra continues are harmless once the process is already
+          # running or has exited - lldb just reports "no process".
+          #
+          # Also, `lldb --batch ... -o "quit"` exits 0 whenever the
+          # debugger session itself completes cleanly, REGARDLESS of
+          # whether the debuggee crashed - so the exit code was never a
+          # valid signal either. Same principle as the sequence-diag
+          # scripts' is_real_crash(): only a log with no clean "Ran N
+          # tests"/"OK"-or-"FAILED (...)" summary means the interpreter
+          # actually died before unittest could report.
+          is_real_crash() {
+            local log="$1"
+            if grep -qE '^Ran [0-9]+ tests? in' "$log" \
+                && grep -qE '^(OK|FAILED \()' "$log"; then
+              return 1
+            fi
+            return 0
+          }
+
+          CRASHED_ATTEMPT=""
           for i in $(seq 1 "$ATTEMPTS"); do
             echo "::group::attempt $i"
-            lldb --batch -o "run" -o "thread backtrace all" -o "quit" -- \
+            lldb --batch \
+              -o "run" -o "continue" -o "continue" -o "continue" \
+              -o "thread backtrace all" -o "quit" -- \
               python3 -m unittest tests.test_highlights_integration -v \
               > "/tmp/highlights_attempt_$i.log" 2>&1
             status=$?
-            echo "exit=$status"
-            echo "::endgroup::"
-            if [ "$status" -ne 0 ]; then
-              echo "::error::Attempt $i failed/crashed (exit $status) - full log follows"
+            if is_real_crash "/tmp/highlights_attempt_$i.log"; then
+              echo "exit=$status realCrash=true"
+              echo "::endgroup::"
+              echo "::error::Attempt $i crashed - full log follows"
               cat "/tmp/highlights_attempt_$i.log"
-              echo "$i" > /tmp/highlights_crashed_attempt.txt
+              CRASHED_ATTEMPT="$i"
               break
             fi
+            echo "exit=$status realCrash=false"
+            echo "::endgroup::"
           done
-          echo "Ran $([ -f /tmp/highlights_crashed_attempt.txt ] && cat /tmp/highlights_crashed_attempt.txt || echo "$ATTEMPTS") attempt(s) before stopping."
+          echo "Ran ${CRASHED_ATTEMPT:-$ATTEMPTS} attempt(s) before stopping."
 
       - name: Upload all attempt logs
         if: always()
