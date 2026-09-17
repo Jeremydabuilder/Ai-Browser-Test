@@ -55,6 +55,22 @@ jobs:
           )
           TARGET=tests.test_mcp_client_setup_ui
 
+          # A nonzero exit is NOT by itself evidence of a native crash - an
+          # ordinary unittest assertion failure (FAIL:/ERROR:, a clean "Ran N
+          # tests"/"FAILED (...)" summary) also exits nonzero via sys.exit(1).
+          # Same principle release.yml's own forgiveness logic uses, applied
+          # in reverse: only a log with NO clean "OK"/"FAILED (...)" summary
+          # at all is a real crash - the interpreter died before unittest
+          # could even report the ordinary way.
+          is_real_crash() {
+            local log="$1"
+            if grep -qE '^Ran [0-9]+ tests? in' "$log" \
+                && grep -qE '^(OK|FAILED \()' "$log"; then
+              return 1
+            fi
+            return 0
+          }
+
           run_seq() {
             # $1 = label, remaining args = module list (target always last)
             local label="$1"; shift
@@ -63,9 +79,14 @@ jobs:
               python3 -m unittest "$@" "$TARGET" -v \
               > "/tmp/seq_${label}.log" 2>&1
             local status=$?
-            echo "exit=$status"
+            if is_real_crash "/tmp/seq_${label}.log"; then
+              echo "exit=$status realCrash=true"
+              echo "::endgroup::"
+              return 1
+            fi
+            echo "exit=$status realCrash=false"
             echo "::endgroup::"
-            return $status
+            return 0
           }
 
           CRASHED_SET=()

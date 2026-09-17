@@ -69,22 +69,39 @@ jobs:
           )
           $target = "tests.test_mcp_client_setup_ui"
 
+          # A nonzero exit is NOT by itself evidence of a native crash - an
+          # ordinary unittest assertion failure (FAIL:/ERROR:, a clean "Ran N
+          # tests"/"FAILED (...)" summary) also exits nonzero via sys.exit(1),
+          # and one such flaky-looking failure already got misread as "the
+          # crash reproduced" in run 35168440328. Same principle release.yml's
+          # own forgiveness logic uses, applied in reverse: only a log with NO
+          # clean "OK"/"FAILED (...)" summary at all is a real crash - the
+          # interpreter died before unittest could even report the ordinary
+          # way.
+          function Test-IsRealCrash($logFile) {
+            $text = Get-Content $logFile -Raw -ErrorAction SilentlyContinue
+            if (-not $text) { return $true }
+            $hasSummary = ($text -match '(?m)^Ran \d+ tests? in') -and ($text -match '(?m)^(OK\b|FAILED \()')
+            return -not $hasSummary
+          }
+
           function Run-Seq($label, [string[]]$modules) {
             $all = $modules + $target
             Write-Host "::group::sequence [$label]: $($all -join ' ')"
             $logFile = "seq_$label.log"
             & $cdb -g -G -o -c "~*k; .exr -1; q" $pythonExe -m unittest @all -v > $logFile 2>&1
             $status = $LASTEXITCODE
-            Write-Host "exit=$status"
+            $isCrash = Test-IsRealCrash $logFile
+            Write-Host "exit=$status realCrash=$isCrash"
             Write-Host "::endgroup::"
-            return $status
+            return $isCrash
           }
 
           $crashedSet = $null
           for ($n = 1; $n -le $preceding.Count; $n++) {
             $prefix = $preceding[0..($n - 1)]
-            $status = Run-Seq "prefix_$n" $prefix
-            if ($status -ne 0) {
+            $isCrash = Run-Seq "prefix_$n" $prefix
+            if ($isCrash) {
               Write-Host "::error::Crash reproduced with $n preceding module(s): $($prefix -join ' ')"
               Get-Content "seq_prefix_$n.log"
               $crashedSet = $prefix
@@ -110,8 +127,8 @@ jobs:
               $candidate = [System.Collections.ArrayList]$minimal.Clone()
               $candidate.RemoveAt($i)
               if ($candidate.Count -eq 0) { continue }
-              $status = Run-Seq "min_try" $candidate
-              if ($status -ne 0) {
+              $isCrash = Run-Seq "min_try" $candidate
+              if ($isCrash) {
                 Write-Host "Still crashes without '$($minimal[$i])' - removing it."
                 $minimal = [System.Collections.ArrayList]$candidate
                 $changed = $true
