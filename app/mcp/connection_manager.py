@@ -2,12 +2,11 @@
 
 Owns one background thread running a persistent asyncio event loop (every
 configured server's protocol client lives on that loop, whichever transport
-it uses), and marshals every result back onto the GUI thread via a Qt
-queued signal before resolving the BrowserFuture the rest of the agent
-system already knows how to consume - the same cross-thread pattern
-app.agent.session's `_ClaudeWorker` uses for the Claude worker thread,
-applied here without needing a QThread, since nothing MCP-side needs Qt's
-own event loop.
+it uses), and marshals every result back onto the GUI thread via
+GuiDispatcher (app/gui_dispatch.py) before resolving the BrowserFuture the
+rest of the agent system already knows how to consume, applied here
+without needing a QThread, since nothing MCP-side needs Qt's own event
+loop.
 
 Nothing in app/agent/tools.py or app/agent/session.py needs to know any of
 this happened: they hold one `McpConnectionManager` reference and call
@@ -26,6 +25,7 @@ from typing import Any, Callable
 from PySide6.QtCore import QObject, Signal
 
 from app.browser.futures import BrowserFuture, resolved
+from app.gui_dispatch import GuiDispatchShutdown, GuiDispatcher
 from app.security import firewall
 from app.security.log import EventType as SecurityEventType
 from app.security.log import security_log
@@ -181,11 +181,19 @@ class McpConnectionManager(QObject):
     #: repository data"), not just a status row quietly turning red.
     connection_dropped = Signal(str, str, str)
 
-    #: Internal: background-thread -> GUI-thread handoff. Never connect to
-    #: this from outside the class; it exists purely so a coroutine running
-    #: on the background loop can resolve a BrowserFuture (and touch
-    #: McpConnection state) on the GUI thread instead of its own.
-    _bg_result = Signal(object)  # a zero-arg callable to run on the GUI thread
+    #: Internal: background-thread -> GUI-thread handoff, via GuiDispatcher
+    #: (app/gui_dispatch.py) - see _post_to_gui_thread below. Exists purely
+    #: so a coroutine running on the background loop can resolve a
+    #: BrowserFuture (and touch McpConnection state) on the GUI thread
+    #: instead of its own.
+    #:
+    #: This used to be a Qt Signal(object) carrying the callback itself
+    #: across threads - the same design app.mcp_server.server.GuiBridge
+    #: had, and the same one that produced confirmed native crashes on
+    #: both platforms in Qt's own queued-event delivery (see GuiDispatcher's
+    #: docstring for the exact backtraces). Replaced with the identical
+    #: queue+QTimer dispatcher GuiBridge now uses - nothing Qt-shaped
+    #: crosses the thread boundary here either.
 
     def __init__(self, store: McpServerStore, parent: QObject | None = None) -> None:
         super().__init__(parent)
@@ -201,10 +209,10 @@ class McpConnectionManager(QObject):
         self._visible_server_ids: frozenset[str] | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
         self._loop_ready = threading.Event()
+        self._gui_dispatcher = GuiDispatcher()
         self._thread = threading.Thread(target=self._run_loop, name="mcp-io", daemon=True)
         self._thread.start()
         self._loop_ready.wait(timeout=5.0)
-        self._bg_result.connect(self._run_on_gui_thread)
         # Reconnect whatever was enabled last time, so the user does not have
         # to re-press Connect on every launch. Each attempt is independent
         # and posts its own success/error back through the usual path, so
@@ -224,6 +232,7 @@ class McpConnectionManager(QObject):
     def shutdown(self) -> None:
         """Close every connection and stop the background loop. Call once,
         at application exit."""
+        self._gui_dispatcher.shutdown()
         if self._loop is None:
             return
         for connection in self._connections.values():
@@ -232,13 +241,14 @@ class McpConnectionManager(QObject):
                 asyncio.run_coroutine_threadsafe(client.close(), self._loop)
         self._loop.call_soon_threadsafe(self._loop.stop)
 
-    def _run_on_gui_thread(self, callback: Callable[[], None]) -> None:
-        callback()
-
     def _post_to_gui_thread(self, callback: Callable[[], None]) -> None:
-        """Called from the background thread - queues ``callback`` to run on
-        the GUI thread via the Qt signal above."""
-        self._bg_result.emit(callback)
+        """Called from the background thread - queues ``callback`` to run
+        on the GUI thread via GuiDispatcher (fire-and-forget; no caller
+        here waits for a result)."""
+        try:
+            self._gui_dispatcher.post(callback)
+        except GuiDispatchShutdown:
+            pass  # shutting down - nothing left to deliver this to
 
     # -- server configuration -----------------------------------------------
     def configured_servers(self) -> list[McpServerConfig]:

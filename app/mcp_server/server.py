@@ -5,11 +5,22 @@ authenticated external clients.
 Runs on a plain Python ``threading.Thread`` (not a QThread - it needs no
 Qt event loop of its own), so every incoming call happens on a background
 HTTP-handler thread. BrowserController must only ever be touched from the
-GUI thread, so ``GuiBridge`` below replicates the exact
-``_bg_result``/``_post_to_gui_thread`` cross-thread pattern already used by
-app/mcp/connection_manager.py, extended with a ``threading.Event`` so a
-handler thread can synchronously await a GUI-thread result (including one
-that itself resolves via a BrowserFuture) before writing its HTTP response.
+GUI thread, so ``GuiBridge`` below hands a plain Python callable to
+``GuiDispatcher``, which queues it on a thread-safe ``queue.Queue`` and
+runs it on the GUI thread via a GUI-owned ``QTimer`` - no Qt signal or
+QObject ever crosses the worker/GUI thread boundary.
+
+This replaces an earlier design where ``GuiBridge`` emitted a Qt
+``Signal(object)`` carrying the callable itself across threads. That
+design produced confirmed, reproducible native crashes on both platforms,
+always on the GUI thread while Qt's own queued-event delivery ran:
+Windows - ``Qt6Core!QCoreApplication::notifyInternal2``, access violation
+(0xC0000005) reading address ``0xFFFFFFFFFFFFFFFF``; macOS -
+``QtCore!QCoreApplication::sendEvent``, ``EXC_BAD_ACCESS`` at address
+``0x70``. Both reproduced from an HTTP worker thread's ``call_sync``
+racing the GUI thread's own event loop. See the diagnostic workflows
+under .github/workflows/*-mcp-sequence-diag.yml for the native
+backtraces that pinned this down.
 
 Only Streamable HTTP is implemented (stdio server mode is out of scope -
 see the Phase 11 report's known limitations: PyBrowser is a persistent GUI
@@ -18,8 +29,6 @@ app, not a process meant to be spawned per client on its own stdio).
 
 from __future__ import annotations
 
-import contextlib
-import gc
 import json
 import os
 import sys
@@ -28,12 +37,17 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Callable
 
-from PySide6.QtCore import QObject, Signal
+from PySide6.QtCore import QObject, QThread, Signal
 from PySide6.QtWidgets import QMessageBox
 
+from app.gui_dispatch import GuiDispatchShutdown, GuiDispatcher
 from app.mcp_server import auth, transport
 from app.mcp_server.audit import record_call
 from app.mcp_server.tools import TOOL_SCHEMAS, McpToolContext, McpToolError, dispatch
+
+#: Kept as an alias for backwards compatibility with any code/tests that
+#: imported the old, module-local name.
+GuiBridgeShutdown = GuiDispatchShutdown
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
@@ -51,80 +65,26 @@ def _diag(msg: str) -> None:
         print(f"VERIFYDIAG [{t.name}/{t.ident}] {msg}", file=sys.stderr, flush=True)
 
 
-@contextlib.contextmanager
-def _gc_paused():
-    """Suspend the cyclic GC for a cross-thread queued-signal round trip.
-
-    Defense in depth, not by itself sufficient: a reproduced crash (a
-    same-process test that opens a real HTTP connection to this server
-    while pumping the GUI event loop) needed gc disabled for the whole
-    verify round trip, not just one call_sync - see the caller in
-    app/ui/mcp_server_settings.py for that fix and its own account of
-    what was actually proven. This narrower version still removes one
-    real hazard on every call_sync/call_future/confirm round trip: Qt's
-    queued delivery of a Signal(object) carrying a Python callable across
-    threads has a window - between emit() on the calling thread and the
-    slot actually running on the GUI thread - where the callable is live
-    only via Qt's own internal (non-refcounted-by-Python) bookkeeping,
-    and a cyclic collection landing in that window is a plausible crash
-    even where it wasn't the one this specific bug needed. Refcounting
-    alone (never suspended) still reclaims everything the moment this
-    call returns; only the generational cycle collector is paused, and
-    only for the few milliseconds one round trip takes.
+class GuiBridge:
+    """Runs a callable on the GUI thread on behalf of any other thread,
+    backed by ``GuiDispatcher`` (see its docstring, and the module
+    docstring above, for why this replaced an earlier direct-Qt-signal
+    design). Must be constructed on the GUI thread, since it creates its
+    ``GuiDispatcher`` there.
     """
-    was_enabled = gc.isenabled()
-    gc.disable()
-    try:
-        yield
-    finally:
-        if was_enabled:
-            gc.enable()
-
-
-class GuiBridge(QObject):
-    """Runs a zero-arg callable on the GUI thread; the caller (any other
-    thread) blocks on a ``threading.Event`` until it is done.
-
-    Must be constructed on the GUI thread - its Qt signal/slot connection
-    is what gives ``_post`` its automatic queued cross-thread delivery.
-    """
-
-    _invoke = Signal(object)
 
     def __init__(self) -> None:
-        super().__init__()
-        self._invoke.connect(self._run)
-        _diag(f"GuiBridge.__init__ id={id(self)} thread={self.thread()}")
-
-    def _run(self, callback: Callable[[], None]) -> None:
-        _diag(f"GuiBridge._run entered id={id(self)} callback={callback!r}")
-        callback()
-        _diag(f"GuiBridge._run callback returned id={id(self)}")
-
-    def _post(self, callback: Callable[[], None]) -> None:
-        _diag(f"GuiBridge._post emitting id={id(self)} callback={callback!r}")
-        self._invoke.emit(callback)
-        _diag(f"GuiBridge._post emit() returned id={id(self)}")
+        self._dispatcher = GuiDispatcher()
+        _diag(f"GuiBridge.__init__ id={id(self)} thread={QThread.currentThread()}")
 
     def call_sync(self, fn: Callable[[], Any], timeout: float = _CALL_TIMEOUT_S) -> Any:
         """Run ``fn`` on the GUI thread and return its value. ``fn`` must
         return a plain value immediately - use ``call_future`` for anything
         that returns a BrowserFuture."""
-        box: dict[str, Any] = {}
-        done = threading.Event()
-
-        def on_gui_thread() -> None:
-            _diag(f"GuiBridge.call_sync on_gui_thread running id={id(self)}")
-            box["value"] = fn()
-            done.set()
-            _diag(f"GuiBridge.call_sync on_gui_thread done.set() id={id(self)}")
-
-        with _gc_paused():
-            _diag(f"GuiBridge.call_sync posting id={id(self)} fn={fn!r} timeout={timeout}")
-            self._post(on_gui_thread)
-            waited = done.wait(timeout)
-            _diag(f"GuiBridge.call_sync done.wait() returned {waited} id={id(self)}")
-        return box.get("value")
+        _diag(f"GuiBridge.call_sync posting id={id(self)} fn={fn!r} timeout={timeout}")
+        result = self._dispatcher.run_sync(fn, timeout)
+        _diag(f"GuiBridge.call_sync returning id={id(self)}")
+        return result
 
     def call_future(self, fn: Callable[[], Any], timeout: float = _CALL_TIMEOUT_S) -> Any:
         """Run ``fn`` on the GUI thread, where it must return a
@@ -143,9 +103,8 @@ class GuiBridge(QObject):
 
             future.then(on_resolved)
 
-        with _gc_paused():
-            self._post(on_gui_thread)
-            done.wait(timeout)
+        self._dispatcher.post(on_gui_thread)
+        done.wait(timeout)
         return box.get("value")
 
     def confirm(self, prompt: str, title: str = "External AI client") -> bool:
@@ -154,21 +113,20 @@ class GuiBridge(QObject):
         rather than forcing an external call through the full
         AgentSession/AgentPanel confirmation machinery, which is built
         around an active conversational turn that does not exist here."""
-        box: dict[str, Any] = {}
-        done = threading.Event()
-
-        def on_gui_thread() -> None:
+        def on_gui_thread() -> bool:
             choice = QMessageBox.question(
                 None, title, prompt,
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                 QMessageBox.StandardButton.No)
-            box["value"] = choice == QMessageBox.StandardButton.Yes
-            done.set()
+            return choice == QMessageBox.StandardButton.Yes
 
-        with _gc_paused():
-            self._post(on_gui_thread)
-            done.wait(_CONFIRM_TIMEOUT_S)
-        return bool(box.get("value", False))
+        result = self._dispatcher.run_sync(on_gui_thread, _CONFIRM_TIMEOUT_S)
+        return bool(result)
+
+    def shutdown(self) -> None:
+        """Permanently tear down the underlying dispatcher. Call once, at
+        application close - see ``PyBrowserMcpServer.shutdown()``."""
+        self._dispatcher.shutdown()
 
 
 class _Handler(BaseHTTPRequestHandler):
@@ -352,3 +310,15 @@ class PyBrowserMcpServer(QObject):
         self._thread = None
         self.status_changed.emit(False)
         _diag(f"PyBrowserMcpServer.stop returning id={id(self)}")
+
+    def shutdown(self) -> None:
+        """Permanent, one-way teardown: stop the HTTP listener (like
+        ``stop()``) AND permanently close the GUI dispatcher backing
+        ``call_sync``/``call_future``/``confirm``, releasing any pending
+        request with ``GuiBridgeShutdown``. Call this once, from the GUI
+        thread, at application close (see MainWindow.closeEvent) - never
+        from the Settings toggle, which uses plain ``stop()``/``start()``
+        and needs the bridge to keep working across restarts."""
+        self.stop()
+        _diag(f"PyBrowserMcpServer.shutdown closing bridge id={id(self)}")
+        self._bridge.shutdown()

@@ -2970,7 +2970,7 @@ class MainWindow(QMainWindow):
             self._agent_session.shutdown()
             self._agent_session = None
         self.mcp.shutdown()
-        self.mcp_server.stop()
+        self.mcp_server.shutdown()
         # Tear down render processes explicitly; otherwise Qt can emit warnings
         # about pages outliving their profile during interpreter shutdown.
         for tab in self.tabs.tabs():

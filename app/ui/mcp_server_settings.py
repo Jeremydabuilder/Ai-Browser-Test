@@ -267,16 +267,24 @@ class ClientSetupDialog(QDialog):
         self.verify_button.setEnabled(False)
         self.status_label.setText("Verifying…")
         # Suspends the cyclic GC for the whole round trip, re-enabled in
-        # _on_verified() below. Confirmed by reproduction: this is a real
-        # HTTP round trip (Verifier's own QThread) into this same process's
-        # MCP server, whose handler calls back onto the GUI thread via
-        # GuiBridge's cross-thread queued Signal(object) - and a cyclic
-        # collection landing anywhere in that window, on either thread, has
-        # been reproduced to crash the interpreter outright (Qt's queued
-        # delivery of an arbitrary Python object isn't itself tracked by
-        # Python's refcounting the way a normal reference is). Refcounting
-        # keeps everything alive regardless; only cycle collection is
-        # paused, and only for the single-digit milliseconds this takes.
+        # _on_verified() below. This dialog -> _verifier attribute plus
+        # _verifier.done -> self._on_verified (a bound-method connection,
+        # required to stay exactly that - see the comment below on why it
+        # can't be a plain closure) forms an unavoidable reference cycle
+        # for the lifetime of one verify round trip: only cyclic GC can
+        # break it, and if that collection runs on a background thread
+        # (Python's cyclic GC can run on whichever thread trips its
+        # allocation threshold) while this cycle's QThread/QObjects are
+        # mid-flight, their C++ teardown happens off the thread they
+        # belong to. Reproduced directly: removing this pause made
+        # test_verifying_a_real_pairing_reaches_verified crash
+        # deterministically after ~12 preceding tests in the same class,
+        # with "QObject::killTimer: Timers cannot be stopped from another
+        # thread" immediately before the segfault - independent of
+        # GuiBridge's own (now fully separate, queue-based) design, which
+        # no longer needs this pause itself. Refcounting keeps everything
+        # alive regardless; only cycle collection is paused, and only for
+        # the single-digit milliseconds this takes.
         self._gc_was_enabled = gc.isenabled()
         gc.disable()
         self._thread = QThread(self)
