@@ -58,7 +58,16 @@ jobs:
               $isCrash = Test-IsRealCrash $logFile
               if ($isCrash) {
                 Write-Host "::error::[$label] run $i/$repeats CRASHED (exit=$status)"
-                Get-Content $logFile
+                # Get-Content's output is NOT suppressed here, and an
+                # unsuppressed pipeline emission inside a function gets
+                # collected into that function's own return value -
+                # meaning the crash log text (not just $false) came back
+                # to the caller, and $ok4 became a mixed array whose
+                # truthiness in `if ($ok4)` is just "non-empty", not the
+                # boolean it looked like - printing "CLEAN" for a stage
+                # that had in fact just crashed. Routing every line
+                # through Write-Host keeps it out of the return stream.
+                Get-Content $logFile | ForEach-Object { Write-Host $_ }
                 Write-Host "::endgroup::"
                 return $false
               }
