@@ -103,8 +103,11 @@ jobs:
           while ($changed) {
             $changed = $false
             for ($i = 0; $i -lt $minimal.Count; $i++) {
-              $candidate = @($minimal) | Where-Object { $_ -ne $minimal[$i] -or $false }
-              $candidate = @($minimal.Clone())
+              # $minimal.Clone() returns another ArrayList (RemoveAt-capable);
+              # wrapping it in @(...) coerces it to a plain fixed-size array
+              # and breaks RemoveAt() with "Collection was of a fixed size" -
+              # keep it as the ArrayList type explicitly instead.
+              $candidate = [System.Collections.ArrayList]$minimal.Clone()
               $candidate.RemoveAt($i)
               if ($candidate.Count -eq 0) { continue }
               $status = Run-Seq "min_try" $candidate
