@@ -71,6 +71,14 @@ jobs:
                 echo "::endgroup::"
                 return 1
               fi
+              if [ "$status" -ne 0 ]; then
+                # Not a native crash (clean summary present), but the
+                # test itself failed - dump once so an ordinary assertion
+                # failure isn't silently indistinguishable from a clean
+                # pass in this stage's per-run tally.
+                echo "::warning::[$label] run $i/$repeats ordinary FAILURE, not a crash (exit=$status)"
+                tail -n 40 "$log"
+              fi
               echo "[$label] run $i/$repeats ok (exit=$status)"
             done
             echo "::endgroup::"
