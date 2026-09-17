@@ -36,11 +36,15 @@ jobs:
         id: find_cdb
         shell: pwsh
         run: |
+          # The runner is x64 - Windows Kits ships cdb.exe under separate
+          # x86/x64/arm/arm64 subfolders, and an arm64 or x86 binary will
+          # fail to launch at all ("not a valid application for this OS
+          # platform"). Only the x64 subfolder is usable here.
           $candidates = @()
+          $candidates += Get-ChildItem -Path "C:\Program Files (x86)\Windows Kits\10\Debuggers\x64" -Filter cdb.exe -Recurse -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName }
+          $candidates += Get-ChildItem -Path "C:\Program Files\Windows Kits\10\Debuggers\x64" -Filter cdb.exe -Recurse -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName }
           $onPath = Get-Command cdb.exe -ErrorAction SilentlyContinue
-          if ($onPath) { $candidates += $onPath.Source }
-          $candidates += Get-ChildItem -Path "C:\Program Files (x86)\Windows Kits\10\Debuggers" -Filter cdb.exe -Recurse -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName }
-          $candidates += Get-ChildItem -Path "C:\Program Files\Windows Kits\10\Debuggers" -Filter cdb.exe -Recurse -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName }
+          if ($onPath -and $onPath.Source -match '\\x64\\') { $candidates += $onPath.Source }
           $found = $candidates | Select-Object -First 1
           if ($found) {
             Write-Host "Found cdb.exe at: $found"
