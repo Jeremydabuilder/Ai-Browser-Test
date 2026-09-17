@@ -743,21 +743,26 @@ class AgentSession(QObject):
         disconnect, before the thread is stopped. disconnect() raises
         RuntimeError if already disconnected (a second shutdown() call,
         or a connection that never completed) - harmless, so it's
-        swallowed.
+        swallowed. The worker's C++ object can also already be gone by
+        the time this runs (its own thread.finished->deleteLater() may
+        have already fired, e.g. the thread had already exited on its
+        own) - accessing a bound method on it then raises RuntimeError
+        from shiboken before disconnect() is even reached, so each
+        attribute access is inside the same try, not just the call.
         """
         self._cancelled = True
         if self._retry_timer is not None:
             self._retry_timer.stop()
             self._retry_timer = None
-        for signal, slot in (
-            (self._dispatch, self._worker.request),
-            (self._worker.responded, self._on_response),
-            (self._worker.failed, self._on_failure),
-            (self._worker.text_delta, self._on_text_delta),
+        for signal_getter, slot_getter in (
+            (lambda: self._dispatch, lambda: self._worker.request),
+            (lambda: self._worker.responded, lambda: self._on_response),
+            (lambda: self._worker.failed, lambda: self._on_failure),
+            (lambda: self._worker.text_delta, lambda: self._on_text_delta),
         ):
             try:
-                signal.disconnect(slot)
-            except (RuntimeError, TypeError):
+                signal_getter().disconnect(slot_getter())
+            except (RuntimeError, TypeError, SystemError):
                 pass
         self._thread.quit()
         self._thread.wait(3000)
