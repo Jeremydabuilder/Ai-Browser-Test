@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import os
 import random
+import weakref
 from dataclasses import dataclass
 
 from PySide6.QtCore import QByteArray, QRectF, QSize, Qt, QTimer, Signal
@@ -351,12 +352,34 @@ class Mascot(QLabel):
         self.setToolTip(TOOLTIPS[MascotState.IDLE])
         self.setCursor(Qt.CursorShape.PointingHandCursor)
 
+        # self -> self._frames/_settle (attribute) -> connection -> bound
+        # method/lambda capturing self -> self is a reference cycle only
+        # the cyclic GC can break, and cyclic GC can run on any thread -
+        # the same hazard class that produced confirmed native crashes in
+        # GuiDispatcher and MainWindow (see app/gui_dispatch.py's
+        # docstring). Both timers fire on this widget's own thread (no
+        # cross-thread delivery), so a weakref-guarded closure is safe
+        # here - it doesn't need Qt's auto-queued-connection detection to
+        # see a real bound QObject slot the way a genuinely cross-thread
+        # signal would.
+        self_ref = weakref.ref(self)
+
+        def _on_frame_tick() -> None:
+            widget = self_ref()
+            if widget is not None:
+                widget._advance()
+
+        def _on_settle() -> None:
+            widget = self_ref()
+            if widget is not None:
+                widget.set_state(MascotState.IDLE)
+
         self._frames = QTimer(self)
         self._frames.setInterval(_FRAME_MS)
-        self._frames.timeout.connect(self._advance)
+        self._frames.timeout.connect(_on_frame_tick)
         self._settle = QTimer(self)
         self._settle.setSingleShot(True)
-        self._settle.timeout.connect(lambda: self.set_state(MascotState.IDLE))
+        self._settle.timeout.connect(_on_settle)
 
         self._load()
         self._render()

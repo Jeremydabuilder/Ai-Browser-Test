@@ -266,27 +266,42 @@ class ClientSetupDialog(QDialog):
         url = client_configs.mcp_url(self._server.host, self._server.port)
         self.verify_button.setEnabled(False)
         self.status_label.setText("Verifying…")
-        # Suspends the cyclic GC for the whole round trip, re-enabled in
-        # _on_verified() below. This dialog -> _verifier attribute plus
-        # _verifier.done -> self._on_verified (a bound-method connection,
-        # required to stay exactly that - see the comment below on why it
-        # can't be a plain closure) forms an unavoidable reference cycle
-        # for the lifetime of one verify round trip: only cyclic GC can
-        # break it, and if that collection runs on a background thread
-        # (Python's cyclic GC can run on whichever thread trips its
-        # allocation threshold) while this cycle's QThread/QObjects are
-        # mid-flight, their C++ teardown happens off the thread they
-        # belong to. Reproduced directly: removing this pause made
-        # test_verifying_a_real_pairing_reaches_verified crash
-        # deterministically after ~12 preceding tests in the same class,
-        # with "QObject::killTimer: Timers cannot be stopped from another
-        # thread" immediately before the segfault - independent of
-        # GuiBridge's own (now fully separate, queue-based) design, which
-        # no longer needs this pause itself. Refcounting keeps everything
-        # alive regardless; only cycle collection is paused, and only for
-        # the single-digit milliseconds this takes.
-        self._gc_was_enabled = gc.isenabled()
-        gc.disable()
+        # This dialog -> _verifier attribute plus _verifier.done ->
+        # self._on_verified (a bound-method connection, required to stay
+        # exactly that - see the comment below on why it can't be a plain
+        # closure) forms a reference cycle for the lifetime of one verify
+        # round trip: only cyclic GC can break it, and if that collection
+        # runs on a background thread (Python's cyclic GC can run on
+        # whichever thread trips its allocation threshold) while this
+        # cycle's QThread/QObjects are mid-flight, their C++ teardown
+        # happens off the thread they belong to. Reproduced directly:
+        # this crashed test_verifying_a_real_pairing_reaches_verified
+        # deterministically after enough preceding tests across the
+        # suite, with "QObject::killTimer: Timers cannot be stopped from
+        # another thread" immediately before the segfault - independent
+        # of GuiBridge's own (now fully separate, queue-based) design.
+        # _on_verified() disconnects done->_on_verified as its first
+        # action (see below) - necessary, but proven NOT sufficient on
+        # its own: instrumentation (qInstallMessageHandler dumping live
+        # QThreads at the moment of the warning) showed the crash's own
+        # worker QThread is still running=True when the warning fires -
+        # i.e. it happens *during* the round trip, before _on_verified
+        # ever runs to disconnect anything. The actual trigger was a
+        # large backlog of UNRELATED already-unreachable cycles built up
+        # elsewhere in the app/test suite (GC never got a chance to run
+        # since nothing forced it), finally swept by the interpreter's
+        # normal generation threshold - which tripped on the verifier's
+        # OWN worker thread (mid verify_connection()'s own allocations),
+        # destroying whatever GUI-thread-affine QObjects were in that
+        # backlog from the wrong thread. So the cycle is broken two ways:
+        # deterministically here (below), and the backlog itself is
+        # swept HERE, synchronously, on the GUI thread, before the new
+        # worker thread is given a chance to start and trip collection
+        # itself. This is a targeted, one-shot gc.collect() at a chosen
+        # safe point - not gc.disable(): GC stays fully enabled at all
+        # times; this only makes sure a collection that was going to
+        # happen anyway happens now, on a thread where it's safe.
+        gc.collect()
         self._thread = QThread(self)
         _diag(f"_on_verify creating QThread id={id(self._thread)} for dialog id={id(self)}")
         # Kept as an attribute (not passed through functools.partial) so
@@ -307,8 +322,16 @@ class ClientSetupDialog(QDialog):
 
     def _on_verified(self, result) -> None:
         _diag(f"_on_verified entered on qthread={QThread.currentThread()} status={result.status!r}")
-        if getattr(self, "_gc_was_enabled", False):
-            gc.enable()
+        # Break the self <-> _verifier cycle now, deterministically, via
+        # explicit disconnect on the GUI thread - see the comment in
+        # _on_verify() above. disconnect() raises RuntimeError if this
+        # slot somehow runs more than once for the same connection;
+        # harmless, so it's swallowed.
+        if self._verifier is not None:
+            try:
+                self._verifier.done.disconnect(self._on_verified)
+            except (RuntimeError, TypeError):
+                pass
         if self._client_id is not None:
             self._server.store.record_verification(self._client_id, result.status.value)
         self.status_label.setText(

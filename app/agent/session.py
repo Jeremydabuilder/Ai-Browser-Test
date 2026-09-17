@@ -32,7 +32,9 @@ step.
 
 from __future__ import annotations
 
+import gc
 import time
+import weakref
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -383,6 +385,26 @@ class AgentSession(QObject):
         self._steps: list[Step] = []
 
         # -- worker thread ------------------------------------------------
+        # A one-shot, targeted gc.collect() right here, before the worker
+        # thread starts - not gc.disable(), which stays off everywhere.
+        # This self <-> _worker <-> connection cycle (see shutdown()
+        # below) only unwinds via cyclic GC for the lifetime of the
+        # session, and Python's cyclic GC can run on whichever thread
+        # trips its allocation threshold. Confirmed directly (via
+        # qInstallMessageHandler + a live-QThread dump at the moment of
+        # the warning, chasing the same hazard in
+        # app/ui/mcp_server_settings.py's ClientSetupDialog): the danger
+        # isn't this session's own cycle so much as an accumulated
+        # backlog of already-unreachable cycles elsewhere in the app that
+        # nothing had yet forced a collection of - eventually swept by
+        # the interpreter's normal generation threshold tripping on
+        # *this* worker thread's own allocations once it starts running,
+        # destroying whatever GUI-thread-affine QObjects were in that
+        # backlog from the wrong thread. Collecting here, synchronously,
+        # on the GUI thread, before the thread starts, sweeps that
+        # backlog somewhere safe instead of leaving it for the worker
+        # thread to trip over.
+        gc.collect()
         self._thread = QThread()
         self._thread.setObjectName("claude-worker")
         self._worker = _ClaudeWorker(transport)
@@ -704,11 +726,39 @@ class AgentSession(QObject):
         more than once. quit()/wait() already tolerate that, and
         thread.finished only fires once per run regardless of how many
         times quit() is called, so no extra guard is needed here.
+
+        self -> self._worker (attribute) -> responded/failed/text_delta
+        connections -> bound methods of self -> self is a reference
+        cycle only the cyclic GC can break, and cyclic GC can run on
+        any thread - the same hazard class documented on
+        app/gui_dispatch.py. Unlike the mascot.py/retry-timer fixes,
+        this cannot be broken with a weakref-guarded closure: these
+        connections are genuinely cross-thread (the worker thread
+        emits, the GUI thread receives), and Qt/PySide6's automatic
+        connection-type detection needs a real QObject-bound slot to
+        route them as queued rather than direct - a plain closure risks
+        being treated as same-thread and reproducing the
+        "Thread tried to wait on itself" bug. So the cycle is broken
+        here instead, deterministically on the GUI thread via explicit
+        disconnect, before the thread is stopped. disconnect() raises
+        RuntimeError if already disconnected (a second shutdown() call,
+        or a connection that never completed) - harmless, so it's
+        swallowed.
         """
         self._cancelled = True
         if self._retry_timer is not None:
             self._retry_timer.stop()
             self._retry_timer = None
+        for signal, slot in (
+            (self._dispatch, self._worker.request),
+            (self._worker.responded, self._on_response),
+            (self._worker.failed, self._on_failure),
+            (self._worker.text_delta, self._on_text_delta),
+        ):
+            try:
+                signal.disconnect(slot)
+            except (RuntimeError, TypeError):
+                pass
         self._thread.quit()
         self._thread.wait(3000)
 
@@ -799,9 +849,23 @@ class AgentSession(QObject):
                             self._RETRY_BACKOFF_BASE_S * (2 ** (self._retry_attempt - 1))))
             self.retry_scheduled.emit(
                 error.message, delay, self._retry_attempt, self._MAX_AUTO_RETRIES)
+            # self -> self._retry_timer (attribute) -> connection -> bound
+            # method self._run_retry -> self is a reference cycle only
+            # cyclic GC can break, and cyclic GC can run on any thread -
+            # same hazard class as GuiDispatcher/MainWindow/mascot.py (see
+            # app/gui_dispatch.py's docstring). This timer fires on
+            # AgentSession's own thread (no cross-thread delivery), so a
+            # weakref-guarded closure is safe here.
+            session_ref = weakref.ref(self)
+
+            def _on_retry_timeout() -> None:
+                session = session_ref()
+                if session is not None:
+                    session._run_retry()
+
             timer = QTimer(self)
             timer.setSingleShot(True)
-            timer.timeout.connect(self._run_retry)
+            timer.timeout.connect(_on_retry_timeout)
             self._retry_timer = timer
             timer.start(max(1, int(delay * 1000)))
             return
