@@ -1,0 +1,131 @@
+name: Windows diagnostic - MCP verify-dialog crash in real suite order
+
+# TEMPORARY: same rationale as macos-mcp-sequence-diag.yml - the
+# verify-dialog crash passed clean in ISOLATION under cdb.exe on real
+# Windows CI hardware (run 35168275803) but has reproduced 2/2 in real
+# full-suite CI runs. This builds up the same real-suite-order prefix of
+# preceding modules one at a time under cdb.exe, stopping at the first
+# prefix size that crashes, then greedily minimizes. Manual trigger
+# only, entirely separate from release.yml. Delete this file once the
+# crash is root-caused.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  windows-mcp-sequence-diag:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Locate cdb.exe (x64)
+        id: find_cdb
+        shell: pwsh
+        run: |
+          $candidates = @()
+          $candidates += Get-ChildItem -Path "C:\Program Files (x86)\Windows Kits\10\Debuggers\x64" -Filter cdb.exe -Recurse -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName }
+          $candidates += Get-ChildItem -Path "C:\Program Files\Windows Kits\10\Debuggers\x64" -Filter cdb.exe -Recurse -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName }
+          $found = $candidates | Select-Object -First 1
+          if ($found) {
+            Write-Host "Found cdb.exe at: $found"
+            echo "cdb_path=$found" >> $env:GITHUB_OUTPUT
+            echo "found=true" >> $env:GITHUB_OUTPUT
+          } else {
+            Write-Host "::warning::cdb.exe (x64) not found - this job cannot proceed without it."
+            echo "found=false" >> $env:GITHUB_OUTPUT
+          }
+
+      - name: Build up the prefix and look for a crash, then minimize
+        if: steps.find_cdb.outputs.found == 'true'
+        shell: pwsh
+        env:
+          QT_QPA_PLATFORM: offscreen
+          PYTHONFAULTHANDLER: "1"
+          PYBROWSER_VERIFY_DIAG: "1"
+        run: |
+          $cdb = "${{ steps.find_cdb.outputs.cdb_path }}"
+          $pythonExe = (Get-Command python).Source
+          # Closest-to-farthest, matching `ls tests/test_*.py | sort` immediately
+          # before tests/test_mcp_client_setup_ui.py.
+          $preceding = @(
+            "tests.test_mcp_client_profiles",
+            "tests.test_mcp_client_configs",
+            "tests.test_mascot",
+            "tests.test_local_providers",
+            "tests.test_load_error",
+            "tests.test_live_config",
+            "tests.test_knowledge_settings_ui",
+            "tests.test_knowledge_main_window_integration"
+          )
+          $target = "tests.test_mcp_client_setup_ui"
+
+          function Run-Seq($label, [string[]]$modules) {
+            $all = $modules + $target
+            Write-Host "::group::sequence [$label]: $($all -join ' ')"
+            $logFile = "seq_$label.log"
+            & $cdb -g -G -o -c "~*k; .exr -1; q" $pythonExe -m unittest @all -v > $logFile 2>&1
+            $status = $LASTEXITCODE
+            Write-Host "exit=$status"
+            Write-Host "::endgroup::"
+            return $status
+          }
+
+          $crashedSet = $null
+          for ($n = 1; $n -le $preceding.Count; $n++) {
+            $prefix = $preceding[0..($n - 1)]
+            $status = Run-Seq "prefix_$n" $prefix
+            if ($status -ne 0) {
+              Write-Host "::error::Crash reproduced with $n preceding module(s): $($prefix -join ' ')"
+              Get-Content "seq_prefix_$n.log"
+              $crashedSet = $prefix
+              break
+            }
+          }
+
+          if (-not $crashedSet) {
+            Write-Host "No crash reproduced with any prefix size 1..$($preceding.Count). Nothing to minimize."
+            exit 0
+          }
+
+          Write-Host "=== Minimizing the crashing set: $($crashedSet -join ' ') ==="
+          $minimal = [System.Collections.ArrayList]$crashedSet
+          $changed = $true
+          while ($changed) {
+            $changed = $false
+            for ($i = 0; $i -lt $minimal.Count; $i++) {
+              $candidate = @($minimal) | Where-Object { $_ -ne $minimal[$i] -or $false }
+              $candidate = @($minimal.Clone())
+              $candidate.RemoveAt($i)
+              if ($candidate.Count -eq 0) { continue }
+              $status = Run-Seq "min_try" $candidate
+              if ($status -ne 0) {
+                Write-Host "Still crashes without '$($minimal[$i])' - removing it."
+                $minimal = [System.Collections.ArrayList]$candidate
+                $changed = $true
+                break
+              }
+            }
+          }
+
+          Write-Host "::error::Minimal reproducing sequence: $($minimal -join ' ') $target"
+          "$($minimal -join ' ') $target" | Out-File -FilePath minimal_sequence.txt
+
+      - name: Upload all sequence logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-mcp-sequence-diag-logs
+          path: |
+            seq_*.log
+            minimal_sequence.txt
+          if-no-files-found: warn
