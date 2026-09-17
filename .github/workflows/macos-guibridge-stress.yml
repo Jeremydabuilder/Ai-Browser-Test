@@ -1,0 +1,118 @@
+name: macOS stress validation - GuiBridge redesign
+
+# TEMPORARY: same purpose as windows-guibridge-stress.yml - validates the
+# GuiBridge queue+QTimer redesign (app/gui_dispatch.py). Four stages, each
+# stopping at the first genuine crash (log-content detection, not exit
+# code - is_real_crash below). Uses lldb with explicit "continue"s past
+# the process's own benign initial exec stop (see macos-mcp-sequence-
+# diag.yml's fix - lldb otherwise reports every run as "crashed" after
+# ~2s with a trivial dyld_start backtrace).
+#   1. the exact target test, 50x
+#   2. the minimal reproducing sequence (test_mcp_client_profiles +
+#      target), 30x
+#   3. the MCP test group, 10x
+#   4. the full suite, 2x (tests.test_mcp_integration excluded - see
+#      inline comment)
+# Manual trigger only, entirely separate from release.yml. Delete this
+# file once the fix is validated and merged into the real release flow.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  macos-guibridge-stress:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Confirm lldb is available
+        run: lldb --version
+
+      - name: Run stress stages
+        env:
+          QT_QPA_PLATFORM: offscreen
+          QTWEBENGINE_DISABLE_SANDBOX: "1"
+          PYTHONFAULTHANDLER: "1"
+        run: |
+          set +e
+
+          is_real_crash() {
+            local log="$1"
+            if grep -qE '^Ran [0-9]+ tests? in' "$log" \
+                && grep -qE '^(OK|FAILED \()' "$log"; then
+              return 1
+            fi
+            return 0
+          }
+
+          run_stage() {
+            local label="$1"; local repeats="$2"; shift 2
+            echo "::group::=== Stage: $label ($repeats runs) ==="
+            for i in $(seq 1 "$repeats"); do
+              local log="stress_${label}_${i}.log"
+              lldb --batch \
+                -o "run" -o "continue" -o "continue" -o "continue" \
+                -o "thread backtrace all" -o "quit" -- \
+                python3 -m unittest "$@" -v > "$log" 2>&1
+              local status=$?
+              if is_real_crash "$log"; then
+                echo "::error::[$label] run $i/$repeats CRASHED (exit=$status)"
+                cat "$log"
+                echo "::endgroup::"
+                return 1
+              fi
+              echo "[$label] run $i/$repeats ok (exit=$status)"
+            done
+            echo "::endgroup::"
+            return 0
+          }
+
+          OK1=true; OK2=true; OK3=true; OK4=true
+
+          TARGET="tests.test_mcp_client_setup_ui.ClientSetupDialogTests.test_verifying_a_real_pairing_reaches_verified"
+          run_stage "target" 50 "$TARGET" || OK1=false
+
+          run_stage "minimal_repro" 30 tests.test_mcp_client_profiles tests.test_mcp_client_setup_ui || OK2=false
+
+          run_stage "mcp_group" 10 \
+            tests.test_gui_bridge tests.test_mcp_client_configs tests.test_mcp_client_profiles \
+            tests.test_mcp_client_setup_ui tests.test_mcp_server_integration \
+            tests.test_mcp_server_settings_ui tests.test_mcp_server_verification \
+            tests.test_mcp_stdio_bridge || OK3=false
+
+          # tests.test_mcp_integration is EXCLUDED here: confirmed (via git
+          # stash) to crash even on the unmodified pre-GuiBridge-fix code -
+          # a separate, pre-existing bug unrelated to this redesign. Kept
+          # out so this stage is an honest signal about GuiBridge, not a
+          # false failure from something else entirely. Tracked as a
+          # separate follow-up, same as the highlights issue.
+          ALL_MODULES=$(ls tests/test_*.py | sed 's#tests/##; s#\.py##' | grep -v '^test_mcp_integration$' | sed 's/^/tests./')
+          run_stage "full_suite" 2 $ALL_MODULES || OK4=false
+
+          echo "=== Summary ==="
+          echo "target (50x): $([ "$OK1" = true ] && echo CLEAN || echo CRASHED)"
+          echo "minimal_repro (30x): $([ "$OK2" = true ] && echo CLEAN || echo CRASHED)"
+          echo "mcp_group (10x): $([ "$OK3" = true ] && echo CLEAN || echo CRASHED)"
+          echo "full_suite (2x): $([ "$OK4" = true ] && echo CLEAN || echo CRASHED)"
+          if ! $OK1 || ! $OK2 || ! $OK3 || ! $OK4; then
+            echo "::error::One or more stress stages crashed - see logs above"
+            exit 1
+          fi
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-guibridge-stress-logs
+          path: stress_*.log
+          if-no-files-found: warn

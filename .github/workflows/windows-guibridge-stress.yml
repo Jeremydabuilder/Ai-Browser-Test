@@ -1,0 +1,112 @@
+name: Windows stress validation - GuiBridge redesign
+
+# TEMPORARY: validates the GuiBridge queue+QTimer redesign (replacing the
+# old cross-thread Qt Signal(object) design that produced a confirmed
+# native crash - see app/gui_dispatch.py's docstring for the exact
+# backtrace). Four stages, each stopping at the first genuine crash
+# (detected by log content, not exit code - see is_real_crash below,
+# same principle as windows-mcp-sequence-diag.yml):
+#   1. the exact target test, 50x
+#   2. the minimal reproducing sequence (test_local_providers,
+#      test_load_error + target), 30x
+#   3. the MCP test group, 10x
+#   4. the full suite, 2x
+# Manual trigger only, entirely separate from release.yml. Delete this
+# file once the fix is validated and merged into the real release flow.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  windows-guibridge-stress:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run stress stages
+        shell: pwsh
+        env:
+          QT_QPA_PLATFORM: offscreen
+          PYTHONFAULTHANDLER: "1"
+        run: |
+          $ErrorActionPreference = "Continue"
+          $pythonExe = (Get-Command python).Source
+
+          function Test-IsRealCrash($logFile) {
+            $text = Get-Content $logFile -Raw -ErrorAction SilentlyContinue
+            if (-not $text) { return $true }
+            $hasSummary = ($text -match '(?m)^Ran \d+ tests? in') -and ($text -match '(?m)^(OK\b|FAILED \()')
+            return -not $hasSummary
+          }
+
+          function Run-Stage($label, [string[]]$args_, [int]$repeats) {
+            Write-Host "::group::=== Stage: $label ($repeats runs) ==="
+            for ($i = 1; $i -le $repeats; $i++) {
+              $logFile = "stress_${label}_$i.log"
+              & $pythonExe -m unittest @args_ -v > $logFile 2>&1
+              $status = $LASTEXITCODE
+              $isCrash = Test-IsRealCrash $logFile
+              if ($isCrash) {
+                Write-Host "::error::[$label] run $i/$repeats CRASHED (exit=$status)"
+                Get-Content $logFile
+                Write-Host "::endgroup::"
+                return $false
+              }
+              Write-Host "[$label] run $i/$repeats ok (exit=$status)"
+            }
+            Write-Host "::endgroup::"
+            return $true
+          }
+
+          $target = "tests.test_mcp_client_setup_ui.ClientSetupDialogTests.test_verifying_a_real_pairing_reaches_verified"
+          $ok1 = Run-Stage "target" @($target) 50
+
+          $minimal = @("tests.test_local_providers", "tests.test_load_error", "tests.test_mcp_client_setup_ui")
+          $ok2 = Run-Stage "minimal_repro" $minimal 30
+
+          $mcpGroup = @(
+            "tests.test_gui_bridge", "tests.test_mcp_client_configs", "tests.test_mcp_client_profiles",
+            "tests.test_mcp_client_setup_ui", "tests.test_mcp_server_integration",
+            "tests.test_mcp_server_settings_ui", "tests.test_mcp_server_verification",
+            "tests.test_mcp_stdio_bridge"
+          )
+          $ok3 = Run-Stage "mcp_group" $mcpGroup 10
+
+          # tests.test_mcp_integration is EXCLUDED here: confirmed (via git
+          # stash) to crash even on the unmodified pre-GuiBridge-fix code -
+          # a separate, pre-existing bug unrelated to this redesign. Kept
+          # out so this stage is an honest signal about GuiBridge, not a
+          # false failure from something else entirely. Tracked as a
+          # separate follow-up, same as the highlights issue.
+          $allModules = (Get-ChildItem tests/test_*.py | Sort-Object Name |
+            Where-Object { $_.BaseName -ne "test_mcp_integration" } |
+            ForEach-Object { "tests." + $_.BaseName })
+          $ok4 = Run-Stage "full_suite" $allModules 2
+
+          Write-Host "=== Summary ==="
+          Write-Host "target (50x): $(if ($ok1) {'CLEAN'} else {'CRASHED'})"
+          Write-Host "minimal_repro (30x): $(if ($ok2) {'CLEAN'} else {'CRASHED'})"
+          Write-Host "mcp_group (10x): $(if ($ok3) {'CLEAN'} else {'CRASHED'})"
+          Write-Host "full_suite (2x): $(if ($ok4) {'CLEAN'} else {'CRASHED'})"
+          if (-not ($ok1 -and $ok2 -and $ok3 -and $ok4)) {
+            Write-Host "::error::One or more stress stages crashed - see logs above"
+            exit 1
+          }
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-guibridge-stress-logs
+          path: stress_*.log
+          if-no-files-found: warn
