@@ -7,6 +7,8 @@ panel into that slot without touching any of this code's structure.
 
 from __future__ import annotations
 
+import weakref
+
 from PySide6.QtCore import QTimer, QUrl, Qt, Signal
 from PySide6.QtGui import QAction, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
@@ -249,8 +251,25 @@ class MainWindow(QMainWindow):
             missions=self.missions, graph_store=self.mission_graph)
         if self.settings.mcp_server_enabled:
             self.mcp_server.start()
-        self.mcp_server.status_changed.connect(
-            lambda running: setattr(self.settings, "mcp_server_enabled", running))
+        # A lambda capturing self here would hold a strong reference back
+        # to this MainWindow from Qt's own connection bookkeeping - this
+        # MainWindow -> self.mcp_server (attribute) -> connection -> lambda
+        # -> self - is a reference cycle only the cyclic GC can break, and
+        # cyclic GC can run on any thread. Reproduced: this exact cycle
+        # crashed a macOS stress run inside QtCore!QCoreApplication::
+        # sendEvent on a Chromium/QtWebEngine thread ('CrBrowserMain'),
+        # immediately after "QObject::killTimer: Timers cannot be stopped
+        # from another thread" - the same failure mode GuiDispatcher's own
+        # weakref fix addresses (see app/gui_dispatch.py). A weakref here
+        # breaks the cycle the same way.
+        window_ref = weakref.ref(self)
+
+        def _on_mcp_status_changed(running: bool) -> None:
+            window = window_ref()
+            if window is not None:
+                window.settings.mcp_server_enabled = running
+
+        self.mcp_server.status_changed.connect(_on_mcp_status_changed)
 
         # A dismissible strip above the tabs for things the status bar is too
         # quiet for: blocked certificates, failed loads, crashed renderers.
