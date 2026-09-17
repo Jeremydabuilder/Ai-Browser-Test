@@ -1,0 +1,117 @@
+name: macOS diagnostic - MCP verify-dialog crash in real suite order
+
+# TEMPORARY: the verify-dialog crash was 0/50 in ISOLATION under lldb
+# (macos-diag.yml) but has recurred in real full-suite CI runs - meaning
+# isolation may not be reproducing whatever suite-order/resource state
+# actually triggers it. This runs the modules that immediately precede
+# tests/test_mcp_client_setup_ui.py in real `unittest discover` order
+# (alphabetical - confirmed via `ls tests/test_*.py | sort`), building up
+# the prefix one module at a time until a crash reproduces, then greedily
+# removes modules from that crashing set to find a smaller reproducer.
+# Manual trigger only, entirely separate from release.yml. Delete this
+# file once the crash is root-caused.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  macos-mcp-sequence-diag:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Confirm lldb is available
+        run: lldb --version
+
+      - name: Build up the prefix and look for a crash, then minimize
+        env:
+          QT_QPA_PLATFORM: offscreen
+          QTWEBENGINE_DISABLE_SANDBOX: "1"
+          PYTHONFAULTHANDLER: "1"
+          PYBROWSER_VERIFY_DIAG: "1"
+        run: |
+          set +e
+          # Closest-to-farthest, matching `ls tests/test_*.py | sort` immediately
+          # before tests/test_mcp_client_setup_ui.py.
+          PRECEDING=(
+            tests.test_mcp_client_profiles
+            tests.test_mcp_client_configs
+            tests.test_mascot
+            tests.test_local_providers
+            tests.test_load_error
+            tests.test_live_config
+            tests.test_knowledge_settings_ui
+            tests.test_knowledge_main_window_integration
+          )
+          TARGET=tests.test_mcp_client_setup_ui
+
+          run_seq() {
+            # $1 = label, remaining args = module list (target always last)
+            local label="$1"; shift
+            echo "::group::sequence [$label]: $* $TARGET"
+            lldb --batch -o "run" -o "thread backtrace all" -o "quit" -- \
+              python3 -m unittest "$@" "$TARGET" -v \
+              > "/tmp/seq_${label}.log" 2>&1
+            local status=$?
+            echo "exit=$status"
+            echo "::endgroup::"
+            return $status
+          }
+
+          CRASHED_SET=()
+          for n in $(seq 1 "${#PRECEDING[@]}"); do
+            PREFIX=("${PRECEDING[@]:0:$n}")
+            if ! run_seq "prefix_$n" "${PREFIX[@]}"; then
+              echo "::error::Crash reproduced with $n preceding module(s): ${PREFIX[*]}"
+              cat "/tmp/seq_prefix_$n.log"
+              CRASHED_SET=("${PREFIX[@]}")
+              break
+            fi
+          done
+
+          if [ "${#CRASHED_SET[@]}" -eq 0 ]; then
+            echo "No crash reproduced with any prefix size 1..${#PRECEDING[@]}. Nothing to minimize."
+            exit 0
+          fi
+
+          echo "=== Minimizing the crashing set: ${CRASHED_SET[*]} ==="
+          MINIMAL=("${CRASHED_SET[@]}")
+          changed=true
+          while [ "$changed" = true ]; do
+            changed=false
+            for i in "${!MINIMAL[@]}"; do
+              CANDIDATE=("${MINIMAL[@]}")
+              unset 'CANDIDATE[i]'
+              CANDIDATE=("${CANDIDATE[@]}")  # re-index
+              if [ "${#CANDIDATE[@]}" -eq 0 ]; then continue; fi
+              if ! run_seq "min_try" "${CANDIDATE[@]}"; then
+                echo "Still crashes without '${MINIMAL[i]}' - removing it."
+                MINIMAL=("${CANDIDATE[@]}")
+                changed=true
+                break
+              fi
+            done
+          done
+
+          echo "::error::Minimal reproducing sequence: ${MINIMAL[*]} $TARGET"
+          echo "${MINIMAL[*]} $TARGET" > /tmp/minimal_sequence.txt
+
+      - name: Upload all sequence logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-mcp-sequence-diag-logs
+          path: |
+            /tmp/seq_*.log
+            /tmp/minimal_sequence.txt
+          if-no-files-found: warn

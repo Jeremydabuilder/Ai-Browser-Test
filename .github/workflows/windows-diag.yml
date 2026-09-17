@@ -1,0 +1,95 @@
+name: Windows diagnostic - GuiBridge cross-thread crash
+
+# TEMPORARY: chasing a consistently-reproducing native access violation
+# (0xC0000005) on real Windows CI hardware in test_mcp_client_setup_ui.
+# ClientSetupDialogTests.test_verifying_a_real_pairing_reaches_verified,
+# happening inside Qt's own QEventLoop.exec() while GuiBridge delivers a
+# cross-thread queued signal from an HTTP-handler thread to the GUI
+# thread. Manual trigger only, entirely separate from release.yml.
+# Delete this file once the crash is root-caused and fixed.
+#
+# Does NOT assume cdb.exe's path - the runner image is not guaranteed to
+# ship the Windows SDK debugging tools, so this checks for it first and
+# reports plainly if it's missing rather than failing silently or
+# skipping the diagnostic value.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  windows-diag:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Locate cdb.exe (Windows SDK Debugging Tools)
+        id: find_cdb
+        shell: pwsh
+        run: |
+          $candidates = @()
+          $onPath = Get-Command cdb.exe -ErrorAction SilentlyContinue
+          if ($onPath) { $candidates += $onPath.Source }
+          $candidates += Get-ChildItem -Path "C:\Program Files (x86)\Windows Kits\10\Debuggers" -Filter cdb.exe -Recurse -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName }
+          $candidates += Get-ChildItem -Path "C:\Program Files\Windows Kits\10\Debuggers" -Filter cdb.exe -Recurse -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName }
+          $found = $candidates | Select-Object -First 1
+          if ($found) {
+            Write-Host "Found cdb.exe at: $found"
+            echo "cdb_path=$found" >> $env:GITHUB_OUTPUT
+            echo "found=true" >> $env:GITHUB_OUTPUT
+          } else {
+            Write-Host "::warning::cdb.exe not found anywhere on this runner (checked PATH and both Windows Kits install locations). Will fall back to PYTHONFAULTHANDLER-only diagnostics - no native backtrace this run."
+            echo "found=false" >> $env:GITHUB_OUTPUT
+          }
+
+      - name: Run the failing test under cdb.exe
+        if: steps.find_cdb.outputs.found == 'true'
+        shell: pwsh
+        env:
+          QT_QPA_PLATFORM: offscreen
+          PYTHONFAULTHANDLER: "1"
+          PYBROWSER_VERIFY_DIAG: "1"
+        run: |
+          $cdb = "${{ steps.find_cdb.outputs.cdb_path }}"
+          $pythonExe = (Get-Command python).Source
+          # -g: ignore initial breakpoint: -G: ignore final breakpoint (let it run to exit/crash)
+          # -c: batch command string run once the debugger attaches/breaks:
+          #   ~*k = stack trace for all threads; .exr -1 = last exception record;
+          #   lm = loaded modules; q = quit
+          & $cdb -g -G -o -c "~*k; .exr -1; lm; q" $pythonExe -m unittest `
+            tests.test_mcp_client_setup_ui.ClientSetupDialogTests.test_verifying_a_real_pairing_reaches_verified `
+            -v 2>&1 | Tee-Object -FilePath cdb-output.log
+          Write-Host "--- cdb exit code: $LASTEXITCODE ---"
+
+      - name: Run the failing test with faulthandler only (no debugger available)
+        if: steps.find_cdb.outputs.found == 'false'
+        shell: pwsh
+        env:
+          QT_QPA_PLATFORM: offscreen
+          PYTHONFAULTHANDLER: "1"
+          PYBROWSER_VERIFY_DIAG: "1"
+        run: |
+          $ErrorActionPreference = "Continue"
+          python -m unittest tests.test_mcp_client_setup_ui.ClientSetupDialogTests.test_verifying_a_real_pairing_reaches_verified -v `
+            > fallback-output.log 2>&1
+          Write-Host "exit code: $LASTEXITCODE"
+          Get-Content fallback-output.log
+
+      - name: Upload diagnostic output
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-diag-logs
+          path: |
+            cdb-output.log
+            fallback-output.log
+          if-no-files-found: warn

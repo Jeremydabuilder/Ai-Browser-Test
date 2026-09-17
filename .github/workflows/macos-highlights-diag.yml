@@ -1,0 +1,72 @@
+name: macOS diagnostic - highlights-integration crash
+
+# TEMPORARY: chasing a native crash observed once in a full-suite CI run
+# in tests/test_highlights_integration.py (setUp's pump() right after
+# constructing a real MainWindow/QWebEngineView), preceded by Chromium
+# messages ("bootstrap_look_up ... MachPortRendezvousServer ... No
+# rendezvous client, terminating process (parent died?)") suggesting a
+# QtWebEngine helper subprocess failed its own startup handshake. This is
+# investigated SEPARATELY from the GuiBridge/verify-dialog crash in
+# windows-diag.yml / macos-diag.yml - do not assume they're related until
+# evidence says so. Manual trigger only, entirely separate from
+# release.yml. Delete this file once the crash is root-caused.
+
+on:
+  workflow_dispatch:
+    inputs:
+      attempts:
+        description: "How many times to run the whole file in a row"
+        type: number
+        default: 20
+
+jobs:
+  macos-highlights-diag:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Confirm lldb is available
+        run: lldb --version
+
+      - name: Run the whole file repeatedly under lldb
+        env:
+          QT_QPA_PLATFORM: offscreen
+          QTWEBENGINE_DISABLE_SANDBOX: "1"
+          PYTHONFAULTHANDLER: "1"
+        run: |
+          set +e
+          ATTEMPTS="${{ inputs.attempts }}"
+          for i in $(seq 1 "$ATTEMPTS"); do
+            echo "::group::attempt $i"
+            lldb --batch -o "run" -o "thread backtrace all" -o "quit" -- \
+              python3 -m unittest tests.test_highlights_integration -v \
+              > "/tmp/highlights_attempt_$i.log" 2>&1
+            status=$?
+            echo "exit=$status"
+            echo "::endgroup::"
+            if [ "$status" -ne 0 ]; then
+              echo "::error::Attempt $i failed/crashed (exit $status) - full log follows"
+              cat "/tmp/highlights_attempt_$i.log"
+              echo "$i" > /tmp/highlights_crashed_attempt.txt
+              break
+            fi
+          done
+          echo "Ran $([ -f /tmp/highlights_crashed_attempt.txt ] && cat /tmp/highlights_crashed_attempt.txt || echo "$ATTEMPTS") attempt(s) before stopping."
+
+      - name: Upload all attempt logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-highlights-diag-logs
+          path: /tmp/highlights_attempt_*.log
+          if-no-files-found: warn
