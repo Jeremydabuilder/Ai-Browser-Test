@@ -99,6 +99,20 @@ class Phase3TestCase(unittest.TestCase):
         self.assertEqual(self.manager.state(server_id), ConnectionState.CONNECTED,
                          self.manager.connection(server_id).last_error)
 
+    def break_connection(self, server_id: str = "fake") -> None:
+        """Swap the real (connected) client for _BrokenClient(), so the
+        next call against it raises like a dead transport - but close
+        the real one first. Directly overwriting connection.client
+        (which every ConnectionRecoveryTests test used to do) drops the
+        only reference to that real StdioMcpClient without ever closing
+        it - its subprocess, and asyncio's own per-subprocess reaper
+        thread waiting on it, then leak for the rest of the process.
+        Confirmed directly: exactly three background threads still
+        blocked in asyncio's _do_waitpid at interpreter shutdown, one
+        per ConnectionRecoveryTests test that did this."""
+        self.manager._disconnect_internal(server_id)
+        self.manager.connection(server_id).client = _BrokenClient()
+
     def inject_destructive_tool(self, server_id: str = "fake",
                                 name: str = "delete_everything") -> None:
         """fake_mcp_server.py has no destructive tool of its own (nothing
@@ -309,8 +323,7 @@ class ConnectionRecoveryTests(Phase3TestCase):
     def test_disconnect_signal_carries_server_and_tool(self):
         self.add_server()
         self.connect_and_wait()
-        connection = self.manager.connection("fake")
-        connection.client = _BrokenClient()
+        self.break_connection()
 
         seen = []
         self.manager.connection_dropped.connect(
@@ -325,8 +338,7 @@ class ConnectionRecoveryTests(Phase3TestCase):
     def test_reconnect_after_drop_does_not_replay_the_failed_call(self):
         self.add_server()
         self.connect_and_wait()
-        connection = self.manager.connection("fake")
-        connection.client = _BrokenClient()
+        self.break_connection()
 
         registry = ToolRegistry(self.browser, mcp=self.manager)
         outcome = registry.run("mcp.fake.create_item", {"item_id": "x1", "text": "hi"})
@@ -347,8 +359,7 @@ class ConnectionRecoveryTests(Phase3TestCase):
     def test_resuming_a_read_after_reconnect_succeeds_once(self):
         self.add_server()
         self.connect_and_wait()
-        connection = self.manager.connection("fake")
-        connection.client = _BrokenClient()
+        self.break_connection()
         registry = ToolRegistry(self.browser, mcp=self.manager)
         registry.run("mcp.fake.echo", {"phrase": "hi"}).mcp_future.wait(5000)
         self.assertEqual(self.manager.state("fake"), ConnectionState.ERROR)

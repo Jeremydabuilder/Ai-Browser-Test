@@ -67,6 +67,22 @@ from app.mcp.types import (
     Transport,
 )
 
+# Temporary diagnostic instrumentation for the McpConnectionManager
+# shutdown/asyncio-lifecycle investigation (background loop thread still
+# running at interpreter exit, causing hangs and a segfault under full-
+# suite load). Off by default (PYBROWSER_MCP_SHUTDOWN_DIAG unset) - a
+# normal run never touches this. Never logs secrets: only thread ids,
+# loop state booleans, and task/client counts. Remove once the fix is
+# validated.
+_SHUTDOWN_DIAG = os.environ.get("PYBROWSER_MCP_SHUTDOWN_DIAG") == "1"
+
+
+def _diag(msg: str) -> None:
+    if _SHUTDOWN_DIAG:
+        import sys
+        print(f"MCPSHUTDOWNDIAG [{threading.current_thread().name}/{threading.get_ident()}] {msg}",
+              file=sys.stderr, flush=True)
+
 
 class McpConnection:
     """Live state for one configured server. Read from the GUI thread only
@@ -210,6 +226,13 @@ class McpConnectionManager(QObject):
         self._loop: asyncio.AbstractEventLoop | None = None
         self._loop_ready = threading.Event()
         self._gui_dispatcher = GuiDispatcher()
+        #: Set (GUI thread only) the moment shutdown() begins, so every
+        #: entry point that would otherwise schedule new work onto the
+        #: loop (connect_server/run_tool/_disconnect_internal) can refuse
+        #: it instead - see the shutdown contract docstring below.
+        self._shutting_down = False
+        self._shutdown_lock = threading.Lock()
+        self._shutdown_done = False
         self._thread = threading.Thread(target=self._run_loop, name="mcp-io", daemon=True)
         self._thread.start()
         self._loop_ready.wait(timeout=5.0)
@@ -227,19 +250,130 @@ class McpConnectionManager(QObject):
         asyncio.set_event_loop(loop)
         self._loop = loop
         self._loop_ready.set()
+        _diag(f"_run_loop starting id={threading.get_ident()}")
         loop.run_forever()
+        _diag(f"_run_loop run_forever() returned id={threading.get_ident()} "
+              f"is_running={loop.is_running()} is_closed={loop.is_closed()}")
+        # Deliberately NOT closed here: shutdown() closes it after joining
+        # this thread (see below) - by then run_forever() has returned
+        # (this line), nothing else touches the loop, and the OS thread
+        # that ran it is confirmed dead, so there is no thread-affinity
+        # question left to get wrong either way; this just keeps every
+        # step of the contract in one place instead of split across two
+        # threads.
 
     def shutdown(self) -> None:
-        """Close every connection and stop the background loop. Call once,
-        at application exit."""
+        """The one explicit shutdown sequence for this manager, run once,
+        synchronously, from the GUI thread (application exit, or a test's
+        tearDown): mark shutting down -> reject new work (the
+        _shutting_down guards in connect_server/run_tool/
+        _disconnect_internal) -> collect and clear every connection's
+        client here on the GUI thread (McpConnection state is GUI-thread-
+        only by construction, see its docstring) -> hand those clients to
+        a cleanup coroutine that runs entirely on the loop's own thread
+        (closes each client - which itself terminates/waits/kills its
+        subprocess and cancels its reader tasks - then cancels and awaits
+        every task still left on this loop, which is dedicated to this
+        manager alone so nothing else could ever be on it) -> block until
+        that coroutine finishes or times out -> join the background
+        thread -> only then close the loop, since closing while the
+        thread that ran it might still be mid-callback is exactly the
+        native-crash-shaped mistake this whole investigation started
+        from -> drop every reference so nothing here can be mistaken for
+        still-live state.
+
+        Idempotent: a second call (or one after startup itself failed, or
+        after the background thread already exited on its own) is a
+        harmless no-op - guarded by _shutdown_lock/_shutdown_done rather
+        than by re-checking self._loop, since clearing self._loop is
+        itself one of this method's own side effects.
+
+        Never relies on __del__: nothing here is deferred to garbage
+        collection, cyclic or otherwise - that is precisely the hazard
+        class the sibling Qt/GuiDispatcher investigation (see
+        app/gui_dispatch.py) already had to fix twice.
+        """
+        with self._shutdown_lock:
+            if self._shutdown_done:
+                return
+            self._shutdown_done = True
+        self._shutting_down = True
         self._gui_dispatcher.shutdown()
-        if self._loop is None:
+        if self._loop is None or self._thread is None:
             return
+        _diag(f"shutdown start thread={self._thread.ident} "
+              f"is_running={self._loop.is_running()}")
+        # McpConnection.client is documented GUI-thread-only state - read
+        # and cleared here, not inside the cleanup coroutine below, which
+        # runs on the loop's own background thread.
+        clients_to_close = []
         for connection in self._connections.values():
-            client = connection.client
-            if client is not None:
-                asyncio.run_coroutine_threadsafe(client.close(), self._loop)
-        self._loop.call_soon_threadsafe(self._loop.stop)
+            if connection.client is not None:
+                clients_to_close.append(connection.client)
+                connection.client = None
+        if threading.get_ident() == self._thread.ident:
+            # Not a path anything in this codebase takes today (shutdown()
+            # is only ever called from the GUI thread) - guarded anyway,
+            # since both run_coroutine_threadsafe().result() and
+            # self._thread.join() below would deadlock (the latter would
+            # raise RuntimeError: cannot join current thread) if it ever
+            # were called from the loop's own thread. Schedule what can
+            # be done without blocking and return.
+            self._loop.call_soon(self._loop.stop)
+            return
+        try:
+            future = asyncio.run_coroutine_threadsafe(
+                self._async_shutdown(clients_to_close), self._loop)
+            future.result(timeout=10.0)
+        except Exception as exc:  # noqa: BLE001 - cleanup must never block stop()/join()
+            _diag(f"shutdown _async_shutdown raised/timed out: {exc!r}")
+            self._loop.call_soon_threadsafe(self._loop.stop)
+        self._thread.join(timeout=10.0)
+        thread_exited = not self._thread.is_alive()
+        _diag(f"shutdown thread join returned exited={thread_exited}")
+        if thread_exited:
+            # Only safe once the OS thread that ran it is confirmed dead -
+            # nothing can still be mid-callback on it by this point.
+            self._loop.close()
+        _diag(f"shutdown end loop_closed={self._loop.is_closed() if thread_exited else 'unknown'}")
+        self._loop = None
+        self._thread = None
+
+    async def _async_shutdown(self, clients: list) -> None:
+        """Runs entirely on the manager's own dedicated loop/thread - the
+        one place every client and task can be touched directly without
+        any cross-thread concern. This loop is created fresh in
+        _run_loop and never shared with anything else, so every task
+        asyncio.all_tasks() finds on it is manager-owned by construction;
+        cancelling "everything left" here can never reach into unrelated
+        work the way it could on a shared/default loop.
+        """
+        for client in clients:
+            try:
+                await asyncio.wait_for(client.close(), timeout=5.0)
+            except Exception as exc:  # noqa: BLE001 - one bad close must not skip the rest
+                _diag(f"_async_shutdown client.close() failed: {exc!r}")
+        current = asyncio.current_task()
+        pending = [t for t in asyncio.all_tasks(loop=self._loop) if t is not current]
+        _diag(f"_async_shutdown cancelling {len(pending)} pending task(s)")
+        for task in pending:
+            task.cancel()
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
+        # NOT self._loop.stop() directly: run_coroutine_threadsafe's
+        # result only reaches shutdown()'s future.result() below via a
+        # done-callback the Task machinery schedules with call_soon() as
+        # THIS coroutine returns - i.e. for the loop's *next* iteration.
+        # Calling stop() synchronously, right here, sets the loop's
+        # stopping flag before that next iteration ever runs, so the
+        # callback that would chain our result back never fires and
+        # shutdown() always sees its 10s timeout instead of a real
+        # result (confirmed directly: PYBROWSER_MCP_SHUTDOWN_DIAG showed
+        # this coroutine completing - loop.run_forever() returning -
+        # while future.result() still reported TimeoutError). Scheduling
+        # stop() with call_soon() queues it for that same next iteration,
+        # after the chaining callback, instead of pre-empting it.
+        self._loop.call_soon(self._loop.stop)
 
     def _post_to_gui_thread(self, callback: Callable[[], None]) -> None:
         """Called from the background thread - queues ``callback`` to run
@@ -291,6 +425,8 @@ class McpConnectionManager(QObject):
 
     # -- connecting -----------------------------------------------------
     def connect_server(self, server_id: str) -> None:
+        if self._shutting_down:
+            return
         connection = self._connections.get(server_id)
         if connection is None or self._loop is None:
             return
@@ -322,6 +458,8 @@ class McpConnectionManager(QObject):
             self.server_changed.emit(server_id)
 
     def _disconnect_internal(self, server_id: str) -> None:
+        if self._shutting_down:
+            return
         connection = self._connections.get(server_id)
         if connection is None or connection.client is None or self._loop is None:
             return
@@ -332,6 +470,7 @@ class McpConnectionManager(QObject):
     async def _connect_and_discover(self, server_id: str) -> None:
         connection = self._connections[server_id]
         config = connection.config
+        client = None
         try:
             client = _build_client(config)
             await client.connect(timeout=config.connect_timeout_s)
@@ -349,12 +488,43 @@ class McpConnectionManager(QObject):
                     input_schema=schema,
                     sensitivity=classify(raw["name"], schema),
                 ))
+        except asyncio.CancelledError:
+            # Shutdown cancelled this task mid-handshake - if a client was
+            # already constructed (and may already have a live subprocess
+            # or HTTP connection open), it was never published to
+            # connection.client, so nothing else will ever close it.
+            # Closed here, on this same loop/thread, before the
+            # cancellation propagates - never left for a subprocess
+            # finalizer to run after the loop is gone.
+            #
+            # Known residual gap: if cancellation lands while still
+            # suspended *inside* asyncio.create_subprocess_exec() itself
+            # (client._process not yet assigned - a race narrow enough
+            # that it needs an artificial back-to-back connect_server()+
+            # shutdown() with no event-loop turn between them to hit),
+            # this task can be left "cancelling" forever, since Python's
+            # own subprocess-transport creation doesn't unwind cleanly
+            # under cancellation there - confirmed directly against
+            # CPython's asyncio, not this codebase's own code. shutdown()
+            # never hangs on it either way: its own bounded fallback
+            # (see shutdown()'s docstring) forces the loop to stop and
+            # the thread to exit regardless, at the cost of leaking that
+            # one OS subprocess in this specific narrow race rather than
+            # the whole shutdown.
+            if client is not None:
+                try:
+                    await client.close()
+                except Exception:  # noqa: BLE001 - shutdown proceeds regardless
+                    pass
+            raise
         except McpTimeoutError as exc:
             message = str(exc)
+            await self._close_failed_client(client)
             self._post_to_gui_thread(lambda: self._on_connect_error(server_id, message))
             return
         except McpProtocolError as exc:
             message = str(exc)
+            await self._close_failed_client(client)
             self._post_to_gui_thread(lambda: self._on_connect_error(server_id, message))
             return
         except FileNotFoundError as exc:
@@ -363,13 +533,35 @@ class McpConnectionManager(QObject):
             # captured by a closure that runs later - the message is copied
             # into a plain local first, here and in every branch below.
             message = f"command not found: {exc}"
+            await self._close_failed_client(client)
             self._post_to_gui_thread(lambda: self._on_connect_error(server_id, message))
             return
         except Exception as exc:  # noqa: BLE001 - a connect attempt must never crash the loop
             message = f"{type(exc).__name__}: {exc}"
+            await self._close_failed_client(client)
             self._post_to_gui_thread(lambda: self._on_connect_error(server_id, message))
             return
         self._post_to_gui_thread(lambda: self._on_connected(server_id, client, tools))
+
+    @staticmethod
+    async def _close_failed_client(client) -> None:
+        """client.connect() itself already closes on its own timeout (see
+        protocol.py), but every later step here - list_tools(), a
+        malformed response - can fail too, after a real subprocess/HTTP
+        connection is already open. None of those paths ever reach
+        _on_connected, so connection.client is never set and nothing
+        else will ever hold a reference to close it: confirmed directly
+        as leaked subprocesses (asyncio's own per-subprocess reaper
+        thread still blocked in _do_waitpid at interpreter shutdown,
+        contributing to a native crash there) once enough connect
+        attempts fail this way across a test run. Called from every
+        failure branch below rather than a try/finally, so each branch
+        keeps building its own specific error message untouched."""
+        if client is not None:
+            try:
+                await client.close()
+            except Exception:  # noqa: BLE001 - the caller already has its own error to report
+                pass
 
     def _on_connected(self, server_id: str, client, tools: list[McpToolDescriptor]) -> None:
         connection = self._connections.get(server_id)
@@ -671,7 +863,7 @@ class McpConnectionManager(QObject):
     def run_tool(self, namespaced_name: str, args: dict[str, Any], *,
                 mission_id: int | None = None, mission_title: str = "") -> BrowserFuture:
         parts = adapter.split_namespaced(namespaced_name)
-        if parts is None or self._loop is None:
+        if parts is None or self._loop is None or self._shutting_down:
             return resolved("mcp_call", adapter.render_tool_result(
                 ok=False, error_code="UNKNOWN_TOOL",
                 error_message=f"'{namespaced_name}' is not a known MCP tool."))

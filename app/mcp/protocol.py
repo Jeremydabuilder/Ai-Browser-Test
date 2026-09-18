@@ -147,6 +147,21 @@ class StdioMcpClient:
                 await asyncio.wait_for(self._process.wait(), timeout=3.0)
             except asyncio.TimeoutError:
                 self._process.kill()
+                try:
+                    # Escalating to kill() without confirming the process
+                    # actually exits leaves asyncio's own per-subprocess
+                    # reaper thread (ThreadedChildWatcher's _do_waitpid,
+                    # blocked in os.waitpid() for this exact pid) running
+                    # past this close() returning - confirmed directly as
+                    # a background thread still alive at interpreter
+                    # shutdown, contributing to a native crash there.
+                    # SIGKILL cannot itself be caught or blocked, but the
+                    # kernel still needs a moment to tear the process down
+                    # and make it reapable, so this is awaited too, not
+                    # just sent and forgotten.
+                    await asyncio.wait_for(self._process.wait(), timeout=3.0)
+                except asyncio.TimeoutError:
+                    pass  # nothing more escalates past SIGKILL - give up cleanly
 
     @property
     def alive(self) -> bool:
