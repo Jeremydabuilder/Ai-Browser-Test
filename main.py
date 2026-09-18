@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import logging
 import logging.handlers
+import os
 import signal
 import sys
 
@@ -147,8 +148,31 @@ def main(argv: list[str] | None = None) -> int:
     database.close()
     if exit_code == 0:
         mark_session_clean()
-    return exit_code
+
+    # os._exit(), not return/sys.exit(): confirmed via a minimal,
+    # application-code-free reproducer that PySide6/QtWebEngine 6.11.2
+    # segfaults ("Release of profile requested but WebEnginePage still
+    # not deleted") inside CPython's own interpreter finalization
+    # (Py_Finalize) after any real WebEngine page has been loaded and
+    # later deleted - regardless of teardown order, event-loop pumping,
+    # or elapsed wall-clock time (see tests/run.py's docstring for the
+    # full investigation). The only known working mitigation is to never
+    # let that finalization sequence run in a process that ever loaded a
+    # real page - every ordinary browsing session. mark_session_clean()
+    # above and database.close() have already run, so nothing meaningful
+    # is skipped; logging's own handlers are flushed explicitly since
+    # atexit-registered flushing is part of the finalization being
+    # skipped here.
+    logging.shutdown()
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os._exit(exit_code)
 
 
 if __name__ == "__main__":
+    # main() only returns (rather than os._exit()ing itself - see its own
+    # tail) via its early fatal-startup-check failure path, before any
+    # QWebEngineProfile/page is ever created - ordinary sys.exit() is safe
+    # there. Every path that got as far as app.exec() calls os._exit()
+    # itself and never returns.
     raise SystemExit(main())

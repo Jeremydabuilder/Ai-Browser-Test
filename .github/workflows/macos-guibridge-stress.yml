@@ -60,10 +60,18 @@ jobs:
             echo "::group::=== Stage: $label ($repeats runs) ==="
             for i in $(seq 1 "$repeats"); do
               local log="stress_${label}_${i}.log"
+              # tests/run.py, not `-m unittest` directly: works around a
+              # confirmed PySide6/QtWebEngine 6.11.2 interpreter-shutdown
+              # segfault ("Release of profile requested but WebEnginePage
+              # still not deleted") that happens inside CPython's own
+              # finalization after a real WebEngine page has been loaded
+              # and deleted - see tests/run.py's docstring for the
+              # minimal repro that root-caused it and why os._exit() is
+              # the only known working mitigation.
               lldb --batch \
                 -o "run" -o "continue" -o "continue" -o "continue" \
                 -o "thread backtrace all" -o "quit" -- \
-                python3 -m unittest "$@" -v > "$log" 2>&1
+                python3 tests/run.py "$@" -v > "$log" 2>&1
               local status=$?
               if is_real_crash "$log"; then
                 echo "::error::[$label] run $i/$repeats CRASHED (exit=$status)"

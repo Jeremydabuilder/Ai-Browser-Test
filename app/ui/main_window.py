@@ -2992,8 +2992,21 @@ class MainWindow(QMainWindow):
         self.mcp_server.shutdown()
         # Tear down render processes explicitly; otherwise Qt can emit warnings
         # about pages outliving their profile during interpreter shutdown.
+        # The view (and thus the tab widget) is deleted too, not just the
+        # page - a page deleted while still set on a live view can be
+        # silently replaced by a fresh auto-created default page, which
+        # would then need its own teardown that nothing here was doing.
+        # NOTE: this does not by itself fix the "Release of profile
+        # requested but WebEnginePage still not deleted" segfault - that
+        # is a confirmed PySide6/QtWebEngine interpreter-shutdown crash
+        # unrelated to teardown order or completeness (see main.py's
+        # os._exit() and tests/run.py's docstring for the actual fix).
+        # This stays anyway: it is still the correct, complete Qt-level
+        # teardown, and cheap insurance against the auto-created-page case.
         for tab in self.tabs.tabs():
             tab.page.deleteLater()
+            tab.view.deleteLater()
+            tab.deleteLater()
         super().closeEvent(event)
 
 
