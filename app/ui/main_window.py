@@ -2919,6 +2919,17 @@ class MainWindow(QMainWindow):
 
         if self._side_panel is not None:
             self._animate_panel(closing=True)
+            # Breaks the session<->panel reference cycle AgentPanel's own
+            # connections to the session's signals create (see
+            # AgentPanel.disconnect_session's docstring) - deterministically,
+            # here, on the GUI thread, before scheduling deletion, rather
+            # than leaving it for eventual cyclic GC (which can run on any
+            # thread) to find. hasattr, not an AgentPanel import: only
+            # AgentPanel is ever installed here today, but nothing about
+            # this method should require it to stay that way.
+            disconnect_session = getattr(self._side_panel, "disconnect_session", None)
+            if disconnect_session is not None:
+                disconnect_session()
             self._side_panel.setParent(None)
             self._side_panel.deleteLater()
             self._side_panel = None
@@ -2984,6 +2995,12 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event) -> None:  # noqa: N802
         self._save_current_workspace_tab_state()
         self.task_runner.stop()
+        # Drops the panel's own connections to the session first (see
+        # set_side_panel's own comment) - otherwise the session<->panel
+        # cycle they form outlives this method, same risk as a session
+        # rebuild while the panel was open.
+        if self._side_panel is not None:
+            self.set_side_panel(None)
         # Stop the agent's worker thread before the window goes away.
         if self._agent_session is not None:
             self._agent_session.shutdown()

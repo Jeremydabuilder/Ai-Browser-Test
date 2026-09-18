@@ -982,6 +982,49 @@ class AgentPanel(QWidget):
         session.routine_finished.connect(self._on_routine_finished)
         self.mascot.state_changed.connect(self._on_mascot_state)
 
+    def disconnect_session(self) -> None:
+        """self._session -> (attribute) -> session's own signal connection
+        bookkeeping -> bound methods of self (_connect above) -> self is a
+        reference cycle only cyclic GC can break, and cyclic GC can run on
+        any thread - the same hazard class as GuiDispatcher/mascot.py/
+        AgentSession's own worker connections (see app/gui_dispatch.py's
+        docstring). Confirmed directly: MainWindow._rebuild_agent()
+        rebuilding the session while this panel was open left the old
+        session's already-fully-stopped worker QThread alive as garbage
+        (session<->panel cycle, panel never explicitly let go of session)
+        until an unrelated allocation on some other thread finally
+        triggered a cyclic collection, killing that QThread's timers from
+        the wrong thread. Called from MainWindow.set_side_panel() right
+        before this panel is deleteLater()'d, on the GUI thread, breaking
+        the cycle deterministically via ordinary refcounting instead.
+        disconnect() raises RuntimeError/TypeError if a connection is
+        already gone (a second call, or the session itself already
+        destroyed) - harmless, so it's swallowed.
+        """
+        session = self._session
+        if session is None:
+            return
+        self._session = None
+        for signal, slot in (
+            (session.assistant_message, self._on_assistant),
+            (session.activity, self._on_activity),
+            (session.error, self._on_error),
+            (session.error_detail, self._on_error_detail),
+            (session.retry_scheduled, self._on_retry_scheduled),
+            (session.state_changed, self._on_state),
+            (session.confirmation_required, self.confirmation.ask),
+            (session.finished, self._on_finished),
+            (session.usage_updated, self._on_usage),
+            (session.assistant_delta, self._on_delta),
+            (session.cleared, self._on_cleared),
+            (session.step_changed, self._on_step),
+            (session.routine_finished, self._on_routine_finished),
+        ):
+            try:
+                signal.disconnect(slot)
+            except (RuntimeError, TypeError):
+                pass
+
     def _show_empty_state(self) -> None:
         """What the panel says before it has been asked anything.
 

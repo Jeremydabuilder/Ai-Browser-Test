@@ -35,7 +35,7 @@ from app.browser.profile import BrowserProfile  # noqa: E402
 from app.config import database_path  # noqa: E402
 from app.storage import Database  # noqa: E402
 from app.ui.main_window import MainWindow  # noqa: E402
-from tests.qt_profile import shared_profile  # noqa: E402
+from tests.qt_profile import close_window, shared_profile  # noqa: E402
 
 _app: QApplication | None = None
 _profile: BrowserProfile | None = None
@@ -96,10 +96,17 @@ class LiveReconfigurationTests(unittest.TestCase):
             os.environ.pop("ANTHROPIC_API_KEY", None)
         else:
             os.environ["ANTHROPIC_API_KEY"] = self._original_env
-        self.window.close()
-        self.window.deleteLater()
+        # close_window(), not a bare close()+deleteLater()+processEvents():
+        # this file rebuilds AgentSession (and its worker QThread) many
+        # times per test, and MainWindow's own ordinary self-connections
+        # (every button/tab wired to its own bound method) mean it always
+        # needs cyclic GC to reclaim - which otherwise doesn't happen
+        # until Python's own allocation threshold trips on some unrelated
+        # thread. See close_window()'s docstring - this is exactly the
+        # test file that surfaced the "killTimer ... another thread"
+        # warning this investigation chased.
+        close_window(self.window, _app)
         self.database.close()
-        _app.processEvents()
 
     def open_panel(self):
         self.window._toggle_agent_panel()
