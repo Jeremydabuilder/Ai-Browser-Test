@@ -88,9 +88,19 @@ jobs:
             "QThread: Destroyed while thread is still running",
             "event loop is closed",
             "still not deleted",
-            "Release of profile requested",
-            "No rendezvous client, terminating process"
+            "Release of profile requested"
           )
+          # "No rendezvous client, terminating process" is deliberately NOT
+          # in the hard-fail list above: confirmed (run 35411262855) to be
+          # QtWebEngine's own GPU/renderer helper subprocess - a DIFFERENT
+          # PID than PyBrowser itself - logging normal mach-port teardown
+          # chatter as it exits during ordinary tab-close churn, with no
+          # correlation to exit code or self-test result across 5/5
+          # launches. The exit-code and self-test-result checks below are
+          # what actually detect "a real parent/process failure" (the
+          # qualifier this pattern was given) - this is tracked only as an
+          # informational count, never a failure trigger on its own.
+          $rendezvousMessagePattern = "No rendezvous client, terminating process"
           $forbiddenThreadNames = @("mcp-io", "asyncio", "verif")
 
           $failuresDir = "$env:RUNNER_TEMP\stress-failures"
@@ -158,6 +168,7 @@ jobs:
 
             if ($flagged.Count -gt 0) { Write-Host "::warning::[$name] forbidden pattern(s) found: $($flagged -join ', ')" }
             if ($flaggedThreads.Count -gt 0) { Write-Host "::warning::[$name] forbidden thread(s) still present at shutdown: $($flaggedThreads -join ', ')" }
+            if ($combined -match $rendezvousMessagePattern) { Write-Host "[$name] (informational, not a failure trigger) QtWebEngine helper-process rendezvous teardown message seen" }
             if ($threadLine) { Write-Host "[$name] $threadLine" }
 
             if ($launchFailed) {
@@ -244,8 +255,18 @@ jobs:
             "event loop is closed"
             "still not deleted"
             "Release of profile requested"
-            "No rendezvous client, terminating process"
           )
+          # "No rendezvous client, terminating process" is deliberately NOT
+          # in the hard-fail list above: confirmed (run 35411262855) to be
+          # QtWebEngine's own GPU/renderer helper subprocess - a DIFFERENT
+          # PID than PyBrowser itself - logging normal mach-port teardown
+          # chatter as it exits during ordinary tab-close churn, with no
+          # correlation to exit code or self-test result across 5/5
+          # launches. The exit-code and self-test-result checks below are
+          # what actually detect "a real parent/process failure" (the
+          # qualifier this pattern was given) - this is tracked only as an
+          # informational count, never a failure trigger on its own.
+          RENDEZVOUS_MESSAGE_PATTERN="No rendezvous client, terminating process"
           FORBIDDEN_THREAD_NAMES=("mcp-io" "asyncio" "verif")
 
           ANY_FAILED=0
@@ -320,6 +341,10 @@ jobs:
                   FLAGGED_THREADS=1
                 fi
               done
+            fi
+
+            if echo "$COMBINED" | grep -qF "$RENDEZVOUS_MESSAGE_PATTERN"; then
+              echo "[$NAME] (informational, not a failure trigger) QtWebEngine helper-process rendezvous teardown message seen"
             fi
 
             SELFTEST_ACTION_FAILED=0
