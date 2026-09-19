@@ -1,0 +1,203 @@
+name: Packaged frozen-app startup smoke test
+
+# workflow_dispatch-only. Builds the current HEAD with the EXISTING,
+# unmodified packaging/windows/pybrowser.spec and packaging/macos/pybrowser.spec,
+# then runs an extended (default 30s, configurable) startup check against the
+# real frozen Windows exe / macOS .app on real windows-latest / macos-latest
+# runners.
+#
+# This is the "cheaper" validation step, separate from and prior to any full
+# automated frozen-app interaction stress test: it does NOT drive the UI, does
+# NOT run the unit test suite, and does NOT build installers/DMGs or touch
+# signing/notarization. It only proves whether the packaged app starts and
+# survives briefly, and captures whatever native crash/warning signatures show
+# up in that window. It is explicitly NOT full packaged-app validation and NOT
+# a substitute for a human test pass - see packaging/windows/README.md and
+# packaging/macos/README.md for that checklist.
+#
+# Never attached to release.yml. Never changes the .spec files, installer/DMG
+# scripts, or signing/notarization behavior - this workflow only builds and
+# launches what release.yml already builds, for longer, with more capture.
+
+on:
+  workflow_dispatch:
+    inputs:
+      smoke_seconds:
+        description: "How many seconds to let the frozen app run before checking it"
+        type: number
+        default: 30
+
+jobs:
+  windows-frozen-smoke:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install "pyinstaller>=6.0" "pyinstaller-hooks-contrib>=2024.0"
+
+      - name: Build with PyInstaller (existing spec, unmodified)
+        env:
+          PYBROWSER_CHANNEL: diag
+          PYBROWSER_BUILD_COMMIT: ${{ github.sha }}
+        run: pyinstaller packaging/windows/pybrowser.spec --noconfirm
+
+      - name: Extended startup smoke test - launch the frozen exe
+        shell: pwsh
+        env:
+          PYTHONFAULTHANDLER: "1"
+        run: |
+          $seconds = 0
+          [int]::TryParse("${{ inputs.smoke_seconds }}", [ref]$seconds) | Out-Null
+          if ($seconds -le 0) { $seconds = 30 }
+
+          $env:PYBROWSER_DATA_DIR = "$env:RUNNER_TEMP\pybrowser-frozen-smoke"
+          $OUT = "$env:RUNNER_TEMP\pybrowser-frozen-smoke-stdout.log"
+          $proc = Start-Process -FilePath "dist\PyBrowser\PyBrowser.exe" -PassThru `
+              -RedirectStandardOutput $OUT -RedirectStandardError "$OUT.err"
+          Start-Sleep -Seconds $seconds
+
+          $log = "$env:PYBROWSER_DATA_DIR\logs\pybrowser.log"
+          $crashed = $false
+          $exitCode = $null
+          if ($proc.HasExited) {
+            $crashed = $true
+            $exitCode = $proc.ExitCode
+            Write-Host "::error::PyBrowser.exe exited early (code $exitCode) after less than ${seconds}s - this is a real release bug, not a flaky test."
+          } else {
+            Write-Host "PyBrowser.exe ran for ${seconds}s without exiting."
+            Stop-Process -Id $proc.Id -Force
+          }
+
+          $combined = ""
+          foreach ($f in @($OUT, "$OUT.err", $log)) {
+            if (Test-Path $f) { $combined += (Get-Content $f -Raw) }
+          }
+
+          $hasTraceback = $combined -match "Traceback \(most recent call last\)"
+          $hasKillTimer = $combined -match "QObject::killTimer"
+          $hasThreadDestroyed = $combined -match "QThread: Destroyed while thread"
+          $hasWebEngineTeardown = $combined -match "still not deleted|Release of profile requested"
+          $hasAccessViolation = ($combined -match "access violation") -or ($combined -match "0xC0000005")
+
+          if ($hasTraceback) { Write-Host "::warning::Frozen exe output contains a Python traceback." }
+          if ($hasKillTimer) { Write-Host "::warning::Frozen exe output contains a QObject::killTimer warning." }
+          if ($hasThreadDestroyed) { Write-Host "::warning::Frozen exe output contains a 'QThread: Destroyed while thread is still running' warning." }
+          if ($hasWebEngineTeardown) { Write-Host "::warning::Frozen exe output contains a WebEngine profile/page teardown warning." }
+          if ($hasAccessViolation) { Write-Host "::warning::Frozen exe output suggests a native access violation." }
+
+          Write-Host "--- captured stdout/stderr/log ---"
+          Write-Host $combined
+          Write-Host "exit_code=$exitCode" >> $env:GITHUB_OUTPUT
+
+          if ($crashed -or $hasTraceback -or $hasAccessViolation) {
+            throw "Windows frozen startup smoke test FAILED - see output/flags above."
+          }
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: windows-frozen-smoke-logs
+          path: |
+            ${{ runner.temp }}\pybrowser-frozen-smoke-stdout.log
+            ${{ runner.temp }}\pybrowser-frozen-smoke-stdout.log.err
+            ${{ runner.temp }}\pybrowser-frozen-smoke\logs\pybrowser.log
+          if-no-files-found: warn
+
+  macos-frozen-smoke:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install "pyinstaller>=6.0" "pyinstaller-hooks-contrib>=2024.0"
+
+      - name: Build the .icns app icon
+        run: bash packaging/macos/make_icns.sh
+
+      - name: Build with PyInstaller (existing spec, unmodified)
+        env:
+          PYBROWSER_CHANNEL: diag
+          PYBROWSER_BUILD_COMMIT: ${{ github.sha }}
+        run: pyinstaller packaging/macos/pybrowser.spec --noconfirm
+
+      - name: Ad-hoc sign for local testing (unsigned diagnostic build)
+        # Same as release.yml's own unsigned path - satisfies this runner's
+        # Gatekeeper check well enough to launch the .app. Not a real signature.
+        run: codesign --force --deep --sign - dist/PyBrowser.app
+
+      - name: Extended startup smoke test - launch the app bundle
+        env:
+          PYTHONFAULTHANDLER: "1"
+        run: |
+          SECONDS_TO_RUN="${{ inputs.smoke_seconds }}"
+          case "$SECONDS_TO_RUN" in ''|*[!0-9]*) SECONDS_TO_RUN=30 ;; esac
+          if [ "$SECONDS_TO_RUN" -le 0 ]; then SECONDS_TO_RUN=30; fi
+
+          export PYBROWSER_DATA_DIR="$RUNNER_TEMP/pybrowser-frozen-smoke"
+          OUT="$RUNNER_TEMP/pybrowser-frozen-smoke-stdout.log"
+          "dist/PyBrowser.app/Contents/MacOS/PyBrowser" > "$OUT" 2>&1 &
+          APP_PID=$!
+          sleep "$SECONDS_TO_RUN"
+
+          LOG="$PYBROWSER_DATA_DIR/logs/pybrowser.log"
+          CRASHED=0
+          STATUS=0
+          if kill -0 "$APP_PID" 2>/dev/null; then
+            echo "PyBrowser.app ran for ${SECONDS_TO_RUN}s without exiting."
+            kill "$APP_PID"
+            wait "$APP_PID" 2>/dev/null || true
+          else
+            wait "$APP_PID"
+            STATUS=$?
+            CRASHED=1
+            echo "::error::PyBrowser.app exited early (status $STATUS) after less than ${SECONDS_TO_RUN}s - this is a real release bug, not a flaky test."
+            if [ "$STATUS" -gt 128 ]; then
+              SIG=$((STATUS - 128))
+              echo "::error::Exit status $STATUS implies termination by signal $SIG (11=SIGSEGV, 6=SIGABRT)."
+            fi
+          fi
+
+          COMBINED=""
+          for f in "$OUT" "$LOG"; do
+            if [ -f "$f" ]; then COMBINED="$COMBINED
+          $(cat "$f")"; fi
+          done
+
+          FAIL=0
+          echo "$COMBINED" | grep -q "Traceback (most recent call last)" && { echo "::warning::Frozen app output contains a Python traceback."; FAIL=1; }
+          echo "$COMBINED" | grep -q "QObject::killTimer" && echo "::warning::Frozen app output contains a QObject::killTimer warning."
+          echo "$COMBINED" | grep -q "QThread: Destroyed while thread" && echo "::warning::Frozen app output contains a 'QThread: Destroyed while thread is still running' warning."
+          (echo "$COMBINED" | grep -q "still not deleted" || echo "$COMBINED" | grep -q "Release of profile requested") && echo "::warning::Frozen app output contains a WebEngine profile/page teardown warning."
+
+          echo "--- captured stdout/stderr/log ---"
+          echo "$COMBINED"
+
+          if [ "$CRASHED" -eq 1 ] || [ "$FAIL" -eq 1 ]; then
+            exit 1
+          fi
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: macos-frozen-smoke-logs
+          path: |
+            ${{ runner.temp }}/pybrowser-frozen-smoke-stdout.log
+            ${{ runner.temp }}/pybrowser-frozen-smoke/logs/pybrowser.log
+          if-no-files-found: warn
