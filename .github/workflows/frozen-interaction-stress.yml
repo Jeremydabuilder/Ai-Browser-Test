@@ -1,0 +1,363 @@
+name: Automated frozen-app interaction stress test
+
+# workflow_dispatch-only. Builds the current HEAD with the EXISTING,
+# unmodified PyInstaller specs on windows-latest/macos-latest, then launches
+# the real frozen exe/.app several times with PYBROWSER_SELFTEST=1 (see
+# app/selftest.py) - a diagnostic-only driver, inert unless that exact env
+# var is set, that runs INSIDE the frozen process and exercises tab churn,
+# repeated AgentSession/Py-panel build+teardown, MCP/External-AI-Access
+# settings lifecycle, other major dialogs, and workspace create/switch/
+# cleanup, then quits through the app's OWN normal shutdown path
+# (MainWindow.close() -> closeEvent() -> app.exec() returning -> main.py's
+# os._exit()) - never an external kill on the success path.
+#
+# This is "automated frozen-app interaction stress test", explicitly NOT
+# manual/human/real-device testing: no human interacts with the GUI here.
+# It answers whether the mid-run cyclic-GC/Qt-object lifetime hazard chased
+# in source-level test execution reproduces in the actual packaged binary
+# under sustained, realistic-shaped interaction - something the separate,
+# cheaper packaged-frozen-smoketest.yml (a ~30s idle-launch check) cannot
+# tell us anything about.
+#
+# Never attached to release.yml. Never changes the .spec files,
+# installer/DMG scripts, or signing/notarization behavior.
+#
+# Only an external kill exists as a watchdog for a genuine hang - never used
+# on a launch that exits on its own, and a watchdog kill always fails that
+# launch. Nothing here forgives a native crash, a forbidden Qt warning, or a
+# nonzero exit code as "flaky" - every individual launch must pass cleanly.
+
+on:
+  workflow_dispatch:
+    inputs:
+      short_duration_seconds:
+        description: "Self-test duration for the 4 short launches"
+        type: number
+        default: 150
+      long_duration_seconds:
+        description: "Self-test duration for the 1 long launch (target ~10-15 min)"
+        type: number
+        default: 780
+
+jobs:
+  windows-frozen-stress:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install "pyinstaller>=6.0" "pyinstaller-hooks-contrib>=2024.0"
+
+      - name: Build with PyInstaller (existing spec, unmodified)
+        env:
+          PYBROWSER_CHANNEL: diag
+          PYBROWSER_BUILD_COMMIT: ${{ github.sha }}
+        run: pyinstaller packaging/windows/pybrowser.spec --noconfirm
+
+      - name: Run 5 frozen-process interaction stress launches
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $shortDuration = [int]"${{ inputs.short_duration_seconds }}"
+          $longDuration = [int]"${{ inputs.long_duration_seconds }}"
+          if ($shortDuration -le 0) { $shortDuration = 150 }
+          if ($longDuration -le 0) { $longDuration = 780 }
+
+          $launches = @(
+            @{ name = "short-1"; duration = $shortDuration },
+            @{ name = "short-2"; duration = $shortDuration },
+            @{ name = "short-3"; duration = $shortDuration },
+            @{ name = "short-4"; duration = $shortDuration },
+            @{ name = "long-1"; duration = $longDuration }
+          )
+
+          $forbidden = @(
+            "Traceback \(most recent call last\)",
+            "0xC0000005",
+            "[Aa]ccess violation",
+            "QObject::killTimer",
+            "Timers cannot be stopped from another thread",
+            "QThread: Destroyed while thread is still running",
+            "event loop is closed",
+            "still not deleted",
+            "Release of profile requested",
+            "No rendezvous client, terminating process"
+          )
+          $forbiddenThreadNames = @("mcp-io", "asyncio", "verif")
+
+          $failuresDir = "$env:RUNNER_TEMP\stress-failures"
+          New-Item -ItemType Directory -Force -Path $failuresDir | Out-Null
+
+          $anyFailed = $false
+          $summary = @()
+
+          foreach ($launch in $launches) {
+            $name = $launch.name
+            $duration = $launch.duration
+            $watchdogSeconds = $duration + 180
+
+            Write-Host "::group::launch $name (selftest duration=${duration}s, watchdog=${watchdogSeconds}s)"
+
+            $dataDir = "$env:RUNNER_TEMP\pybrowser-stress-$name"
+            New-Item -ItemType Directory -Force -Path $dataDir | Out-Null
+            $outLog = "$env:RUNNER_TEMP\stress-$name-stdout.log"
+
+            $env:PYBROWSER_DATA_DIR = $dataDir
+            $env:PYBROWSER_SELFTEST = "1"
+            $env:PYBROWSER_SELFTEST_DURATION_SECONDS = "$duration"
+            $env:PYTHONFAULTHANDLER = "1"
+
+            $started = Get-Date
+            $proc = Start-Process -FilePath "dist\PyBrowser\PyBrowser.exe" -PassThru `
+                -RedirectStandardOutput $outLog -RedirectStandardError "$outLog.err"
+            $exited = $proc.WaitForExit($watchdogSeconds * 1000)
+            $runtime = (Get-Date) - $started
+
+            $killedByWatchdog = $false
+            $exitCode = $null
+            if (-not $exited) {
+              Write-Host "::error::[$name] did not exit within ${watchdogSeconds}s - this is a HANG, killing via watchdog. This launch FAILS."
+              Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+              $killedByWatchdog = $true
+            } else {
+              $exitCode = $proc.ExitCode
+              Write-Host "[$name] exited on its own after $([int]$runtime.TotalSeconds)s with exit code $exitCode."
+            }
+
+            $log = "$dataDir\logs\pybrowser.log"
+            $combined = ""
+            foreach ($f in @($outLog, "$outLog.err", $log)) {
+              if (Test-Path $f) { $combined += (Get-Content $f -Raw) }
+            }
+
+            $flagged = @()
+            foreach ($pat in $forbidden) {
+              if ($combined -match $pat) { $flagged += $pat }
+            }
+            $threadLine = ($combined -split "`n") | Where-Object { $_ -match "active threads after normal shutdown" } | Select-Object -Last 1
+            $flaggedThreads = @()
+            if ($threadLine) {
+              foreach ($tn in $forbiddenThreadNames) {
+                if ($threadLine -match $tn) { $flaggedThreads += $tn }
+              }
+            }
+            $selftestFailed = $combined -match "\[selftest\] ACTION FAILED"
+            $selftestFinishedOk = $combined -match "\[selftest\] finished:.*result=OK"
+
+            $launchFailed = $killedByWatchdog -or ($exited -and $exitCode -ne 0) -or
+                            ($flagged.Count -gt 0) -or ($flaggedThreads.Count -gt 0) -or
+                            $selftestFailed -or (-not $selftestFinishedOk)
+
+            if ($flagged.Count -gt 0) { Write-Host "::warning::[$name] forbidden pattern(s) found: $($flagged -join ', ')" }
+            if ($flaggedThreads.Count -gt 0) { Write-Host "::warning::[$name] forbidden thread(s) still present at shutdown: $($flaggedThreads -join ', ')" }
+            if ($threadLine) { Write-Host "[$name] $threadLine" }
+
+            if ($launchFailed) {
+              $anyFailed = $true
+              Write-Host "::error::[$name] FAILED"
+              Write-Host "--- captured output ($name) ---"
+              Write-Host $combined
+              Copy-Item $outLog "$failuresDir\$name-stdout.log" -ErrorAction SilentlyContinue
+              Copy-Item "$outLog.err" "$failuresDir\$name-stderr.log" -ErrorAction SilentlyContinue
+              if (Test-Path $log) { Copy-Item $log "$failuresDir\$name-pybrowser.log" -ErrorAction SilentlyContinue }
+            } else {
+              Write-Host "[$name] PASSED"
+            }
+
+            $summary += [pscustomobject]@{
+              name = $name; duration = $duration; runtime_s = [int]$runtime.TotalSeconds
+              exit_code = $exitCode; killed_by_watchdog = $killedByWatchdog
+              failed = $launchFailed
+            }
+            Write-Host "::endgroup::"
+          }
+
+          Write-Host "--- Windows stress summary ---"
+          $summary | Format-Table -AutoSize | Out-String | Write-Host
+
+          if ($anyFailed) {
+            throw "One or more Windows frozen-app interaction stress launches FAILED - see logs above and the uploaded artifact."
+          }
+
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: windows-frozen-stress-failure-logs
+          path: ${{ runner.temp }}\stress-failures\**
+          if-no-files-found: warn
+
+  macos-frozen-stress:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install "pyinstaller>=6.0" "pyinstaller-hooks-contrib>=2024.0"
+
+      - name: Build the .icns app icon
+        run: bash packaging/macos/make_icns.sh
+
+      - name: Build with PyInstaller (existing spec, unmodified)
+        env:
+          PYBROWSER_CHANNEL: diag
+          PYBROWSER_BUILD_COMMIT: ${{ github.sha }}
+        run: pyinstaller packaging/macos/pybrowser.spec --noconfirm
+
+      - name: Ad-hoc sign for local testing (unsigned diagnostic build)
+        run: codesign --force --deep --sign - dist/PyBrowser.app
+
+      - name: Run 5 frozen-process interaction stress launches
+        run: |
+          set +e
+          SHORT_DURATION="${{ inputs.short_duration_seconds }}"
+          LONG_DURATION="${{ inputs.long_duration_seconds }}"
+          case "$SHORT_DURATION" in ''|*[!0-9]*) SHORT_DURATION=150 ;; esac
+          case "$LONG_DURATION" in ''|*[!0-9]*) LONG_DURATION=780 ;; esac
+
+          FAILURES_DIR="$RUNNER_TEMP/stress-failures"
+          mkdir -p "$FAILURES_DIR"
+
+          FORBIDDEN_PATTERNS=(
+            "Traceback \(most recent call last\)"
+            "SIGSEGV"
+            "EXC_BAD_ACCESS"
+            "SIGABRT"
+            "QObject::killTimer"
+            "Timers cannot be stopped from another thread"
+            "QThread: Destroyed while thread is still running"
+            "event loop is closed"
+            "still not deleted"
+            "Release of profile requested"
+            "No rendezvous client, terminating process"
+          )
+          FORBIDDEN_THREAD_NAMES=("mcp-io" "asyncio" "verif")
+
+          ANY_FAILED=0
+          NAMES=("short-1" "short-2" "short-3" "short-4" "long-1")
+          DURATIONS=("$SHORT_DURATION" "$SHORT_DURATION" "$SHORT_DURATION" "$SHORT_DURATION" "$LONG_DURATION")
+
+          for i in "${!NAMES[@]}"; do
+            NAME="${NAMES[$i]}"
+            DURATION="${DURATIONS[$i]}"
+            WATCHDOG_SECONDS=$((DURATION + 180))
+
+            echo "::group::launch $NAME (selftest duration=${DURATION}s, watchdog=${WATCHDOG_SECONDS}s)"
+
+            DATA_DIR="$RUNNER_TEMP/pybrowser-stress-$NAME"
+            mkdir -p "$DATA_DIR"
+            OUT="$RUNNER_TEMP/stress-$NAME-stdout.log"
+
+            export PYBROWSER_DATA_DIR="$DATA_DIR"
+            export PYBROWSER_SELFTEST=1
+            export PYBROWSER_SELFTEST_DURATION_SECONDS="$DURATION"
+            export PYTHONFAULTHANDLER=1
+
+            START_TS=$(date +%s)
+            "dist/PyBrowser.app/Contents/MacOS/PyBrowser" > "$OUT" 2>&1 &
+            APP_PID=$!
+
+            KILLED_BY_WATCHDOG=0
+            EXIT_CODE=""
+            SECONDS_WAITED=0
+            while kill -0 "$APP_PID" 2>/dev/null; do
+              if [ "$SECONDS_WAITED" -ge "$WATCHDOG_SECONDS" ]; then
+                echo "::error::[$NAME] did not exit within ${WATCHDOG_SECONDS}s - this is a HANG, killing via watchdog. This launch FAILS."
+                kill -9 "$APP_PID" 2>/dev/null
+                KILLED_BY_WATCHDOG=1
+                break
+              fi
+              sleep 2
+              SECONDS_WAITED=$((SECONDS_WAITED + 2))
+            done
+            wait "$APP_PID" 2>/dev/null
+            if [ "$KILLED_BY_WATCHDOG" -eq 0 ]; then
+              EXIT_CODE=$?
+            fi
+            RUNTIME=$(( $(date +%s) - START_TS ))
+
+            if [ "$KILLED_BY_WATCHDOG" -eq 0 ]; then
+              echo "[$NAME] exited on its own after ${RUNTIME}s with exit code $EXIT_CODE."
+            fi
+
+            LOG="$DATA_DIR/logs/pybrowser.log"
+            COMBINED=""
+            for f in "$OUT" "$LOG"; do
+              if [ -f "$f" ]; then COMBINED="$COMBINED
+          $(cat "$f")"; fi
+            done
+
+            FLAGGED=0
+            for pat in "${FORBIDDEN_PATTERNS[@]}"; do
+              if echo "$COMBINED" | grep -qE "$pat"; then
+                echo "::warning::[$NAME] forbidden pattern found: $pat"
+                FLAGGED=1
+              fi
+            done
+
+            THREAD_LINE=$(echo "$COMBINED" | grep "active threads after normal shutdown" | tail -n1)
+            FLAGGED_THREADS=0
+            if [ -n "$THREAD_LINE" ]; then
+              echo "[$NAME] $THREAD_LINE"
+              for tn in "${FORBIDDEN_THREAD_NAMES[@]}"; do
+                if echo "$THREAD_LINE" | grep -q "$tn"; then
+                  echo "::warning::[$NAME] forbidden thread still present at shutdown: $tn"
+                  FLAGGED_THREADS=1
+                fi
+              done
+            fi
+
+            SELFTEST_ACTION_FAILED=0
+            echo "$COMBINED" | grep -q '\[selftest\] ACTION FAILED' && SELFTEST_ACTION_FAILED=1
+            SELFTEST_FINISHED_OK=0
+            echo "$COMBINED" | grep -qE '\[selftest\] finished:.*result=OK' && SELFTEST_FINISHED_OK=1
+
+            LAUNCH_FAILED=0
+            if [ "$KILLED_BY_WATCHDOG" -eq 1 ]; then LAUNCH_FAILED=1; fi
+            if [ "$KILLED_BY_WATCHDOG" -eq 0 ] && [ "$EXIT_CODE" != "0" ]; then LAUNCH_FAILED=1; fi
+            if [ "$FLAGGED" -eq 1 ]; then LAUNCH_FAILED=1; fi
+            if [ "$FLAGGED_THREADS" -eq 1 ]; then LAUNCH_FAILED=1; fi
+            if [ "$SELFTEST_ACTION_FAILED" -eq 1 ]; then LAUNCH_FAILED=1; fi
+            if [ "$SELFTEST_FINISHED_OK" -eq 0 ]; then LAUNCH_FAILED=1; fi
+
+            if [ "$LAUNCH_FAILED" -eq 1 ]; then
+              ANY_FAILED=1
+              echo "::error::[$NAME] FAILED"
+              echo "--- captured output ($NAME) ---"
+              echo "$COMBINED"
+              cp "$OUT" "$FAILURES_DIR/$NAME-stdout.log" 2>/dev/null
+              if [ -f "$LOG" ]; then cp "$LOG" "$FAILURES_DIR/$NAME-pybrowser.log" 2>/dev/null; fi
+            else
+              echo "[$NAME] PASSED"
+            fi
+
+            echo "::endgroup::"
+          done
+
+          if [ "$ANY_FAILED" -eq 1 ]; then
+            echo "::error::One or more macOS frozen-app interaction stress launches FAILED - see logs above and the uploaded artifact."
+            exit 1
+          fi
+          exit 0
+
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: macos-frozen-stress-failure-logs
+          path: ${{ runner.temp }}/stress-failures/**
+          if-no-files-found: warn
