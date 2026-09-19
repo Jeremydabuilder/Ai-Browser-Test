@@ -26,6 +26,7 @@ from app import APP_NAME, ORG_NAME, __version__
 from app.browser.newtab import register_scheme
 from app.browser.profile import BrowserProfile
 from app.config import database_path, icon_path, log_path
+from app.selftest import selftest_enabled, start_if_enabled
 from app.startup_state import mark_session_clean, mark_session_started, resolve_safe_mode
 from app.storage import Database
 from app.ui import theme
@@ -142,7 +143,13 @@ def main(argv: list[str] | None = None) -> int:
 
     window = MainWindow(profile, database, start_urls=start_urls, safe_mode=safe_mode)
     window.show()
-    window.show_first_run_if_needed()
+    # PYBROWSER_SELFTEST=1 (see app/selftest.py) drives the window itself
+    # through a scripted interaction sequence for CI diagnostics; the
+    # first-run dialog is a modal a real user must dismiss and would just
+    # hang the self-test before it ever starts.
+    if not selftest_enabled():
+        window.show_first_run_if_needed()
+    _selftest_driver = start_if_enabled(app, window)  # noqa: F841 - keeps the driver alive for app.exec()'s duration
 
     exit_code = app.exec()
     database.close()
