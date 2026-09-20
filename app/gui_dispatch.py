@@ -28,7 +28,7 @@ import threading
 import weakref
 from typing import Any, Callable
 
-from PySide6.QtCore import QObject, QTimer
+from PySide6.QtCore import QCoreApplication, QObject, QThread, QTimer
 
 
 class GuiDispatchShutdown(RuntimeError):
@@ -62,35 +62,45 @@ class GuiDispatcher(QObject):
     Qt-shaped (no QObject, no Signal) ever crosses the thread boundary -
     only the queue itself does.
 
-    One instance is meant to live for the lifetime of its owner (created
-    once, e.g. in that owner's ``__init__``), independent of any
-    start()/stop() cycles that owner itself goes through - see
-    ``shutdown()`` below for the separate, permanent teardown path meant
-    to be used at application close.
+    A dispatcher is parented to the process' ``QCoreApplication`` by
+    default. That Qt/C++ ownership is intentional and important: the
+    dispatcher owns a live ``QTimer``, so its destruction must be governed
+    by the GUI-thread QObject tree rather than by an unpredictable Python
+    cyclic-GC sweep that may happen on a worker thread. Callers may supply
+    another long-lived GUI-thread QObject parent explicitly, but temporary
+    dialogs/workers are not appropriate owners.
     """
 
-    def __init__(self, poll_interval_ms: int = 5) -> None:
-        super().__init__()
+    def __init__(self, poll_interval_ms: int = 5, parent: QObject | None = None) -> None:
+        if parent is None:
+            parent = QCoreApplication.instance()
+            if parent is None:
+                raise RuntimeError(
+                    "GuiDispatcher requires a QCoreApplication/QApplication instance"
+                )
+
+        # Fail before constructing any QObject/timer if a caller tries to
+        # create the dispatcher from a worker thread. Parenting a QObject
+        # to a GUI-thread object from another thread is invalid Qt usage and
+        # would put us straight back into the lifetime/thread-affinity class
+        # of bugs this primitive exists to avoid.
+        if QThread.currentThread() is not parent.thread():
+            raise RuntimeError("GuiDispatcher must be created on its Qt parent's thread")
+
+        super().__init__(parent)
         self._queue: "queue.Queue[_PendingCall | Callable[[], None]]" = queue.Queue()
         self._gui_thread_ident = threading.get_ident()
         self._lock = threading.Lock()
         self._closed = False
         self._timer = QTimer(self)
         self._timer.setInterval(poll_interval_ms)
-        # Connecting a bound method (self._drain) directly here would hold
-        # a strong Python reference back to self from Qt's own connection
-        # bookkeeping - self -> _timer -> connection -> bound method ->
-        # self - a reference cycle only the cyclic GC can break. Since
-        # Python's cyclic GC can run on ANY thread (whichever one happens
-        # to trip the collection threshold), a dropped-but-cyclic
-        # GuiDispatcher could then have its QTimer torn down from a
-        # background worker thread instead of the GUI thread it belongs
-        # to - reproduced locally as "QBasicTimer::stop: Failed. Possibly
-        # trying to stop from a different thread" followed by a segfault.
-        # A weakref callback breaks the cycle: refcounting alone then
-        # collects a dropped GuiDispatcher immediately, on whichever
-        # thread drops its last real reference - deterministic, no
-        # GC-thread ambiguity.
+
+        # Keep the timeout callback weak so Qt's connection bookkeeping does
+        # not itself introduce a Python self-cycle. The *lifetime* guarantee,
+        # however, comes from the QObject parent tree above: QApplication ->
+        # GuiDispatcher -> QTimer. In particular, dropping the last ordinary
+        # Python reference does not make worker-thread cyclic GC responsible
+        # for tearing down a live GUI timer.
         weak_self = weakref.ref(self)
 
         def _tick() -> None:
@@ -172,6 +182,8 @@ class GuiDispatcher(QObject):
         is ever left waiting forever. Must be called on the GUI thread
         (it stops this dispatcher's own QTimer). This is a one-way
         teardown - not meant to be paired with any "restart"."""
+        if not self.is_gui_thread:
+            raise RuntimeError("GuiDispatcher.shutdown() must run on the GUI thread")
         with self._lock:
             self._closed = True
         self._timer.stop()
