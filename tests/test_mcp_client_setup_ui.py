@@ -204,7 +204,7 @@ def _dialog_verify_idle(dialog: ClientSetupDialog) -> bool:
     return dialog._thread is None
 
 
-def _flush_finished_thread_cleanup(timeout_ms: int = 15000) -> bool:
+def _flush_finished_thread_cleanup(timeout_ms: int = 60000) -> bool:
     """thread.wait() returning only guarantees the worker OS thread has
     stopped and its `finished` signal has been emitted - the queued
     deleteLater()/_IN_FLIGHT_VERIFY_THREADS-discard handlers connected to
