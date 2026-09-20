@@ -214,10 +214,23 @@ def _flush_finished_thread_cleanup(timeout_ms: int = 60000) -> bool:
     have had a turn - this gives them one, so a stress loop's own
     bookkeeping (_IN_FLIGHT_VERIFY_THREADS) is observed in its settled
     state rather than mid-flush."""
-    return pump(
+    ok = pump(
         lambda: not mcp_server_settings._IN_FLIGHT_VERIFY_THREADS
         and not mcp_server_settings._IN_FLIGHT_VERIFIERS,
         timeout_ms)
+    if not ok:
+        for t in mcp_server_settings._IN_FLIGHT_VERIFY_THREADS:
+            try:
+                print(f"STUCK THREAD {t!r} isRunning={t.isRunning()} isFinished={t.isFinished()}",
+                      file=sys.stderr, flush=True)
+            except RuntimeError as exc:
+                print(f"STUCK THREAD {t!r} raised on introspection: {exc!r}", file=sys.stderr, flush=True)
+        for v in mcp_server_settings._IN_FLIGHT_VERIFIERS:
+            try:
+                print(f"STUCK VERIFIER {v!r} thread={v.thread()!r}", file=sys.stderr, flush=True)
+            except RuntimeError as exc:
+                print(f"STUCK VERIFIER {v!r} raised on introspection: {exc!r}", file=sys.stderr, flush=True)
+    return ok
 
 
 class ClientSetupVerifyLifecycleTests(unittest.TestCase):
