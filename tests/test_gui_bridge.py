@@ -11,11 +11,13 @@ Run with:
 
 from __future__ import annotations
 
+import gc
 import os
 import sys
 import threading
 import time
 import unittest
+import uuid
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -55,8 +57,6 @@ class GuiBridgeBasicsTests(unittest.TestCase):
         self.bridge.shutdown()
 
     def test_callback_actually_executes_on_the_qapplication_gui_thread(self) -> None:
-        """1 & 2: worker thread -> GUI execution, and the callback really
-        runs on the GUI thread, not the worker that requested it."""
         seen_thread: list = []
 
         def worker() -> None:
@@ -72,7 +72,6 @@ class GuiBridgeBasicsTests(unittest.TestCase):
         self.assertIs(seen_thread[0], self.gui_thread)
 
     def test_result_is_returned_correctly(self) -> None:
-        """3: result returned correctly."""
         box: dict = {}
 
         def worker() -> None:
@@ -85,7 +84,6 @@ class GuiBridgeBasicsTests(unittest.TestCase):
         self.assertEqual(box["value"], 42)
 
     def test_exception_raised_on_the_gui_thread_propagates_to_the_worker(self) -> None:
-        """4: exception propagation."""
         box: dict = {}
 
         def failing() -> None:
@@ -104,13 +102,9 @@ class GuiBridgeBasicsTests(unittest.TestCase):
         self.assertEqual(box.get("error"), "boom")
 
     def test_timeout_returns_none_without_raising(self) -> None:
-        """5: timeout - matches the pre-existing call_sync semantics (a
-        timeout returns None, it never raises)."""
         box: dict = {}
 
         def worker() -> None:
-            # Never drained: no pump() call happens on this thread, and we
-            # give a short timeout so the test itself stays fast.
             box["value"] = self.bridge.call_sync(lambda: "unreachable", timeout=0.2)
             box["done"] = True
 
@@ -121,9 +115,6 @@ class GuiBridgeBasicsTests(unittest.TestCase):
         self.assertIsNone(box.get("value"))
 
     def test_expired_request_is_not_delivered_late_into_the_worker(self) -> None:
-        """Belt-and-suspenders on the same timeout path: once a request
-        has expired, the dispatcher must not run its callback at all when
-        the queue is later drained (nothing "stale" gets delivered)."""
         ran = threading.Event()
 
         def slow_callback() -> None:
@@ -135,8 +126,6 @@ class GuiBridgeBasicsTests(unittest.TestCase):
         t = threading.Thread(target=worker, daemon=True)
         t.start()
         t.join(timeout=2)
-        # Only now does the GUI thread get a chance to drain the queue -
-        # long after the worker's timeout elapsed.
         pump(lambda: False, timeout_ms=200)
         self.assertFalse(ran.is_set())
 
@@ -146,15 +135,10 @@ class GuiBridgeShutdownTests(unittest.TestCase):
         self.bridge = GuiBridge()
 
     def test_shutdown_while_request_pending_releases_the_waiter(self) -> None:
-        """6: shutdown while request pending - the waiting worker must be
-        released with a clear exception, never left blocked forever."""
         box: dict = {}
         entered = threading.Event()
 
         def blocking_forever() -> None:
-            # Runs on the GUI thread once drained; the dispatcher is shut
-            # down before this ever happens in this test, so it must
-            # never actually execute.
             entered.set()
             return "should not run"
 
@@ -166,9 +150,6 @@ class GuiBridgeShutdownTests(unittest.TestCase):
 
         t = threading.Thread(target=worker, daemon=True)
         t.start()
-        # Give the worker a moment to enqueue, then shut down before any
-        # processEvents() pump ever runs (so the request is genuinely
-        # still queued, not executed).
         time.sleep(0.05)
         self.bridge.shutdown()
         t.join(timeout=2)
@@ -177,10 +158,6 @@ class GuiBridgeShutdownTests(unittest.TestCase):
         self.assertFalse(entered.is_set())
 
     def test_submitting_after_shutdown_raises_immediately(self) -> None:
-        """Checked from a worker thread - a call from the GUI thread itself
-        takes the reentrancy fast path and runs directly regardless of
-        shutdown state, which is correct (see test_call_sync_from_the_gui_
-        thread_does_not_deadlock)."""
         self.bridge.shutdown()
         box: dict = {}
 
@@ -204,7 +181,6 @@ class GuiBridgeConcurrencyTests(unittest.TestCase):
         self.bridge.shutdown()
 
     def test_multiple_concurrent_worker_requests_all_get_their_own_result(self) -> None:
-        """7: multiple concurrent worker requests."""
         results: dict[int, int] = {}
         lock = threading.Lock()
 
@@ -222,7 +198,6 @@ class GuiBridgeConcurrencyTests(unittest.TestCase):
         self.assertEqual(results, {i: i * i for i in range(12)})
 
     def test_fifty_sequential_bridge_requests(self) -> None:
-        """8: 50-100 sequential bridge requests."""
         box: dict = {}
 
         def worker() -> None:
@@ -238,17 +213,12 @@ class GuiBridgeConcurrencyTests(unittest.TestCase):
         self.assertEqual(box.get("total"), sum(range(75)))
 
     def test_call_sync_from_the_gui_thread_does_not_deadlock(self) -> None:
-        """9: GUI-thread call_sync does not deadlock - it must run fn()
-        directly rather than enqueue and wait on itself."""
         result = self.bridge.call_sync(lambda: "direct", timeout=1)
         self.assertEqual(result, "direct")
 
 
 class GuiDispatcherLifecycleTests(unittest.TestCase):
     def test_object_destruction_after_requests_complete(self) -> None:
-        """10: object destruction after requests complete - shutdown()
-        must be safe to call, and safe to call again, once outstanding
-        work is done."""
         bridge = GuiBridge()
         box: dict = {}
 
@@ -260,13 +230,10 @@ class GuiDispatcherLifecycleTests(unittest.TestCase):
         pump(lambda: not t.is_alive(), timeout_ms=2000)
         t.join(timeout=1)
         self.assertEqual(box.get("value"), "ok")
-        bridge.shutdown()  # must not raise
-        bridge.shutdown()  # idempotent
+        bridge.shutdown()
+        bridge.shutdown()
 
     def test_no_worker_thread_or_qthread_is_leaked_per_call(self) -> None:
-        """11: no worker/QThread leaks - the dispatcher must not spin up a
-        QThread per call (unlike the old design's one-shot signal
-        connections); confirm thread count stays flat across many calls."""
         bridge = GuiBridge()
         try:
             before = threading.active_count()
@@ -280,8 +247,6 @@ class GuiDispatcherLifecycleTests(unittest.TestCase):
             pump(lambda: not t.is_alive(), timeout_ms=5000)
             t.join(timeout=1)
             after = threading.active_count()
-            # +1 for the transient worker thread itself, no more - no
-            # extra QThreads/threads are spawned per call.
             self.assertLessEqual(after, before + 1)
         finally:
             bridge.shutdown()
@@ -295,6 +260,79 @@ class GuiDispatcherLifecycleTests(unittest.TestCase):
             self.assertEqual(seen, [1])
         finally:
             dispatcher.shutdown()
+
+    def test_dispatcher_and_timer_are_owned_by_gui_qobject_tree(self) -> None:
+        dispatcher = GuiDispatcher()
+        try:
+            self.assertIs(dispatcher.parent(), _app)
+            self.assertIs(dispatcher.thread(), _app.thread())
+            self.assertIs(dispatcher._timer.parent(), dispatcher)
+            self.assertIs(dispatcher._timer.thread(), _app.thread())
+            self.assertTrue(dispatcher._timer.isActive())
+        finally:
+            dispatcher.shutdown()
+
+    def test_dispatcher_creation_from_worker_thread_is_rejected(self) -> None:
+        box: dict = {}
+
+        def worker() -> None:
+            try:
+                GuiDispatcher()
+            except Exception as exc:  # noqa: BLE001 - exact type asserted below
+                box["error"] = exc
+
+        t = threading.Thread(target=worker, daemon=True)
+        t.start()
+        t.join(timeout=2)
+        self.assertFalse(t.is_alive())
+        self.assertIsInstance(box.get("error"), RuntimeError)
+        self.assertIn("must be created", str(box["error"]))
+
+    def test_worker_thread_gc_cannot_destroy_application_owned_dispatcher_timer(self) -> None:
+        """Regression for the release crash: cyclic GC can legally run on
+        whichever Python thread crosses its threshold. A dispatcher with a
+        live GUI timer must therefore be owned by Qt's GUI QObject tree,
+        not depend on Python cyclic-GC timing for its C++ lifetime."""
+        dispatcher = GuiDispatcher()
+        name = f"gc-owned-dispatcher-{uuid.uuid4().hex}"
+        dispatcher.setObjectName(name)
+        timer = dispatcher._timer
+
+        # Put the dispatcher behind an otherwise-unreachable Python cycle,
+        # mirroring a dialog/signal cycle retaining a service graph. The Qt
+        # application parent is the authoritative C++ owner regardless of
+        # when Python decides to collect the cycle.
+        cycle: list[object] = []
+        cycle.append(cycle)
+        cycle.append(dispatcher)
+        dispatcher = None
+        cycle = None
+
+        errors: list[BaseException] = []
+
+        def collect_on_worker() -> None:
+            try:
+                for _ in range(25):
+                    gc.collect()
+            except BaseException as exc:  # pragma: no cover - diagnostic guard
+                errors.append(exc)
+
+        t = threading.Thread(target=collect_on_worker, daemon=True)
+        t.start()
+        t.join(timeout=5)
+        self.assertFalse(t.is_alive())
+        self.assertEqual(errors, [])
+
+        # The C++ QObject remains owned by QApplication and its child timer
+        # remains active and GUI-affine after the worker-thread GC sweep.
+        recovered = _app.findChild(GuiDispatcher, name)
+        self.assertIsNotNone(recovered)
+        self.assertIs(recovered.parent(), _app)
+        self.assertIs(recovered.thread(), _app.thread())
+        self.assertIs(timer.parent(), recovered)
+        self.assertIs(timer.thread(), _app.thread())
+        self.assertTrue(timer.isActive())
+        recovered.shutdown()
 
 
 if __name__ == "__main__":
