@@ -20,7 +20,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import QEventLoop, QTimer, qInstallMessageHandler  # noqa: E402
+from PySide6.QtCore import QCoreApplication, QEvent, QEventLoop, QTimer, qInstallMessageHandler  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
 import app.ui.mcp_server_settings as mcp_server_settings  # noqa: E402
@@ -380,8 +380,10 @@ class ClientSetupVerifyLifecycleTests(unittest.TestCase):
         # reclaim this round trip's own objects - i.e. dialog<->_Verifier
         # (via the old direct bound-method connection) is not still a
         # reference cycle in disguise. With GC disabled, only ordinary
-        # refcounting can free anything; _VerifyReceiver holds nothing but
-        # a weakref back to the dialog, so once the dialog drops its
+        # refcounting (plus Qt's own deferred-delete mechanism, forced to
+        # run explicitly below via sendPostedEvents rather than left to
+        # chance) can free anything; _VerifyReceiver holds nothing but a
+        # weakref back to the dialog, so once the dialog drops its
         # _verifier/_verify_receiver attributes (see _teardown_verify) and
         # the done->deliver connection is disconnected, nothing should be
         # left referencing either object.
@@ -392,13 +394,20 @@ class ClientSetupVerifyLifecycleTests(unittest.TestCase):
             verifier_ref = weakref.ref(dialog._verifier)
             receiver_ref = weakref.ref(dialog._verify_receiver)
             self.assertTrue(pump(lambda: _dialog_verify_idle(dialog)))
-            # _Verifier.deleteLater() (posted from its own run()) needs an
-            # event-loop turn to actually flush the C++-side deletion.
-            for _ in range(20):
-                _app.processEvents()
-                if verifier_ref() is None:
-                    break
-                time.sleep(0.01)
+            # _IN_FLIGHT_VERIFIERS keeps its own strong reference until
+            # thread.finished discards it (see _on_verify) - which needs
+            # a further event-loop turn or two after _teardown_verify
+            # already ran, same as _flush_finished_thread_cleanup's own
+            # reasoning.
+            self.assertTrue(_flush_finished_thread_cleanup())
+            # _Verifier.deleteLater() (posted from its own run()) is an
+            # ordinary, unrelated Qt mechanism, not part of what this test
+            # checks - but plain processEvents() calls do not reliably
+            # flush DeferredDelete events on every pass, so force it
+            # explicitly via Qt's own API for exactly that, rather than
+            # polling and risking a flaky pass/fail on unrelated timing.
+            QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
+            _app.processEvents()
             self.assertIsNone(verifier_ref(), "the verifier was not reclaimed without gc.collect()")
             self.assertIsNone(receiver_ref(), "the receiver was not reclaimed without gc.collect()")
         finally:

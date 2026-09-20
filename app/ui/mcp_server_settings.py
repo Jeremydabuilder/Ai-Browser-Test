@@ -108,7 +108,14 @@ class _Verifier(QObject):
     """Runs verify_connection() on a background thread. Verification
     speaks real HTTP to this same PyBrowser MCP server, and a safe tool
     call routes through the GUI-thread bridge on the SERVER side - so this
-    must never run on the GUI thread itself, or the two block each other."""
+    must never run on the GUI thread itself, or the two block each other.
+
+    Deliberately never moveToThread()'d - see _VerifyThread. Its affinity
+    stays the GUI thread (where it was constructed), which only matters
+    for deleteLater() below: that posts to whichever thread's queue this
+    object's affinity names, and the GUI thread's own event loop is
+    always running, so that queue is always actually drained.
+    """
 
     done = Signal(object)
 
@@ -125,21 +132,59 @@ class _Verifier(QObject):
         _diag(f"_Verifier.run got result id={id(self)} status={result.status!r} - emitting done")
         self.done.emit(result)
         _diag(f"_Verifier.run done.emit returned id={id(self)}")
-        # Request our own deletion from right here, inside run() - i.e.
-        # still on our own thread's stack, at the same loop level the
-        # `started` signal invoked us at. deleteLater() posts a
-        # QEvent::DeferredDelete that Qt only delivers to a loop at or
-        # below the level it was posted from; calling it later from the
-        # GUI-thread slot that "done" is queued-connected to is a *cross*
-        # thread postEvent racing against that same slot's thread.quit(),
-        # and there is no guarantee the deferred-delete gets flushed
-        # before the worker's exec() loop actually exits (this raced and
-        # lost - reliably, 100% of the time - on real Windows/macOS Qt
-        # event dispatchers, though never locally on Linux/glib). Posting
-        # it here removes the race: it is queued before this method even
-        # returns, well before anything asks the loop to quit.
         self.deleteLater()
         _diag(f"_Verifier.run deleteLater() posted id={id(self)}, run() returning")
+
+
+class _VerifyThread(QThread):
+    """Runs one _Verifier round trip on a real OS thread and returns - no
+    Qt event loop (QThread's default run()=exec()) is ever entered here.
+
+    This replaces an earlier moveToThread()+thread.started.connect
+    (verifier.run)+verifier.done.connect(thread.quit) design that had a
+    confirmed, genuinely intermittent hang: QThread emits `started()`
+    from the new OS thread itself, and a same-thread (direct) connection
+    to it - which verifier.run() was, once moved to this thread - runs
+    SYNCHRONOUSLY as part of that emission, entirely BEFORE QThread's own
+    run() ever reaches exec(). Any request to quit() made from inside
+    that synchronous call - whether posted as a cross-thread queued
+    signal to the GUI thread, or even called directly, same-thread, from
+    within _Verifier.run() itself - can therefore arrive before exec()
+    has actually been entered, and Qt drops a quit() with no running
+    event loop to signal with no lasting effect: the freshly-entered
+    exec() right after then blocks forever, since nothing ever asks it to
+    stop again. Confirmed directly, reproducing intermittently (roughly
+    1 in 10-20 verify round trips run back-to-back) under both designs.
+
+    _Verifier.run() does all of its own work synchronously in one call
+    (a blocking HTTP round trip, one signal emission, a deleteLater()
+    request) and has no further need of an event loop on this thread at
+    all - so the actual fix is not to time a quit() correctly, but to
+    never need one: run() calling _verifier.run() directly and returning
+    ends the OS thread the normal way, and Qt emits `finished()`
+    automatically once any QThread.run() returns, regardless of whether
+    it ever called exec().
+    """
+
+    def __init__(self, verifier: _Verifier) -> None:
+        super().__init__()
+        # Weakref, not a strong reference: _IN_FLIGHT_VERIFIERS (see
+        # _on_verify) already guarantees the verifier outlives this
+        # thread's entire run() call on its own. A strong reference here
+        # would instead make the verifier reachable for as long as THIS
+        # thread object is - and thread.finished.connect(thread.
+        # deleteLater) below is itself an ordinary, harmless, universally-
+        # used Qt idiom that happens to make the thread self-referential
+        # (its own connection list holds a bound method of itself),
+        # relying on cyclic GC to eventually reclaim - never the crash-
+        # causing hazard this file's history is about, but no reason to
+        # let the *verifier* inherit that same GC dependency transitively.
+        self._verifier_ref = weakref.ref(verifier)
+
+    def run(self) -> None:
+        verifier = self._verifier_ref()
+        if verifier is not None:
+            verifier.run()
 
 
 class _VerifyReceiver(QObject):
@@ -335,44 +380,36 @@ class ClientSetupDialog(QDialog):
         # Deterministic verification lifecycle (see _VerifyReceiver's
         # docstring for why gc.collect() is no longer needed here at all -
         # this used to force-collect a self<->_verifier reference cycle,
-        # and is now built so that cycle never exists in the first place):
-        #   1. create the QThread (no Qt parent - see below)
-        #   2. create the worker (_Verifier)
-        #   3. create a GUI-thread receiver holding only a weakref to us
-        #   4. move the worker to the thread
-        #   5. connect thread.started -> worker.run
-        #   6. connect worker.done -> receiver.deliver (queued: receiver
+        # and is now built so that cycle never exists in the first place;
+        # see _VerifyThread's docstring for why this uses a QThread
+        # subclass rather than the more common moveToThread()+started
+        # pattern):
+        #   1. create the worker (_Verifier) and the thread that runs it
+        #      (_VerifyThread) - no Qt parent on the thread, see below
+        #   2. create a GUI-thread receiver holding only a weakref to us
+        #   3. connect worker.done -> receiver.deliver (queued: receiver
         #      lives on the GUI thread, so Qt auto-marshals correctly)
-        #   7. connect thread.finished -> thread.deleteLater (Qt-standard
-        #      "delete a QThread once it actually stops" idiom)
-        #   8. track the thread so something keeps it alive independent of
-        #      this dialog (see _IN_FLIGHT_VERIFY_THREADS) - closing this
-        #      dialog, or the app quitting, must never drop the last
-        #      reference to a still-running QThread (that is exactly
-        #      "QThread: Destroyed while thread is still running")
-        #   9. start the thread
+        #   4. connect thread.finished -> thread.deleteLater (Qt-standard
+        #      "delete a QThread once it actually stops" idiom) - emitted
+        #      automatically once _VerifyThread.run() returns
+        #   5. track the thread AND worker so something keeps each alive
+        #      independent of this dialog (see _IN_FLIGHT_VERIFY_THREADS/
+        #      _IN_FLIGHT_VERIFIERS) - closing this dialog, or the app
+        #      quitting, must never drop the last reference to either
+        #      while still in use (a still-running QThread: "QThread:
+        #      Destroyed while thread is still running"; a verifier whose
+        #      run() the thread hasn't called yet: deleted out from under
+        #      that call entirely)
+        #   6. start the thread
         # Deliberately no Qt parent on the QThread: a parented QThread
         # would be destroyed along with this dialog (its parent panel can
         # do that at any time - ClientSetupDialog is never explicitly
         # deleteLater()'d by its caller), which is unsafe while it is
         # still running. Lifetime is instead fully explicit via
         # _IN_FLIGHT_VERIFY_THREADS + its own finished->deleteLater.
-        thread = QThread()
         verifier = _Verifier(url, self._token)
+        thread = _VerifyThread(verifier)
         receiver = _VerifyReceiver(self)
-        verifier.moveToThread(thread)
-        _diag(f"_on_verify moved verifier id={id(verifier)} to thread id={id(thread)}, "
-              f"new affinity={verifier.thread()}")
-        thread.started.connect(verifier.run)
-        # Two independent consequences of the SAME terminal signal, not one
-        # depending on the other: the thread must stop once verification
-        # has a result regardless of whether this dialog is even still
-        # around to receive it (receiver.deliver's weakref can and does go
-        # dead - see done()/_teardown_verify - in which case nothing else
-        # would ever call thread.quit(), leaving its exec() loop running
-        # forever). _on_verified's own thread.quit()/wait() (normal path)
-        # becomes a harmless, already-satisfied no-op once this has run.
-        verifier.done.connect(thread.quit)
         verifier.done.connect(receiver.deliver)
         thread.finished.connect(thread.deleteLater)
         thread.finished.connect(lambda t=thread: _IN_FLIGHT_VERIFY_THREADS.discard(t))
@@ -406,47 +443,40 @@ class ClientSetupDialog(QDialog):
         round trip. Idempotent and safe to call whether or not a verify is
         actually running.
 
-        ``wait_for_thread=True`` (the normal _on_verified path): the
-        worker has already emitted its terminal result and requested its
-        own deletion (see _Verifier.run) by the time this runs, so the
-        thread's event loop is expected to stop immediately - quit()+
-        wait() here is a short, bounded, deterministic join, not a
-        network-timeout-length wait.
+        ``wait_for_thread=True`` (the normal _on_verified path): by the
+        time this runs, the worker has already emitted its terminal
+        result and returned (see _VerifyThread), so the OS thread is
+        already stopping or stopped - wait() here is a short, bounded,
+        deterministic join confirming that, not a network-timeout-length
+        wait.
 
         ``wait_for_thread=False`` (the dialog is closing/being destroyed
         while verification is still running - see done()): never block
         the GUI thread waiting on a still-in-flight network call. The
         thread keeps running under _IN_FLIGHT_VERIFY_THREADS' own
         reference and cleans itself up via finished->deleteLater once
-        verify_connection() actually returns - which needs verifier.done
-        connected to thread.quit to STAY connected even here (see below);
-        only the delivery-to-this-dialog connection is cut, so no
-        callback ever reaches a dialog that has closed.
+        verify_connection() actually returns and _VerifyThread.run()'s
+        call to it does too - no explicit quit() is ever needed for
+        that (see _VerifyThread's docstring). Only the
+        delivery-to-this-dialog connection is cut here, so no callback
+        ever reaches a dialog that has closed.
         """
         if self._verifier is not None and self._verify_receiver is not None:
             try:
-                # Only this connection - never verifier.done -> thread.quit
-                # (see _on_verify): a bare disconnect() with no arguments
-                # would drop BOTH, and then nothing would ever tell the
-                # worker thread to stop once it finishes, in exactly the
-                # "dialog closed mid-verify" case this branch exists for -
-                # an abandoned QThread spinning in its event loop forever.
                 self._verifier.done.disconnect(self._verify_receiver.deliver)
             except (RuntimeError, TypeError):
                 pass
         # The verifier schedules its own deleteLater() from inside run(),
-        # on its own thread, before any result can be delivered (see
-        # _Verifier.run) - so by construction that request was already
-        # posted to the worker thread's queue. Just drop our reference;
-        # don't delete it a second time.
+        # before any result can be delivered (see _Verifier.run) - so by
+        # construction that request was already posted. Just drop our
+        # reference; don't delete it a second time.
         self._verifier = None
         self._verify_receiver = None
         thread = self._thread
         self._thread = None
         if thread is not None and wait_for_thread:
-            _diag(f"_teardown_verify calling thread.quit() id={id(thread)} "
+            _diag(f"_teardown_verify waiting on thread id={id(thread)} "
                   f"isRunning={thread.isRunning()}")
-            thread.quit()
             waited_ok = thread.wait(2000)
             _diag(f"_teardown_verify thread.wait(2000) returned {waited_ok} "
                   f"isFinished={thread.isFinished()} id={id(thread)}")
