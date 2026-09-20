@@ -172,19 +172,45 @@ class _VerifyThread(QThread):
         # _on_verify) already guarantees the verifier outlives this
         # thread's entire run() call on its own. A strong reference here
         # would instead make the verifier reachable for as long as THIS
-        # thread object is - and thread.finished.connect(thread.
-        # deleteLater) below is itself an ordinary, harmless, universally-
-        # used Qt idiom that happens to make the thread self-referential
-        # (its own connection list holds a bound method of itself),
-        # relying on cyclic GC to eventually reclaim - never the crash-
-        # causing hazard this file's history is about, but no reason to
-        # let the *verifier* inherit that same GC dependency transitively.
+        # thread object is - and self.finished.connect(self._on_finished)
+        # below is itself an ordinary, harmless, universally-used Qt idiom
+        # that happens to make the thread self-referential (its own
+        # connection list holds a bound method of itself), relying on
+        # cyclic GC to eventually reclaim - never the crash-causing hazard
+        # this file's history is about, but no reason to let the
+        # *verifier* inherit that same GC dependency transitively.
         self._verifier_ref = weakref.ref(verifier)
+        # Single bound-method connection to finished, made here (on the
+        # GUI thread, where this QThread object is always constructed) so
+        # its thread affinity is unambiguous and it is queued to the GUI
+        # thread exactly like any other cross-thread signal in this file.
+        # Earlier revisions connected finished to THREE separate targets
+        # (deleteLater, plus two module-level closures each discarding one
+        # of this thread/its verifier from the _IN_FLIGHT_* tracking
+        # sets) - that arrangement had a confirmed, rare (roughly 1-in-15
+        # to 1-in-30) intermittent failure where one of the three did not
+        # fire for a given emission, leaving a verifier stuck in
+        # _IN_FLIGHT_VERIFIERS forever. Collapsing all three actions into
+        # one method behind one connection removes any possibility of
+        # that divergence: a single queued call either happens or it
+        # doesn't, and if it happens, all three steps happen together.
+        self.finished.connect(self._on_finished)
 
     def run(self) -> None:
         verifier = self._verifier_ref()
         if verifier is not None:
             verifier.run()
+
+    def _on_finished(self) -> None:
+        _diag(f"THREAD_ON_FINISHED firing id={id(self)}")
+        _IN_FLIGHT_VERIFY_THREADS.discard(self)
+        verifier = self._verifier_ref()
+        if verifier is not None:
+            _IN_FLIGHT_VERIFIERS.discard(verifier)
+        _diag(f"THREAD_ON_FINISHED done id={id(self)} "
+              f"threads_remaining={len(_IN_FLIGHT_VERIFY_THREADS)} "
+              f"verifiers_remaining={len(_IN_FLIGHT_VERIFIERS)}")
+        self.deleteLater()
 
 
 class _VerifyReceiver(QObject):
@@ -389,9 +415,10 @@ class ClientSetupDialog(QDialog):
         #   2. create a GUI-thread receiver holding only a weakref to us
         #   3. connect worker.done -> receiver.deliver (queued: receiver
         #      lives on the GUI thread, so Qt auto-marshals correctly)
-        #   4. connect thread.finished -> thread.deleteLater (Qt-standard
-        #      "delete a QThread once it actually stops" idiom) - emitted
-        #      automatically once _VerifyThread.run() returns
+        #   4. the thread's own finished -> _on_finished connection (made
+        #      once, in _VerifyThread.__init__) discards it and its
+        #      worker from tracking and deletes it - emitted automatically
+        #      once _VerifyThread.run() returns
         #   5. track the thread AND worker so something keeps each alive
         #      independent of this dialog (see _IN_FLIGHT_VERIFY_THREADS/
         #      _IN_FLIGHT_VERIFIERS) - closing this dialog, or the app
@@ -406,28 +433,11 @@ class ClientSetupDialog(QDialog):
         # do that at any time - ClientSetupDialog is never explicitly
         # deleteLater()'d by its caller), which is unsafe while it is
         # still running. Lifetime is instead fully explicit via
-        # _IN_FLIGHT_VERIFY_THREADS + its own finished->deleteLater.
+        # _IN_FLIGHT_VERIFY_THREADS + its own finished->_on_finished.
         verifier = _Verifier(url, self._token)
         thread = _VerifyThread(verifier)
         receiver = _VerifyReceiver(self)
         verifier.done.connect(receiver.deliver)
-        thread.finished.connect(thread.deleteLater)
-        # Temporary diagnostic instrumentation (PYBROWSER_VERIFY_DIAG=1,
-        # off by default) chasing an intermittent (roughly 1-in-15 to
-        # 1-in-30 verify cycles run back-to-back) case where a verifier
-        # is left behind in _IN_FLIGHT_VERIFIERS - the thread's own
-        # tracking clears correctly, but this connection's discard does
-        # not, for reasons not yet root-caused. Remove once resolved.
-        def _discard_thread(t=thread):
-            _diag(f"DISCARD_THREAD firing id={id(t)}")
-            _IN_FLIGHT_VERIFY_THREADS.discard(t)
-            _diag(f"DISCARD_THREAD done id={id(t)} remaining={len(_IN_FLIGHT_VERIFY_THREADS)}")
-        def _discard_verifier(v=verifier):
-            _diag(f"DISCARD_VERIFIER firing id={id(v)}")
-            _IN_FLIGHT_VERIFIERS.discard(v)
-            _diag(f"DISCARD_VERIFIER done id={id(v)} remaining={len(_IN_FLIGHT_VERIFIERS)}")
-        thread.finished.connect(_discard_thread)
-        thread.finished.connect(_discard_verifier)
         _diag(f"CREATED thread id={id(thread)} verifier id={id(verifier)}")
         _IN_FLIGHT_VERIFY_THREADS.add(thread)
         _IN_FLIGHT_VERIFIERS.add(verifier)
