@@ -84,7 +84,7 @@ class GuiDispatcher(QObject):
         # to a GUI-thread object from another thread is invalid Qt usage and
         # would put us straight back into the lifetime/thread-affinity class
         # of bugs this primitive exists to avoid.
-        if QThread.currentThread() is not parent.thread():
+        if QThread.currentThread() != parent.thread():
             raise RuntimeError("GuiDispatcher must be created on its Qt parent's thread")
 
         super().__init__(parent)
@@ -128,9 +128,6 @@ class GuiDispatcher(QObject):
 
     def _run_pending(self, pending: "_PendingCall") -> None:
         if pending.expired:
-            # The waiter already gave up (timeout elapsed) and is no
-            # longer looking at this object - don't run a callback whose
-            # receiver (e.g. a since-closed dialog) may no longer exist.
             return
         try:
             pending.result = pending.fn()
@@ -140,15 +137,6 @@ class GuiDispatcher(QObject):
             pending.event.set()
 
     def run_sync(self, fn: Callable[[], Any], timeout: float) -> Any:
-        """Run ``fn`` on the GUI thread and block until it returns, or
-        ``timeout`` elapses (in which case ``None`` is returned - no
-        exception is raised for an ordinary timeout).
-
-        Reentrant: if already called from the GUI thread, runs ``fn``
-        directly instead of enqueuing - enqueuing would deadlock, since
-        the GUI thread would then be waiting on the very queue only its
-        own (blocked) self could ever drain.
-        """
         if self.is_gui_thread:
             return fn()
         with self._lock:
@@ -165,9 +153,6 @@ class GuiDispatcher(QObject):
         return pending.result
 
     def post(self, fn: Callable[[], None]) -> None:
-        """Fire-and-forget: run ``fn`` on the GUI thread without waiting
-        for it to finish. Also reentrant (runs directly if already on the
-        GUI thread)."""
         if self.is_gui_thread:
             fn()
             return
@@ -177,11 +162,6 @@ class GuiDispatcher(QObject):
         self._queue.put(fn)
 
     def shutdown(self) -> None:
-        """Permanently stop accepting new work and release every request
-        already queued with ``GuiDispatchShutdown``, so no worker thread
-        is ever left waiting forever. Must be called on the GUI thread
-        (it stops this dispatcher's own QTimer). This is a one-way
-        teardown - not meant to be paired with any "restart"."""
         if not self.is_gui_thread:
             raise RuntimeError("GuiDispatcher.shutdown() must run on the GUI thread")
         with self._lock:
@@ -195,4 +175,3 @@ class GuiDispatcher(QObject):
             if isinstance(item, _PendingCall):
                 item.exception = GuiDispatchShutdown("GUI dispatcher is shut down")
                 item.event.set()
-            # A fire-and-forget callable has no waiter to release - drop it.
