@@ -1,0 +1,184 @@
+name: GuiDispatcher lifetime validation
+
+on:
+  push:
+    branches:
+      - claude/python-desktop-browser-n20ht5
+    paths:
+      - .github/workflows/guibridge-lifetime-validation.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Stress GuiDispatcher lifetime and verifier path
+        shell: pwsh
+        env:
+          QT_QPA_PLATFORM: offscreen
+          PYTHONFAULTHANDLER: "1"
+        run: |
+          $ErrorActionPreference = "Stop"
+          function Run-Many([string]$label, [string[]]$args_, [int]$count) {
+            Write-Host "::group::$label ($count runs)"
+            for ($i=1; $i -le $count; $i++) {
+              python tests/run.py @args_ -v *> "$label-$i.log"
+              if ($LASTEXITCODE -ne 0) {
+                Get-Content "$label-$i.log"
+                throw "$label failed on run $i/$count (exit=$LASTEXITCODE)"
+              }
+              $txt = Get-Content "$label-$i.log" -Raw
+              if ($txt -match 'QObject::killTimer|Timers cannot be stopped from another thread|QThread: Destroyed while thread is still running|0xC0000005|0xC0000374|Fatal Python error|Segmentation fault') {
+                Get-Content "$label-$i.log"
+                throw "$label emitted a forbidden native/lifetime warning on run $i/$count"
+              }
+              Write-Host "$label $i/$count OK"
+            }
+            Write-Host "::endgroup::"
+          }
+
+          $target = @('tests.test_mcp_client_setup_ui.ClientSetupDialogTests.test_verifying_a_real_pairing_reaches_verified')
+          Run-Many 'target' $target 50
+
+          $gc = @('tests.test_gui_bridge.GuiDispatcherLifecycleTests.test_worker_thread_gc_cannot_destroy_application_owned_dispatcher_timer')
+          Run-Many 'worker_gc' $gc 50
+
+          Run-Many 'gui_bridge_module' @('tests.test_gui_bridge') 20
+
+          $mcp = @(
+            'tests.test_gui_bridge',
+            'tests.test_mcp_client_configs',
+            'tests.test_mcp_client_profiles',
+            'tests.test_mcp_client_setup_ui',
+            'tests.test_mcp_server_integration',
+            'tests.test_mcp_server_settings_ui',
+            'tests.test_mcp_server_verification',
+            'tests.test_mcp_stdio_bridge'
+          )
+          Run-Many 'mcp_group' $mcp 5
+
+      - name: Full suite twice
+        shell: pwsh
+        env:
+          QT_QPA_PLATFORM: offscreen
+          PYTHONFAULTHANDLER: "1"
+        run: |
+          $ErrorActionPreference = "Stop"
+          for ($i=1; $i -le 2; $i++) {
+            python -u tests/_ci_runner.py *> "full-$i.log"
+            if ($LASTEXITCODE -ne 0) {
+              Get-Content "full-$i.log"
+              throw "full suite failed on run $i"
+            }
+            $txt = Get-Content "full-$i.log" -Raw
+            if ($txt -match 'QObject::killTimer|Timers cannot be stopped from another thread|QThread: Destroyed while thread is still running|0xC0000005|0xC0000374|Fatal Python error|Segmentation fault') {
+              Get-Content "full-$i.log"
+              throw "full suite emitted a forbidden native/lifetime warning on run $i"
+            }
+            Write-Host "full suite $i/2 OK"
+          }
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: guibridge-lifetime-windows-logs
+          path: '*.log'
+          if-no-files-found: ignore
+
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Stress GuiDispatcher lifetime and verifier path
+        env:
+          QT_QPA_PLATFORM: offscreen
+          QTWEBENGINE_DISABLE_SANDBOX: "1"
+          PYTHONFAULTHANDLER: "1"
+        run: |
+          set -euo pipefail
+          run_many() {
+            label="$1"; count="$2"; shift 2
+            echo "::group::$label ($count runs)"
+            for i in $(seq 1 "$count"); do
+              set +e
+              python3 tests/run.py "$@" -v > "$label-$i.log" 2>&1
+              status=$?
+              set -e
+              if [ "$status" -ne 0 ]; then
+                cat "$label-$i.log"
+                echo "::error::$label failed on run $i/$count (exit=$status)"
+                exit "$status"
+              fi
+              if grep -E 'QObject::killTimer|Timers cannot be stopped from another thread|QThread: Destroyed while thread is still running|EXC_BAD_ACCESS|SIGSEGV|Fatal Python error|Segmentation fault' "$label-$i.log"; then
+                cat "$label-$i.log"
+                echo "::error::$label emitted a forbidden native/lifetime warning on run $i/$count"
+                exit 1
+              fi
+              echo "$label $i/$count OK"
+            done
+            echo "::endgroup::"
+          }
+
+          run_many target 50 tests.test_mcp_client_setup_ui.ClientSetupDialogTests.test_verifying_a_real_pairing_reaches_verified
+          run_many worker_gc 50 tests.test_gui_bridge.GuiDispatcherLifecycleTests.test_worker_thread_gc_cannot_destroy_application_owned_dispatcher_timer
+          run_many gui_bridge_module 20 tests.test_gui_bridge
+          run_many mcp_group 5 \
+            tests.test_gui_bridge \
+            tests.test_mcp_client_configs \
+            tests.test_mcp_client_profiles \
+            tests.test_mcp_client_setup_ui \
+            tests.test_mcp_server_integration \
+            tests.test_mcp_server_settings_ui \
+            tests.test_mcp_server_verification \
+            tests.test_mcp_stdio_bridge
+      - name: Full suite twice
+        env:
+          QT_QPA_PLATFORM: offscreen
+          QTWEBENGINE_DISABLE_SANDBOX: "1"
+          PYTHONFAULTHANDLER: "1"
+        run: |
+          set -euo pipefail
+          for i in 1 2; do
+            set +e
+            python3 -u tests/_ci_runner.py > "full-$i.log" 2>&1
+            status=$?
+            set -e
+            if [ "$status" -ne 0 ]; then
+              cat "full-$i.log"
+              echo "::error::full suite failed on run $i (exit=$status)"
+              exit "$status"
+            fi
+            if grep -E 'QObject::killTimer|Timers cannot be stopped from another thread|QThread: Destroyed while thread is still running|EXC_BAD_ACCESS|SIGSEGV|Fatal Python error|Segmentation fault' "full-$i.log"; then
+              cat "full-$i.log"
+              echo "::error::full suite emitted a forbidden native/lifetime warning on run $i"
+              exit 1
+            fi
+            echo "full suite $i/2 OK"
+          done
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: guibridge-lifetime-macos-logs
+          path: '*.log'
+          if-no-files-found: ignore
