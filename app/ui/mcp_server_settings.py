@@ -412,11 +412,23 @@ class ClientSetupDialog(QDialog):
         receiver = _VerifyReceiver(self)
         verifier.done.connect(receiver.deliver)
         thread.finished.connect(thread.deleteLater)
-        thread.finished.connect(lambda t=thread: _IN_FLIGHT_VERIFY_THREADS.discard(t))
-        # thread.finished only fires once run() (and thus verifier's own
-        # role) has fully completed - safe to stop tracking the verifier
-        # at the same point the thread's own tracking ends.
-        thread.finished.connect(lambda v=verifier: _IN_FLIGHT_VERIFIERS.discard(v))
+        # Temporary diagnostic instrumentation (PYBROWSER_VERIFY_DIAG=1,
+        # off by default) chasing an intermittent (roughly 1-in-15 to
+        # 1-in-30 verify cycles run back-to-back) case where a verifier
+        # is left behind in _IN_FLIGHT_VERIFIERS - the thread's own
+        # tracking clears correctly, but this connection's discard does
+        # not, for reasons not yet root-caused. Remove once resolved.
+        def _discard_thread(t=thread):
+            _diag(f"DISCARD_THREAD firing id={id(t)}")
+            _IN_FLIGHT_VERIFY_THREADS.discard(t)
+            _diag(f"DISCARD_THREAD done id={id(t)} remaining={len(_IN_FLIGHT_VERIFY_THREADS)}")
+        def _discard_verifier(v=verifier):
+            _diag(f"DISCARD_VERIFIER firing id={id(v)}")
+            _IN_FLIGHT_VERIFIERS.discard(v)
+            _diag(f"DISCARD_VERIFIER done id={id(v)} remaining={len(_IN_FLIGHT_VERIFIERS)}")
+        thread.finished.connect(_discard_thread)
+        thread.finished.connect(_discard_verifier)
+        _diag(f"CREATED thread id={id(thread)} verifier id={id(verifier)}")
         _IN_FLIGHT_VERIFY_THREADS.add(thread)
         _IN_FLIGHT_VERIFIERS.add(verifier)
 
