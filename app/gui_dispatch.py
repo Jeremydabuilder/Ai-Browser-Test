@@ -28,7 +28,7 @@ import threading
 import weakref
 from typing import Any, Callable
 
-from PySide6.QtCore import QObject, QTimer
+from PySide6.QtCore import QCoreApplication, QObject, QTimer
 
 
 class GuiDispatchShutdown(RuntimeError):
@@ -70,7 +70,30 @@ class GuiDispatcher(QObject):
     """
 
     def __init__(self, poll_interval_ms: int = 5) -> None:
-        super().__init__()
+        # Parented to the QApplication itself rather than left parentless:
+        # an ordinary Qt widget/dialog connecting one of its own signals to
+        # a bound method of itself (the universal `button.clicked.connect
+        # (self.method)` idiom, used throughout this app's UI) is itself a
+        # harmless, ordinary Python reference cycle - ubiquitous in Qt
+        # apps, and normally reclaimed by Python's cyclic GC without
+        # incident. It stops being harmless the moment such a cycle
+        # transitively keeps THIS object reachable (e.g. a dialog holding
+        # a reference to the PyBrowserMcpServer this dispatcher backs):
+        # cyclic GC can run on any thread, and reclaiming an unparented
+        # QObject with a running QTimer from a thread other than the one
+        # it belongs to is exactly the "QBasicTimer::stop: Failed" /
+        # "QObject::killTimer: Timers cannot be stopped from another
+        # thread" crash class this module's docstring already describes -
+        # confirmed to still occur via this exact path (an ordinary,
+        # unrelated dialog-widget cycle delaying collection of a live
+        # GuiDispatcher until some later, off-thread automatic GC sweep
+        # reaps it) even after the connection-cycle fix below. Giving Qt
+        # itself C++ ownership via a real parent sidesteps the hazard
+        # entirely: Shiboken then leaves the underlying QTimer/GuiDispatcher
+        # alive for as long as the QApplication is, regardless of what
+        # Python's own refcounting or cyclic GC ever does to the Python
+        # wrapper - so it is never at the mercy of GC thread timing at all.
+        super().__init__(QCoreApplication.instance())
         self._queue: "queue.Queue[_PendingCall | Callable[[], None]]" = queue.Queue()
         self._gui_thread_ident = threading.get_ident()
         self._lock = threading.Lock()

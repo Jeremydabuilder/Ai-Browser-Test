@@ -76,16 +76,34 @@ class ClientSetupDialogTests(unittest.TestCase):
         self.db.close()
         self._tmp.cleanup()
 
+    def _dispose(self, dialog: ClientSetupDialog) -> None:
+        """Every test in this class builds its own throwaway dialog with
+        no Qt parent (a real caller always passes one - see
+        ClientSetupDialog's production call site, which parents it to
+        the _ClientCard that opened it). Left to Python's own cyclic GC
+        to reclaim, its ordinary button.clicked.connect(self.method)
+        connections (needed by every Qt dialog, harmless on their own)
+        can have their eventual collection land on a background thread
+        (this server's HTTP handler threads) instead of the GUI thread -
+        deleteLater() routes through Qt's own deterministic GUI-thread
+        teardown instead, matching how a real parented dialog is always
+        destroyed."""
+        self.addCleanup(dialog.deleteLater)
+        self.addCleanup(_app.processEvents)
+
     def test_cursor_defaults_to_the_research_preset(self) -> None:
         dialog = ClientSetupDialog(ClientType.CURSOR, self.server)
+        self._dispose(dialog)
         self.assertEqual(dialog.preset_combo.currentData(), "research")
 
     def test_chatgpt_defaults_to_read_only(self) -> None:
         dialog = ClientSetupDialog(ClientType.CHATGPT, self.server)
+        self._dispose(dialog)
         self.assertEqual(dialog.preset_combo.currentData(), "read_only")
 
     def test_pairing_cursor_generates_a_cursor_shaped_config(self) -> None:
         dialog = ClientSetupDialog(ClientType.CURSOR, self.server)
+        self._dispose(dialog)
         dialog._on_pair()
         self.assertIn("mcpServers", dialog.config_text.toPlainText())
         self.assertIn("streamableHttp", dialog.config_text.toPlainText())
@@ -93,6 +111,7 @@ class ClientSetupDialogTests(unittest.TestCase):
 
     def test_pairing_vscode_generates_a_servers_shaped_config(self) -> None:
         dialog = ClientSetupDialog(ClientType.VSCODE, self.server)
+        self._dispose(dialog)
         dialog._on_pair()
         text = dialog.config_text.toPlainText()
         self.assertIn('"servers"', text)
@@ -100,6 +119,7 @@ class ClientSetupDialogTests(unittest.TestCase):
 
     def test_pairing_chatgpt_shows_the_tunnel_warning_and_never_enables_verify(self) -> None:
         dialog = ClientSetupDialog(ClientType.CHATGPT, self.server)
+        self._dispose(dialog)
         dialog._on_pair()
         self.assertFalse(dialog.tunnel_warning.isHidden())
         self.assertFalse(dialog.verify_button.isEnabled())
@@ -108,6 +128,7 @@ class ClientSetupDialogTests(unittest.TestCase):
 
     def test_pairing_records_client_type_and_connection_method(self) -> None:
         dialog = ClientSetupDialog(ClientType.CURSOR, self.server)
+        self._dispose(dialog)
         dialog._on_pair()
         client = self.store.list_clients()[0]
         self.assertEqual(client.client_type, "cursor")
@@ -126,6 +147,7 @@ class ClientSetupDialogTests(unittest.TestCase):
         # spinning the dispatcher in a tight native loop.
         before_threads = {t.ident for t in threading.enumerate()}
         dialog = ClientSetupDialog(ClientType.CURSOR, self.server)
+        self._dispose(dialog)
         dialog.preset_combo.setCurrentIndex(0)  # read_only - has read_tabs
         dialog._apply_preset_to_checks()
         dialog._on_pair()
@@ -165,6 +187,7 @@ class ClientSetupDialogTests(unittest.TestCase):
 
     def test_generic_client_uses_live_capabilities_not_a_client_specific_generator(self) -> None:
         dialog = ClientSetupDialog(ClientType.GENERIC, self.server)
+        self._dispose(dialog)
         dialog._on_pair()
         text = dialog.config_text.toPlainText()
         self.assertIn("endpoint", text)
@@ -254,6 +277,15 @@ class ClientSetupVerifyLifecycleTests(unittest.TestCase):
 
     def _paired_dialog(self) -> ClientSetupDialog:
         dialog = ClientSetupDialog(ClientType.CURSOR, self.server)
+        # No Qt parent (a real caller always passes one) - deleteLater()
+        # via addCleanup routes teardown through Qt's own deterministic
+        # GUI-thread machinery instead of leaving this dialog's ordinary,
+        # but GC-only-reclaimable, button.clicked.connect(self.method)
+        # cycle for Python's cyclic collector to eventually reap on
+        # whatever thread happens to trip it - see
+        # ClientSetupDialogTests._dispose for the same reasoning.
+        self.addCleanup(dialog.deleteLater)
+        self.addCleanup(_app.processEvents)
         dialog.preset_combo.setCurrentIndex(0)  # read_only - has read_tabs
         dialog._apply_preset_to_checks()
         dialog._on_pair()
@@ -438,6 +470,10 @@ class ClientCardTests(unittest.TestCase):
 
     def tearDown(self) -> None:
         self.panel.close()
+        # See ClientSetupDialogTests._dispose - same no-Qt-parent,
+        # rely-on-deleteLater()-not-cyclic-GC reasoning.
+        self.panel.deleteLater()
+        _app.processEvents()
         self.server.stop()
         self.db.close()
         self._tmp.cleanup()

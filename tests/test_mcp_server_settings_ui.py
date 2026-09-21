@@ -39,6 +39,22 @@ class ExternalAiAccessPanelTests(unittest.TestCase):
 
     def tearDown(self) -> None:
         self.panel.close()
+        # Constructed with no Qt parent (a real caller always passes one -
+        # see ExternalAiAccessPanel's only production call site, which
+        # embeds it in a settings tab), so nothing but this test's own
+        # `self.panel` reference keeps it alive. Its widget tree has the
+        # same self-referencing button.clicked.connect(self.method)
+        # connections every Qt dialog/widget in this app uses (an
+        # ordinary, harmless idiom on its own) - but left to Python's
+        # cyclic GC to reclaim, an unlucky automatic collection running
+        # on a background thread (this app's MCP server does have
+        # those) while the panel happens to be mid-collection can delete
+        # a Qt object off its own thread and crash. deleteLater()
+        # dispatches through Qt's own deterministic, GUI-thread-only
+        # teardown instead, same as production relies on via its real Qt
+        # parent.
+        self.panel.deleteLater()
+        _app.processEvents()
         self.server.stop()
         self.db.close()
         self._tmp.cleanup()
@@ -80,6 +96,10 @@ class PairClientDialogTests(unittest.TestCase):
 
     def tearDown(self) -> None:
         self.dialog.close()
+        # See ExternalAiAccessPanelTests.tearDown - same no-Qt-parent,
+        # rely-on-deleteLater()-not-cyclic-GC reasoning.
+        self.dialog.deleteLater()
+        _app.processEvents()
         self.db.close()
         self._tmp.cleanup()
 
