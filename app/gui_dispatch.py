@@ -28,7 +28,7 @@ import threading
 import weakref
 from typing import Any, Callable
 
-from PySide6.QtCore import QCoreApplication, QObject, QTimer
+from PySide6.QtCore import QCoreApplication, QObject, QThread, QTimer
 
 
 class GuiDispatchShutdown(RuntimeError):
@@ -62,58 +62,45 @@ class GuiDispatcher(QObject):
     Qt-shaped (no QObject, no Signal) ever crosses the thread boundary -
     only the queue itself does.
 
-    One instance is meant to live for the lifetime of its owner (created
-    once, e.g. in that owner's ``__init__``), independent of any
-    start()/stop() cycles that owner itself goes through - see
-    ``shutdown()`` below for the separate, permanent teardown path meant
-    to be used at application close.
+    A dispatcher is parented to the process' ``QCoreApplication`` by
+    default. That Qt/C++ ownership is intentional and important: the
+    dispatcher owns a live ``QTimer``, so its destruction must be governed
+    by the GUI-thread QObject tree rather than by an unpredictable Python
+    cyclic-GC sweep that may happen on a worker thread. Callers may supply
+    another long-lived GUI-thread QObject parent explicitly, but temporary
+    dialogs/workers are not appropriate owners.
     """
 
-    def __init__(self, poll_interval_ms: int = 5) -> None:
-        # Parented to the QApplication itself rather than left parentless:
-        # an ordinary Qt widget/dialog connecting one of its own signals to
-        # a bound method of itself (the universal `button.clicked.connect
-        # (self.method)` idiom, used throughout this app's UI) is itself a
-        # harmless, ordinary Python reference cycle - ubiquitous in Qt
-        # apps, and normally reclaimed by Python's cyclic GC without
-        # incident. It stops being harmless the moment such a cycle
-        # transitively keeps THIS object reachable (e.g. a dialog holding
-        # a reference to the PyBrowserMcpServer this dispatcher backs):
-        # cyclic GC can run on any thread, and reclaiming an unparented
-        # QObject with a running QTimer from a thread other than the one
-        # it belongs to is exactly the "QBasicTimer::stop: Failed" /
-        # "QObject::killTimer: Timers cannot be stopped from another
-        # thread" crash class this module's docstring already describes -
-        # confirmed to still occur via this exact path (an ordinary,
-        # unrelated dialog-widget cycle delaying collection of a live
-        # GuiDispatcher until some later, off-thread automatic GC sweep
-        # reaps it) even after the connection-cycle fix below. Giving Qt
-        # itself C++ ownership via a real parent sidesteps the hazard
-        # entirely: Shiboken then leaves the underlying QTimer/GuiDispatcher
-        # alive for as long as the QApplication is, regardless of what
-        # Python's own refcounting or cyclic GC ever does to the Python
-        # wrapper - so it is never at the mercy of GC thread timing at all.
-        super().__init__(QCoreApplication.instance())
+    def __init__(self, poll_interval_ms: int = 5, parent: QObject | None = None) -> None:
+        if parent is None:
+            parent = QCoreApplication.instance()
+            if parent is None:
+                raise RuntimeError(
+                    "GuiDispatcher requires a QCoreApplication/QApplication instance"
+                )
+
+        # Fail before constructing any QObject/timer if a caller tries to
+        # create the dispatcher from a worker thread. Parenting a QObject
+        # to a GUI-thread object from another thread is invalid Qt usage and
+        # would put us straight back into the lifetime/thread-affinity class
+        # of bugs this primitive exists to avoid.
+        if QThread.currentThread() != parent.thread():
+            raise RuntimeError("GuiDispatcher must be created on its Qt parent's thread")
+
+        super().__init__(parent)
         self._queue: "queue.Queue[_PendingCall | Callable[[], None]]" = queue.Queue()
         self._gui_thread_ident = threading.get_ident()
         self._lock = threading.Lock()
         self._closed = False
         self._timer = QTimer(self)
         self._timer.setInterval(poll_interval_ms)
-        # Connecting a bound method (self._drain) directly here would hold
-        # a strong Python reference back to self from Qt's own connection
-        # bookkeeping - self -> _timer -> connection -> bound method ->
-        # self - a reference cycle only the cyclic GC can break. Since
-        # Python's cyclic GC can run on ANY thread (whichever one happens
-        # to trip the collection threshold), a dropped-but-cyclic
-        # GuiDispatcher could then have its QTimer torn down from a
-        # background worker thread instead of the GUI thread it belongs
-        # to - reproduced locally as "QBasicTimer::stop: Failed. Possibly
-        # trying to stop from a different thread" followed by a segfault.
-        # A weakref callback breaks the cycle: refcounting alone then
-        # collects a dropped GuiDispatcher immediately, on whichever
-        # thread drops its last real reference - deterministic, no
-        # GC-thread ambiguity.
+
+        # Keep the timeout callback weak so Qt's connection bookkeeping does
+        # not itself introduce a Python self-cycle. The *lifetime* guarantee,
+        # however, comes from the QObject parent tree above: QApplication ->
+        # GuiDispatcher -> QTimer. In particular, dropping the last ordinary
+        # Python reference does not make worker-thread cyclic GC responsible
+        # for tearing down a live GUI timer.
         weak_self = weakref.ref(self)
 
         def _tick() -> None:
@@ -141,9 +128,6 @@ class GuiDispatcher(QObject):
 
     def _run_pending(self, pending: "_PendingCall") -> None:
         if pending.expired:
-            # The waiter already gave up (timeout elapsed) and is no
-            # longer looking at this object - don't run a callback whose
-            # receiver (e.g. a since-closed dialog) may no longer exist.
             return
         try:
             pending.result = pending.fn()
@@ -153,15 +137,6 @@ class GuiDispatcher(QObject):
             pending.event.set()
 
     def run_sync(self, fn: Callable[[], Any], timeout: float) -> Any:
-        """Run ``fn`` on the GUI thread and block until it returns, or
-        ``timeout`` elapses (in which case ``None`` is returned - no
-        exception is raised for an ordinary timeout).
-
-        Reentrant: if already called from the GUI thread, runs ``fn``
-        directly instead of enqueuing - enqueuing would deadlock, since
-        the GUI thread would then be waiting on the very queue only its
-        own (blocked) self could ever drain.
-        """
         if self.is_gui_thread:
             return fn()
         with self._lock:
@@ -178,9 +153,6 @@ class GuiDispatcher(QObject):
         return pending.result
 
     def post(self, fn: Callable[[], None]) -> None:
-        """Fire-and-forget: run ``fn`` on the GUI thread without waiting
-        for it to finish. Also reentrant (runs directly if already on the
-        GUI thread)."""
         if self.is_gui_thread:
             fn()
             return
@@ -190,11 +162,8 @@ class GuiDispatcher(QObject):
         self._queue.put(fn)
 
     def shutdown(self) -> None:
-        """Permanently stop accepting new work and release every request
-        already queued with ``GuiDispatchShutdown``, so no worker thread
-        is ever left waiting forever. Must be called on the GUI thread
-        (it stops this dispatcher's own QTimer). This is a one-way
-        teardown - not meant to be paired with any "restart"."""
+        if not self.is_gui_thread:
+            raise RuntimeError("GuiDispatcher.shutdown() must run on the GUI thread")
         with self._lock:
             self._closed = True
         self._timer.stop()
@@ -206,4 +175,3 @@ class GuiDispatcher(QObject):
             if isinstance(item, _PendingCall):
                 item.exception = GuiDispatchShutdown("GUI dispatcher is shut down")
                 item.event.set()
-            # A fire-and-forget callable has no waiter to release - drop it.
