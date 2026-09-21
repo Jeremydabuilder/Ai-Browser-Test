@@ -250,6 +250,22 @@ VISUAL_ONLY = """<!doctype html>
 class _Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
+    # HTTP/1.1 keeps connections open by default, so a handler thread for
+    # a connection the browser/test never reuses (or abandons mid-test)
+    # blocks forever in readinto() waiting for a next request that never
+    # comes - and since ThreadingHTTPServer's threads here are daemon and
+    # never joined, that thread then stays alive for the rest of the
+    # process's life. A long-lived background thread like that is a
+    # candidate for whatever thread Python's automatic cyclic GC happens
+    # to trip on next (allocation thresholds are global, not per-thread) -
+    # confirmed via a local full-suite run to be involved in a delayed,
+    # off-GUI-thread QObject destruction crash surfacing in a completely
+    # unrelated later test. Bounding the socket timeout ensures this
+    # thread always exits within a few seconds of its last request
+    # instead of persisting indefinitely; a real in-flight download
+    # (which streams continuously) is unaffected.
+    timeout = 5
+
     def _send(self, body: str, status: int = 200, content_type: str = "text/html; charset=utf-8") -> None:
         payload = body.encode("utf-8")
         self.send_response(status)

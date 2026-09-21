@@ -36,6 +36,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 os.environ.setdefault("PYBROWSER_DATA_DIR", tempfile.mkdtemp(prefix="pybrowser-mcp-shutdown-"))
 
+from PySide6.QtCore import QCoreApplication, QEvent  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
 from app.mcp.config import McpServerStore  # noqa: E402
@@ -96,6 +97,30 @@ class McpShutdownTestCase(unittest.TestCase):
 
     def tearDown(self) -> None:
         self.manager.shutdown()
+        # Constructed with no Qt parent (self.manager = McpConnectionManager
+        # (self.store), no parent argument) - nothing but this test's own
+        # reference keeps it alive. Same reasoning as ClientSetupDialogTests.
+        # _dispose in tests/test_mcp_client_setup_ui.py: deleteLater() routes
+        # teardown through Qt's own deterministic GUI-thread machinery
+        # instead of leaving it for Python's cyclic GC to reclaim on
+        # whatever thread happens to trip it - confirmed to matter here: a
+        # local full-suite run showed "QObject::killTimer: Timers cannot be
+        # stopped from another thread" immediately after this class's
+        # shutdown-with-an-active-subprocess test, with a segfault surfacing
+        # hundreds of tests later in a completely unrelated module (the
+        # classic delayed-corruption signature of an off-thread QObject
+        # destructor).
+        self.manager.deleteLater()
+        # A plain processEvents() does not reliably flush a QEvent::
+        # DeferredDelete on its own (confirmed elsewhere in this
+        # investigation - see test_mcp_client_setup_ui.py's structural
+        # test) - sendPostedEvents forces it explicitly, so self.manager
+        # is actually gone, on the GUI thread, before the next test's
+        # setUp spins up a new background asyncio thread that could
+        # otherwise trip Python's cyclic GC while this one is still only
+        # deleteLater()-pending.
+        QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
+        _app.processEvents()
         self.db.close()
         os.unlink(self._tmp.name)
 

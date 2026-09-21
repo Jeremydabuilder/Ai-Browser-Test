@@ -710,6 +710,12 @@ class McpDisconnectBarWiringTests(PanelTests):
             panel.deleteLater()
         finally:
             manager.shutdown()
+            # No Qt parent - see McpShutdownTestCase.tearDown in
+            # tests/test_mcp_connection_manager_shutdown.py for why this
+            # matters (not just a leak: a real off-thread-destruction
+            # crash reproduced locally without it).
+            manager.deleteLater()
+            _app.processEvents()
 
     def test_reconnect_calls_the_manager(self) -> None:
         from app.mcp.config import McpServerStore
@@ -733,3 +739,5 @@ class McpDisconnectBarWiringTests(PanelTests):
             panel.deleteLater()
         finally:
             manager.shutdown()
+            manager.deleteLater()
+            _app.processEvents()

@@ -86,6 +86,11 @@ class Phase2TestCase(unittest.TestCase):
 
     def tearDown(self) -> None:
         self.manager.shutdown()
+        # No Qt parent - see McpShutdownTestCase.tearDown in
+        # tests/test_mcp_connection_manager_shutdown.py for why this
+        # matters (not just a leak: a real off-thread-destruction crash
+        # reproduced locally without it).
+        self.manager.deleteLater()
         for tab in self.tabs.tabs():
             tab.page.deleteLater()
         self.tabs.deleteLater()
