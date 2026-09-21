@@ -278,8 +278,9 @@ class PyBrowserMcpServer(QObject):
     def __init__(
         self, *, store, browser=None, missions=None, graph_store=None,
         host: str = DEFAULT_HOST, port: int = DEFAULT_PORT,
+        parent: QObject | None = None,
     ) -> None:
-        super().__init__()
+        super().__init__(parent)
         self.store = store
         self.host = host
         self.port = port

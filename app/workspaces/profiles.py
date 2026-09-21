@@ -49,7 +49,13 @@ class WorkspaceProfileManager:
         if cached is not None:
             return cached
         storage_name = workspace.profile_storage_name or f"workspace-{workspace.id}"
-        profile = BrowserProfile(storage_name=storage_name)
+        # Parented to the default profile (never itself torn down mid-
+        # session, per this class's own docstring) rather than left as a
+        # bare Python reference in ``_isolated`` - consistent with every
+        # other long-lived QObject in the app, and removes the dependency
+        # on this dict never being pruned for its downloadRequested
+        # connection to stay safe.
+        profile = BrowserProfile(parent=self._default, storage_name=storage_name)
         self._isolated[workspace.id] = profile
         return profile
 

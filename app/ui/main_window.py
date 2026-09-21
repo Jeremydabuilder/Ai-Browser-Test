@@ -248,7 +248,7 @@ class MainWindow(QMainWindow):
 
         self.mcp_server = PyBrowserMcpServer(
             store=McpServerAccessStore(database), browser=self.controller,
-            missions=self.missions, graph_store=self.mission_graph)
+            missions=self.missions, graph_store=self.mission_graph, parent=self)
         if self.settings.mcp_server_enabled:
             self.mcp_server.start()
         # A lambda capturing self here would hold a strong reference back
