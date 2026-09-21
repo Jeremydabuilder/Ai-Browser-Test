@@ -132,6 +132,25 @@ class GuiBridge:
 class _Handler(BaseHTTPRequestHandler):
     server: "_HttpServer"  # type: ignore[assignment]
 
+    # Bounds how long a single handler thread can block on socket I/O.
+    # Without this, a connection whose client never sends a request (a
+    # stray probe, a client that aborted mid-handshake) blocks forever in
+    # readinto() - and since this server's threads are deliberately
+    # daemon/never-joined (see _HttpServer below), that thread then stays
+    # alive for the rest of the process's life, long past this server's
+    # own stop(). That is more than a resource leak: any live Python
+    # thread can be the one on which the interpreter's automatic cyclic
+    # GC happens to trip (allocation thresholds are global, not
+    # per-thread), and if it does, whatever it collects runs on THAT
+    # thread - so a handler thread idling for the rest of a long,
+    # multi-module test run is exactly the kind of long-lived background
+    # thread that can end up finalizing an unrelated Qt object (elsewhere
+    # in the app or test suite) off the GUI thread. socket.timeout is
+    # caught and handled gracefully by BaseHTTPRequestHandler itself
+    # (closes the connection, no traceback), so this never affects a real
+    # request - those complete in milliseconds.
+    timeout = 5
+
     def log_message(self, format: str, *args: Any) -> None:  # noqa: A002
         pass  # never let stdlib logging leak request bodies/tokens to stderr
 
