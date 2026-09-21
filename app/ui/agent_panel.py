@@ -743,7 +743,7 @@ class AgentPanel(QWidget):
         if missions is not None:
             missions.active_changed.connect(self._on_active_mission)
             missions.pages_changed.connect(self._on_mission_pages)
-            missions.missions_changed.connect(lambda _m=None: self._refresh_picker())
+            missions.missions_changed.connect(self._on_missions_changed)
 
         # Quick actions. These are not a separate system: each one sends an
         # ordinary message through the same session, so whatever the agent can
@@ -1372,6 +1372,16 @@ class AgentPanel(QWidget):
     def _refresh_picker(self) -> None:
         if self.mission_picker is not None and self.mission_picker.isVisible():
             self.mission_picker.refresh()
+
+    def _on_missions_changed(self, _mission=None) -> None:
+        # A bound method (not a lambda) so PySide6's automatic
+        # disconnect-on-destroy can actually track this panel as the
+        # receiver: ``missions`` (the MissionService) commonly outlives
+        # any one AgentPanel, and a lambda closing over ``self`` gives
+        # Qt no QObject to tie the connection to, so it survives this
+        # panel's own destruction and fires into an already-deleted
+        # mission_picker on the next missions_changed emit.
+        self._refresh_picker()
 
     def _on_mission_started(self, mission) -> None:
         self._show_mission_state()

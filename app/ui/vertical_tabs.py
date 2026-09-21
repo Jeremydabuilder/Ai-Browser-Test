@@ -295,10 +295,17 @@ class VerticalTabList(QWidget):
         scroll.setWidget(self._list_widget)
         outer.addWidget(scroll, 1)
 
+        # Bound methods, not lambdas: tab_manager is shared and outlives
+        # any one view of it, and PySide6 can only auto-disconnect a
+        # connection on this view's destruction when the receiver is a
+        # traceable bound method - a lambda closing over ``self`` gives
+        # it nothing to tie the connection to (see agent_panel.py's
+        # _on_missions_changed for the same fix after this exact shape
+        # produced a real "C++ object already deleted" crash).
         tab_manager.tab_added.connect(self._on_structure_changed)
-        tab_manager.tab_closing.connect(lambda _i: self._defer_rebuild())
+        tab_manager.tab_closing.connect(self._defer_rebuild)
         tab_manager.tab_updated.connect(self._on_tab_updated)
-        tab_manager.pin_changed.connect(lambda _i: self._rebuild())
+        tab_manager.pin_changed.connect(self._rebuild)
         tab_manager.groups_changed.connect(self._rebuild)
         tab_manager.currentChanged.connect(self._on_current_changed)
 
