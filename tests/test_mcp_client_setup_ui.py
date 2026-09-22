@@ -73,6 +73,22 @@ class ClientSetupDialogTests(unittest.TestCase):
 
     def tearDown(self) -> None:
         self.server.stop()
+        # No Qt parent (a real caller always passes one - see
+        # main_window.py's own PyBrowserMcpServer(..., parent=self)) -
+        # .stop() alone leaves this QObject with nothing but this test's
+        # own reference keeping it alive, reproducing "QObject::killTimer:
+        # Timers cannot be stopped from another thread" in a later,
+        # unrelated test's background thread (confirmed via a minimized
+        # repro: this class immediately followed by
+        # tests.test_mcp_connection_manager_shutdown
+        # .ReconnectDuringShutdownTests
+        # .test_shutdown_during_reconnect_is_clean). deleteLater() + a
+        # DeferredDelete flush disposes it deterministically, same as
+        # this class's own _dispose() for its dialogs.
+        self.server.deleteLater()
+        from PySide6.QtCore import QCoreApplication, QEvent
+        QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
+        _app.processEvents()
         self.db.close()
         self._tmp.cleanup()
 
@@ -272,6 +288,12 @@ class ClientSetupVerifyLifecycleTests(unittest.TestCase):
 
     def tearDown(self) -> None:
         self.server.stop()
+        # See ClientSetupDialogTests.tearDown - same no-Qt-parent,
+        # rely-on-deleteLater()-not-ordinary-refcounting reasoning.
+        self.server.deleteLater()
+        from PySide6.QtCore import QCoreApplication, QEvent
+        QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
+        _app.processEvents()
         self.db.close()
         self._tmp.cleanup()
 
@@ -471,10 +493,18 @@ class ClientCardTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.panel.close()
         # See ClientSetupDialogTests._dispose - same no-Qt-parent,
-        # rely-on-deleteLater()-not-cyclic-GC reasoning.
+        # rely-on-deleteLater()-not-cyclic-GC reasoning. self.server needs
+        # the same treatment: it too has no Qt parent, and .stop() alone
+        # left it reachable only by this test's own reference - confirmed
+        # via a minimized repro to reproduce "QObject::killTimer: Timers
+        # cannot be stopped from another thread" in a later, unrelated
+        # test's background thread.
         self.panel.deleteLater()
-        _app.processEvents()
         self.server.stop()
+        self.server.deleteLater()
+        from PySide6.QtCore import QCoreApplication, QEvent
+        QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
+        _app.processEvents()
         self.db.close()
         self._tmp.cleanup()
 

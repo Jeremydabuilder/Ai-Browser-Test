@@ -73,8 +73,8 @@ class GuiBridge:
     ``GuiDispatcher`` there.
     """
 
-    def __init__(self) -> None:
-        self._dispatcher = GuiDispatcher()
+    def __init__(self, parent: QObject | None = None) -> None:
+        self._dispatcher = GuiDispatcher(parent=parent)
         _diag(f"GuiBridge.__init__ id={id(self)} thread={QThread.currentThread()}")
 
     def call_sync(self, fn: Callable[[], Any], timeout: float = _CALL_TIMEOUT_S) -> Any:
@@ -286,7 +286,7 @@ class PyBrowserMcpServer(QObject):
         self.port = port
         self._httpd: _HttpServer | None = None
         self._thread: threading.Thread | None = None
-        self._bridge = GuiBridge()
+        self._bridge = GuiBridge(parent=self)
         self.context = McpToolContext(
             browser=browser, missions=missions, graph_store=graph_store,
             call_sync=self._bridge.call_sync, call_future=self._bridge.call_future,
