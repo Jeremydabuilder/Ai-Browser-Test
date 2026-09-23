@@ -1,0 +1,156 @@
+name: Windows validation - BrowserFuture parenting fix (commit 7449daf)
+
+# TEMPORARY: cross-platform validation of the BrowserFuture-parenting fix
+# for the killTimer/SIGSEGV release blocker (root-caused via gdb +
+# shiboken6.getCppPointer() correlation on Linux - see
+# app/mcp/connection_manager.py's run_tool() comment at the
+# BrowserFuture(..., parent=self) construction site for the full
+# mechanism). Five stages, each stopping at the first genuine crash
+# (log-content detection, not exit code - see Test-IsRealCrash, same
+# principle as windows-guibridge-stress.yml):
+#   1. the exact previously-dangerous reconnect/shutdown test, 100x
+#   2. the pending-tool-call shutdown test, 100x
+#   3. the minimized two-module repro, 50x
+#   4. the full MCP group, 20x
+#   5. the full suite, 2x
+# Manual trigger only, entirely separate from release.yml. Delete this
+# file once the fix is validated on this platform.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  windows-browserfuture-validation:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run validation stages
+        shell: pwsh
+        env:
+          QT_QPA_PLATFORM: offscreen
+          PYTHONFAULTHANDLER: "1"
+        run: |
+          $ErrorActionPreference = "Continue"
+          $pythonExe = (Get-Command python).Source
+
+          function Test-IsRealCrash($logFile) {
+            $text = Get-Content $logFile -Raw -ErrorAction SilentlyContinue
+            if (-not $text) { return $true }
+            $hasSummary = ($text -match '(?m)^Ran \d+ tests? in') -and ($text -match '(?m)^(OK\b|FAILED \()')
+            return -not $hasSummary
+          }
+
+          function Test-HasDangerSignal($logFile) {
+            # Beyond "did the interpreter survive": explicitly check for
+            # the exact warning/crash classes this investigation chased,
+            # even inside an otherwise-clean-looking log (e.g. a warning
+            # printed to stderr that unittest's own summary doesn't
+            # reflect).
+            $text = Get-Content $logFile -Raw -ErrorAction SilentlyContinue
+            if (-not $text) { return $false }
+            $patterns = @(
+              'killTimer',
+              'Timers cannot be stopped from another thread',
+              'QThread: Destroyed while thread is still running',
+              '0xC0000005',
+              '0xC0000374'
+            )
+            foreach ($p in $patterns) {
+              if ($text -match [regex]::Escape($p)) { return $true }
+            }
+            return $false
+          }
+
+          function Test-LeakedMcpIoThread($logFile) {
+            # _assert_no_mcp_io_threads already asserts this per-test, but
+            # double check for the literal thread name leaking into any
+            # traceback/log line as an extra signal.
+            $text = Get-Content $logFile -Raw -ErrorAction SilentlyContinue
+            return ($text -match 'mcp-io.*(leak|still alive|is_alive)')
+          }
+
+          function Run-Stage($label, [string[]]$args_, [int]$repeats) {
+            Write-Host "::group::=== Stage: $label ($repeats runs) ==="
+            for ($i = 1; $i -le $repeats; $i++) {
+              $logFile = "stress_${label}_$i.log"
+              # tests/run.py, not `-m unittest` directly: works around a
+              # confirmed PySide6/QtWebEngine interpreter-shutdown
+              # segfault unrelated to this fix - see tests/run.py's
+              # docstring.
+              & $pythonExe tests/run.py @args_ -v > $logFile 2>&1
+              $status = $LASTEXITCODE
+              $isCrash = Test-IsRealCrash $logFile
+              $hasDanger = Test-HasDangerSignal $logFile
+              $hasLeak = Test-LeakedMcpIoThread $logFile
+              if ($isCrash -or $hasDanger -or $hasLeak) {
+                Write-Host "::error::[$label] run $i/$repeats FAILED (exit=$status isCrash=$isCrash hasDangerSignal=$hasDanger leakedMcpIoThread=$hasLeak)"
+                Get-Content $logFile | ForEach-Object { Write-Host $_ }
+                Write-Host "::endgroup::"
+                Write-Host "FAILING_ITERATION=$i" | Out-File -FilePath "FAILURE_${label}.txt"
+                Copy-Item $logFile "FAILURE_${label}.log"
+                return $false
+              }
+              if ($status -ne 0) {
+                Write-Host "::warning::[$label] run $i/$repeats ordinary FAILURE, not a crash (exit=$status)"
+                Get-Content $logFile | Select-Object -Last 40 | ForEach-Object { Write-Host $_ }
+              }
+              Write-Host "[$label] run $i/$repeats ok (exit=$status)"
+            }
+            Write-Host "::endgroup::"
+            return $true
+          }
+
+          $OK1 = $true; $OK2 = $true; $OK3 = $true; $OK4 = $true; $OK5 = $true
+
+          $reconnectTest = "tests.test_mcp_connection_manager_shutdown.ReconnectDuringShutdownTests.test_shutdown_during_reconnect_is_clean"
+          $OK1 = Run-Stage "reconnect_shutdown" @($reconnectTest) 100
+
+          $pendingToolCallTest = "tests.test_mcp_connection_manager_shutdown.ActiveStdioConnectionTests.test_shutdown_with_a_pending_tool_call_still_exits"
+          $OK2 = Run-Stage "pending_tool_call_shutdown" @($pendingToolCallTest) 100
+
+          $minimal = @("tests.test_mcp_client_setup_ui", "tests.test_mcp_connection_manager_shutdown")
+          $OK3 = Run-Stage "minimized_two_module" $minimal 50
+
+          $mcpGroup = @(
+            "tests.test_mcp_client_setup_ui", "tests.test_mcp_connection_manager_shutdown",
+            "tests.test_mcp_integration", "tests.test_mcp_phase2", "tests.test_mcp_phase3",
+            "tests.test_gui_bridge", "tests.test_mcp_server_integration",
+            "tests.test_mcp_server_settings_ui", "tests.test_mcp_server_verification"
+          )
+          $OK4 = Run-Stage "mcp_group" $mcpGroup 20
+
+          $allModules = (Get-ChildItem tests/test_*.py | Sort-Object Name | ForEach-Object { "tests." + $_.BaseName })
+          $OK5 = Run-Stage "full_suite" $allModules 2
+
+          Write-Host "=== Summary ==="
+          Write-Host "reconnect_shutdown (100x): $(if ($OK1) {'CLEAN'} else {'FAILED'})"
+          Write-Host "pending_tool_call_shutdown (100x): $(if ($OK2) {'CLEAN'} else {'FAILED'})"
+          Write-Host "minimized_two_module (50x): $(if ($OK3) {'CLEAN'} else {'FAILED'})"
+          Write-Host "mcp_group (20x): $(if ($OK4) {'CLEAN'} else {'FAILED'})"
+          Write-Host "full_suite (2x): $(if ($OK5) {'CLEAN'} else {'FAILED'})"
+          if (-not ($OK1 -and $OK2 -and $OK3 -and $OK4 -and $OK5)) {
+            Write-Host "::error::One or more validation stages failed - see logs above and FAILURE_*.log artifacts"
+            exit 1
+          }
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-browserfuture-validation-logs
+          path: |
+            stress_*.log
+            FAILURE_*.log
+            FAILURE_*.txt
+          if-no-files-found: warn

@@ -1,0 +1,140 @@
+name: macOS validation - BrowserFuture parenting fix (commit 7449daf)
+
+# TEMPORARY: cross-platform validation of the BrowserFuture-parenting fix
+# for the killTimer/SIGSEGV release blocker - same purpose as
+# windows-browserfuture-validation.yml. See
+# app/mcp/connection_manager.py's run_tool() comment at the
+# BrowserFuture(..., parent=self) construction site for the full
+# root-cause mechanism (gdb + shiboken6.getCppPointer() correlation on
+# Linux). Five stages, each stopping at the first genuine crash
+# (log-content detection, not exit code - is_real_crash below, same
+# principle as macos-guibridge-stress.yml):
+#   1. the exact previously-dangerous reconnect/shutdown test, 100x
+#   2. the pending-tool-call shutdown test, 100x
+#   3. the minimized two-module repro, 50x
+#   4. the full MCP group, 20x
+#   5. the full suite, 2x
+# Manual trigger only, entirely separate from release.yml. Delete this
+# file once the fix is validated on this platform.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  macos-browserfuture-validation:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Confirm lldb is available
+        run: lldb --version
+
+      - name: Run validation stages
+        env:
+          QT_QPA_PLATFORM: offscreen
+          QTWEBENGINE_DISABLE_SANDBOX: "1"
+          PYTHONFAULTHANDLER: "1"
+        run: |
+          set +e
+
+          is_real_crash() {
+            local log="$1"
+            if grep -qE '^Ran [0-9]+ tests? in' "$log" \
+                && grep -qE '^(OK|FAILED \()' "$log"; then
+              return 1
+            fi
+            return 0
+          }
+
+          has_danger_signal() {
+            local log="$1"
+            grep -qE 'killTimer|Timers cannot be stopped from another thread|QThread: Destroyed while thread is still running|SIGSEGV|EXC_BAD_ACCESS' "$log"
+          }
+
+          has_leaked_mcp_io_thread() {
+            local log="$1"
+            grep -qE 'mcp-io.*(leak|still alive|is_alive)' "$log"
+          }
+
+          run_stage() {
+            local label="$1"; local repeats="$2"; shift 2
+            echo "::group::=== Stage: $label ($repeats runs) ==="
+            for i in $(seq 1 "$repeats"); do
+              local log="stress_${label}_${i}.log"
+              # tests/run.py, not `-m unittest` directly: works around a
+              # confirmed PySide6/QtWebEngine interpreter-shutdown
+              # segfault unrelated to this fix - see tests/run.py's
+              # docstring.
+              lldb --batch \
+                -o "run" -o "continue" -o "continue" -o "continue" \
+                -o "thread backtrace all" -o "quit" -- \
+                python3 tests/run.py "$@" -v > "$log" 2>&1
+              local status=$?
+              if is_real_crash "$log" || has_danger_signal "$log" || has_leaked_mcp_io_thread "$log"; then
+                echo "::error::[$label] run $i/$repeats FAILED (exit=$status)"
+                cat "$log"
+                cp "$log" "FAILURE_${label}.log"
+                echo "$i" > "FAILURE_${label}.txt"
+                echo "::endgroup::"
+                return 1
+              fi
+              if [ "$status" -ne 0 ]; then
+                echo "::warning::[$label] run $i/$repeats ordinary FAILURE, not a crash (exit=$status)"
+                tail -n 40 "$log"
+              fi
+              echo "[$label] run $i/$repeats ok (exit=$status)"
+            done
+            echo "::endgroup::"
+            return 0
+          }
+
+          OK1=true; OK2=true; OK3=true; OK4=true; OK5=true
+
+          RECONNECT_TEST="tests.test_mcp_connection_manager_shutdown.ReconnectDuringShutdownTests.test_shutdown_during_reconnect_is_clean"
+          run_stage "reconnect_shutdown" 100 "$RECONNECT_TEST" || OK1=false
+
+          PENDING_TOOL_CALL_TEST="tests.test_mcp_connection_manager_shutdown.ActiveStdioConnectionTests.test_shutdown_with_a_pending_tool_call_still_exits"
+          run_stage "pending_tool_call_shutdown" 100 "$PENDING_TOOL_CALL_TEST" || OK2=false
+
+          run_stage "minimized_two_module" 50 tests.test_mcp_client_setup_ui tests.test_mcp_connection_manager_shutdown || OK3=false
+
+          run_stage "mcp_group" 20 \
+            tests.test_mcp_client_setup_ui tests.test_mcp_connection_manager_shutdown \
+            tests.test_mcp_integration tests.test_mcp_phase2 tests.test_mcp_phase3 \
+            tests.test_gui_bridge tests.test_mcp_server_integration \
+            tests.test_mcp_server_settings_ui tests.test_mcp_server_verification || OK4=false
+
+          ALL_MODULES=$(ls tests/test_*.py | sed 's#tests/##; s#\.py##' | sed 's/^/tests./')
+          run_stage "full_suite" 2 $ALL_MODULES || OK5=false
+
+          echo "=== Summary ==="
+          echo "reconnect_shutdown (100x): $([ "$OK1" = true ] && echo CLEAN || echo FAILED)"
+          echo "pending_tool_call_shutdown (100x): $([ "$OK2" = true ] && echo CLEAN || echo FAILED)"
+          echo "minimized_two_module (50x): $([ "$OK3" = true ] && echo CLEAN || echo FAILED)"
+          echo "mcp_group (20x): $([ "$OK4" = true ] && echo CLEAN || echo FAILED)"
+          echo "full_suite (2x): $([ "$OK5" = true ] && echo CLEAN || echo FAILED)"
+          if ! $OK1 || ! $OK2 || ! $OK3 || ! $OK4 || ! $OK5; then
+            echo "::error::One or more validation stages failed - see logs above and FAILURE_*.log artifacts"
+            exit 1
+          fi
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-browserfuture-validation-logs
+          path: |
+            stress_*.log
+            FAILURE_*.log
+            FAILURE_*.txt
+          if-no-files-found: warn
