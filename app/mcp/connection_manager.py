@@ -903,7 +903,28 @@ class McpConnectionManager(QObject):
         # call is ever sent, never merely logged after the fact.
         args = _redact_outbound_args(args, server_id=server_id, tool_name=tool_name)
 
-        future = BrowserFuture(f"mcp:{namespaced_name}")
+        # Parented to this manager (a stable, always-GUI-thread QObject) -
+        # not left unparented as BrowserFuture's own default. on_bg_done
+        # below runs on this manager's background "mcp-io" thread, and
+        # posts a lambda closing over `future` to the GUI thread via
+        # _post_to_gui_thread; if the dispatcher is already shut down
+        # (a real race: shutdown() during a pending tool call), that post
+        # raises GuiDispatchShutdown, which _post_to_gui_thread catches
+        # and discards - dropping the lambda's, and therefore `future`'s,
+        # last Python reference right there on mcp-io via ordinary
+        # refcounting. `future` owns a QTimer child (via set_timeout()
+        # below), so an unparented `future` being reclaimed there means
+        # that QTimer's C++ destructor - and its own killTimer() call -
+        # also runs on mcp-io instead of the GUI thread. Confirmed via
+        # gdb (breakpoint on QObject::killTimer, correlating the
+        # destroying parent's C++ pointer against a shiboken6
+        # .getCppPointer() registry) to be exactly this class, at exactly
+        # this construction site. Parenting to the manager means the
+        # underlying C++ object stays alive regardless of where its
+        # Python wrapper's reference is dropped - Qt reclaims it
+        # deterministically, on the GUI thread, when the manager itself
+        # is.
+        future = BrowserFuture(f"mcp:{namespaced_name}", parent=self)
         # A backstop only: the asyncio-level timeout inside call_tool()
         # normally fires first and produces a proper TIMEOUT payload. This
         # one exists purely so a completely wedged background thread (one
