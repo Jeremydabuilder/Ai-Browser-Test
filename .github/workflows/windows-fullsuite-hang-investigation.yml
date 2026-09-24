@@ -1,0 +1,127 @@
+name: Windows investigation - full_suite hang after highlights fix
+
+# TEMPORARY: characterizing an anomaly surfaced by
+# windows-highlights-crash-investigation.yml's validate-fix job (run
+# 35945583070): its full_suite (2x) stage ran clean in 9 minutes on
+# iteration 1/2, then iteration 2/2 produced zero output for 3h34m before
+# the job hit GitHub Actions' 6-hour hard ceiling and was cancelled - no
+# "run 2/2" completion line was ever printed by the outer PowerShell loop
+# (which is not itself log-redirected, so this reflects the child
+# `tests/run.py` process genuinely never finishing, not a buffering
+# artifact). This is NOT the killTimer/access-violation crash that
+# close_window() fix (commit a2a1858) targets - all 500/100/30 runs of the
+# other three validate-fix stages, plus full_suite iteration 1/2, were
+# clean. This workflow isolates whether full_suite hangs reproducibly on
+# a second consecutive in-process iteration, and if so, captures live
+# thread stacks via cdb.exe attach (not a crash dump - a diagnostic
+# attach-and-inspect while still hung) before killing it.
+#
+# Manual trigger only, entirely separate from release.yml. Delete this
+# file once the hang is characterized (fixed, or redirected).
+
+on:
+  workflow_dispatch:
+    inputs:
+      fix_ref:
+        description: "Commit/ref to investigate (must carry the close_window() fix)"
+        type: string
+        default: "a2a185878ec98ec78e652ad3ee49e1aaabf52640"
+      per_run_timeout_minutes:
+        description: "Minutes to wait for one full_suite iteration before treating it as hung"
+        type: string
+        default: "25"
+
+jobs:
+  fullsuite-hang-investigation:
+    runs-on: windows-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.fix_ref }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Locate cdb.exe (x64)
+        id: find_cdb
+        shell: pwsh
+        run: |
+          $candidates = @()
+          $candidates += Get-ChildItem -Path "C:\Program Files (x86)\Windows Kits\10\Debuggers\x64" -Filter cdb.exe -Recurse -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName }
+          $candidates += Get-ChildItem -Path "C:\Program Files\Windows Kits\10\Debuggers\x64" -Filter cdb.exe -Recurse -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName }
+          $found = $candidates | Select-Object -First 1
+          if ($found) {
+            Write-Host "Found cdb.exe at: $found"
+            echo "cdb_path=$found" >> $env:GITHUB_OUTPUT
+            echo "found=true" >> $env:GITHUB_OUTPUT
+          } else {
+            Write-Host "::warning::cdb.exe (x64) not found - hang diagnostics will be limited to Get-Process info."
+            echo "found=false" >> $env:GITHUB_OUTPUT
+          }
+
+      - name: Run full_suite twice consecutively, in the SAME process lineage as validate-fix, with a per-iteration timeout
+        shell: pwsh
+        env:
+          QT_QPA_PLATFORM: offscreen
+          PYTHONFAULTHANDLER: "1"
+        run: |
+          $ErrorActionPreference = "Continue"
+          $pythonExe = (Get-Command python).Source
+          $cdb = "${{ steps.find_cdb.outputs.cdb_path }}"
+          $useCdb = "${{ steps.find_cdb.outputs.found }}" -eq "true"
+          $timeoutSec = [int]"${{ inputs.per_run_timeout_minutes }}" * 60
+
+          $allModules = (Get-ChildItem tests/test_*.py | Sort-Object Name | ForEach-Object { "tests." + $_.BaseName })
+
+          for ($i = 1; $i -le 2; $i++) {
+            $logFile = "hang_fullsuite_$i.log"
+            Write-Host "::group::=== full_suite iteration $i/2 (timeout ${timeoutSec}s) ==="
+            $proc = Start-Process -FilePath $pythonExe -ArgumentList (@("tests/run.py") + $allModules + @("-v")) `
+              -RedirectStandardOutput $logFile -RedirectStandardError "${logFile}.err" `
+              -PassThru -NoNewWindow
+            $finished = $proc.WaitForExit($timeoutSec * 1000)
+            if (-not $finished) {
+              Write-Host "::error::full_suite iteration $i/2 did NOT finish within ${timeoutSec}s - HUNG. Capturing diagnostics before killing pid $($proc.Id)."
+              Write-Host "--- Get-Process snapshot ---"
+              Get-Process -Id $proc.Id | Format-List *
+              Write-Host "--- Child processes (QtWebEngine helpers etc.) ---"
+              Get-CimInstance Win32_Process | Where-Object { $_.ParentProcessId -eq $proc.Id } | Format-Table ProcessId, Name, CommandLine -AutoSize
+              if ($useCdb) {
+                Write-Host "--- cdb.exe live thread-stack attach (non-invasive inspect, then detach) ---"
+                & $cdb -p $proc.Id -c "~*k; qd" 2>&1 | Tee-Object -FilePath "hang_stacks_$i.log"
+              } else {
+                Write-Host "::warning::cdb.exe unavailable - no thread stacks captured."
+              }
+              Write-Host "--- Last 80 lines of stdout log before kill ---"
+              Get-Content $logFile -Tail 80 -ErrorAction SilentlyContinue
+              Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+              Write-Host "HANG=true" >> "hang_result_$i.txt"
+            } else {
+              Write-Host "full_suite iteration $i/2 finished normally, exit=$($proc.ExitCode)"
+              Write-Host "HANG=false exit=$($proc.ExitCode)" >> "hang_result_$i.txt"
+            }
+            Write-Host "::endgroup::"
+          }
+
+          Write-Host "=== Summary ==="
+          Get-Content hang_result_*.txt
+
+      - name: Upload hang diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-fullsuite-hang-logs
+          path: |
+            hang_fullsuite_*.log
+            hang_fullsuite_*.log.err
+            hang_stacks_*.log
+            hang_result_*.txt
+          if-no-files-found: warn
