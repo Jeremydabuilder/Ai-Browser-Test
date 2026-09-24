@@ -1,0 +1,257 @@
+name: Windows investigation - highlights-integration access violation
+
+# TEMPORARY: root-causing a Windows-only full-suite access violation in
+# tests.test_highlights_integration.MainWindowHighlightTests, surfaced by
+# windows-browserfuture-validation.yml's full_suite stage (run 35804241590)
+# - crash was in/around pump() in setUp(), right after constructing a real
+# MainWindow/QWebEngineView, unrelated to the BrowserFuture/MCP fix that
+# workflow validates.
+#
+# Working hypothesis, already fixed on this branch in a separate commit
+# (see tests/test_highlights_integration.py's tearDown()): this class
+# built 15 real MainWindows (one per test) and never disposed any of them
+# via close_window() (tests/qt_profile.py) - only a bare
+# close()+processEvents(), never deleteLater()+gc.collect(). MainWindow's
+# ordinary button/tab-to-self connections make it a Python reference
+# cycle by construction (see close_window()'s own docstring), reclaimed
+# only by cyclic GC, which can run on any thread whenever Python's own
+# allocation threshold trips - already confirmed once before in this
+# exact codebase (tests.test_live_config, before it adopted
+# close_window()) to produce a "killTimer ... another thread" native
+# crash. This workflow:
+#   1. diagnose: runs the ORIGINAL (pre-fix) code under cdb.exe, both
+#      isolated and after its immediately-preceding real-suite-order
+#      modules, to characterize whether the crash needs suite-order
+#      contamination and to capture a real native stack.
+#   2. validate_fix: runs the FIX at the scale requested - minimized
+#      repro 500x, the whole module 100x, a WebEngine-adjacent test
+#      group 30x, full suite 2x.
+# Manual trigger only, entirely separate from release.yml. Delete this
+# file once the crash is confirmed fixed (or once diagnose has produced
+# enough evidence to redirect the fix).
+
+on:
+  workflow_dispatch:
+    inputs:
+      pre_fix_ref:
+        description: "Commit/ref to diagnose the ORIGINAL crash on (before the close_window() fix)"
+        type: string
+        default: "e2132b0"
+      fix_ref:
+        description: "Commit/ref carrying the close_window() fix to validate"
+        type: string
+        default: "a2a1858"
+
+jobs:
+  diagnose-original:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.pre_fix_ref }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Locate cdb.exe (x64)
+        id: find_cdb
+        shell: pwsh
+        run: |
+          $candidates = @()
+          $candidates += Get-ChildItem -Path "C:\Program Files (x86)\Windows Kits\10\Debuggers\x64" -Filter cdb.exe -Recurse -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName }
+          $candidates += Get-ChildItem -Path "C:\Program Files\Windows Kits\10\Debuggers\x64" -Filter cdb.exe -Recurse -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName }
+          $found = $candidates | Select-Object -First 1
+          if ($found) {
+            Write-Host "Found cdb.exe at: $found"
+            echo "cdb_path=$found" >> $env:GITHUB_OUTPUT
+            echo "found=true" >> $env:GITHUB_OUTPUT
+          } else {
+            Write-Host "::warning::cdb.exe (x64) not found - falling back to faulthandler-only."
+            echo "found=false" >> $env:GITHUB_OUTPUT
+          }
+
+      - name: Isolated - MainWindowHighlightTests alone, 10x
+        shell: pwsh
+        env:
+          QT_QPA_PLATFORM: offscreen
+          PYTHONFAULTHANDLER: "1"
+        run: |
+          $ErrorActionPreference = "Continue"
+          $pythonExe = (Get-Command python).Source
+          $cdb = "${{ steps.find_cdb.outputs.cdb_path }}"
+          $useCdb = "${{ steps.find_cdb.outputs.found }}" -eq "true"
+          for ($i = 1; $i -le 10; $i++) {
+            $log = "isolated_$i.log"
+            if ($useCdb) {
+              & $cdb -g -G -o -c "~*k; .exr -1; lm; q" $pythonExe -m unittest tests.test_highlights_integration.MainWindowHighlightTests -v > $log 2>&1
+            } else {
+              python -m unittest tests.test_highlights_integration.MainWindowHighlightTests -v > $log 2>&1
+            }
+            Write-Host "isolated run $i exit=$LASTEXITCODE"
+          }
+
+      - name: Real-suite-order prefix - preceding modules + target, 10x
+        shell: pwsh
+        env:
+          QT_QPA_PLATFORM: offscreen
+          PYTHONFAULTHANDLER: "1"
+        run: |
+          $ErrorActionPreference = "Continue"
+          $pythonExe = (Get-Command python).Source
+          $cdb = "${{ steps.find_cdb.outputs.cdb_path }}"
+          $useCdb = "${{ steps.find_cdb.outputs.found }}" -eq "true"
+          # Immediately-preceding modules in `ls tests/test_*.py | sort` order.
+          $preceding = @("tests.test_ghost_runs", "tests.test_gui_bridge", "tests.test_highlights")
+          $target = "tests.test_highlights_integration"
+          for ($i = 1; $i -le 10; $i++) {
+            $log = "suiteorder_$i.log"
+            if ($useCdb) {
+              & $cdb -g -G -o -c "~*k; .exr -1; lm; q" $pythonExe -m unittest ($preceding + $target) -v > $log 2>&1
+            } else {
+              python -m unittest ($preceding + $target) -v > $log 2>&1
+            }
+            Write-Host "suite-order run $i exit=$LASTEXITCODE"
+          }
+
+      - name: Summarize crash evidence
+        if: always()
+        shell: pwsh
+        run: |
+          function Test-IsRealCrash($logFile) {
+            $text = Get-Content $logFile -Raw -ErrorAction SilentlyContinue
+            if (-not $text) { return $true }
+            $hasSummary = ($text -match '(?m)^Ran \d+ tests? in') -and ($text -match '(?m)^(OK\b|FAILED \()')
+            return -not $hasSummary
+          }
+          Write-Host "=== isolated (10x) ==="
+          $isolatedCrashes = 0
+          foreach ($f in Get-ChildItem isolated_*.log) {
+            if (Test-IsRealCrash $f.FullName) { $isolatedCrashes++; Write-Host "$($f.Name): CRASH" } else { Write-Host "$($f.Name): ok" }
+          }
+          Write-Host "isolated crash count: $isolatedCrashes / 10"
+          Write-Host "=== suite-order (10x) ==="
+          $suiteOrderCrashes = 0
+          foreach ($f in Get-ChildItem suiteorder_*.log) {
+            if (Test-IsRealCrash $f.FullName) { $suiteOrderCrashes++; Write-Host "$($f.Name): CRASH" } else { Write-Host "$($f.Name): ok" }
+          }
+          Write-Host "suite-order crash count: $suiteOrderCrashes / 10"
+          if ($isolatedCrashes -gt 0) {
+            Write-Host "::notice::Crash reproduces in ISOLATION - not suite-order contamination."
+          } elseif ($suiteOrderCrashes -gt 0) {
+            Write-Host "::notice::Crash needs preceding modules - suite-order/accumulation dependent."
+          } else {
+            Write-Host "::warning::Crash did not reproduce in 20 combined attempts on this runner - may be timing/load dependent."
+          }
+
+      - name: Upload diagnostic logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-highlights-diagnose-logs
+          path: |
+            isolated_*.log
+            suiteorder_*.log
+          if-no-files-found: warn
+
+  validate-fix:
+    needs: diagnose-original
+    if: always()
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.fix_ref }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run validation stages
+        shell: pwsh
+        env:
+          QT_QPA_PLATFORM: offscreen
+          PYTHONFAULTHANDLER: "1"
+        run: |
+          $ErrorActionPreference = "Continue"
+          $pythonExe = (Get-Command python).Source
+
+          function Test-IsRealCrash($logFile) {
+            $text = Get-Content $logFile -Raw -ErrorAction SilentlyContinue
+            if (-not $text) { return $true }
+            $hasSummary = ($text -match '(?m)^Ran \d+ tests? in') -and ($text -match '(?m)^(OK\b|FAILED \()')
+            return -not $hasSummary
+          }
+
+          function Run-Stage($label, [string[]]$args_, [int]$repeats) {
+            Write-Host "::group::=== Stage: $label ($repeats runs) ==="
+            for ($i = 1; $i -le $repeats; $i++) {
+              $logFile = "stress_${label}_$i.log"
+              # tests/run.py: os._exit() workaround for the unrelated
+              # QtWebEngine interpreter-shutdown segfault - see its docstring.
+              & $pythonExe tests/run.py @args_ -v > $logFile 2>&1
+              $status = $LASTEXITCODE
+              $isCrash = Test-IsRealCrash $logFile
+              if ($isCrash) {
+                Write-Host "::error::[$label] run $i/$repeats CRASHED (exit=$status)"
+                Get-Content $logFile | ForEach-Object { Write-Host $_ }
+                Write-Host "::endgroup::"
+                return $false
+              }
+              if ($status -ne 0) {
+                Write-Host "::warning::[$label] run $i/$repeats ordinary FAILURE, not a crash (exit=$status)"
+                Get-Content $logFile | Select-Object -Last 40 | ForEach-Object { Write-Host $_ }
+              }
+              Write-Host "[$label] run $i/$repeats ok (exit=$status)"
+            }
+            Write-Host "::endgroup::"
+            return $true
+          }
+
+          $OK1 = $true; $OK2 = $true; $OK3 = $true; $OK4 = $true
+
+          $target = "tests.test_highlights_integration.MainWindowHighlightTests"
+          $OK1 = Run-Stage "minimized_repro" @($target) 500
+
+          $OK2 = Run-Stage "highlights_module" @("tests.test_highlights_integration") 100
+
+          $webengineGroup = @(
+            "tests.test_highlights_integration", "tests.test_knowledge_main_window_integration",
+            "tests.test_missions", "tests.test_mission_library", "tests.test_multi_agent_integration",
+            "tests.test_multi_tab_ask_py", "tests.test_pinned_tabs", "tests.test_tab_grouping",
+            "tests.test_vertical_tabs", "tests.test_workspaces"
+          )
+          $OK3 = Run-Stage "webengine_group" $webengineGroup 30
+
+          $allModules = (Get-ChildItem tests/test_*.py | Sort-Object Name | ForEach-Object { "tests." + $_.BaseName })
+          $OK4 = Run-Stage "full_suite" $allModules 2
+
+          Write-Host "=== Summary ==="
+          Write-Host "minimized_repro (500x): $(if ($OK1) {'CLEAN'} else {'FAILED'})"
+          Write-Host "highlights_module (100x): $(if ($OK2) {'CLEAN'} else {'FAILED'})"
+          Write-Host "webengine_group (30x): $(if ($OK3) {'CLEAN'} else {'FAILED'})"
+          Write-Host "full_suite (2x): $(if ($OK4) {'CLEAN'} else {'FAILED'})"
+          if (-not ($OK1 -and $OK2 -and $OK3 -and $OK4)) {
+            Write-Host "::error::One or more validation stages failed - see logs above"
+            exit 1
+          }
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-highlights-validate-fix-logs
+          path: stress_*.log
+          if-no-files-found: warn
