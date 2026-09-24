@@ -26,7 +26,7 @@ from PySide6.QtWidgets import QApplication  # noqa: E402
 
 from app.storage import Database  # noqa: E402
 from app.ui.main_window import MainWindow  # noqa: E402
-from tests.qt_profile import shared_profile  # noqa: E402
+from tests.qt_profile import close_window, shared_profile  # noqa: E402
 
 _app: QApplication | None = None
 _profile = None
@@ -53,10 +53,20 @@ class MainWindowHighlightTests(unittest.TestCase):
         pump()
 
     def tearDown(self) -> None:
-        self.window.close()
+        # close_window(), not a bare close()+processEvents(): MainWindow's
+        # own ordinary self-connections (every button/tab wired to its own
+        # bound method) mean it always needs cyclic GC to reclaim - which
+        # otherwise doesn't happen until Python's own allocation threshold
+        # trips on some unrelated thread, off the GUI thread, taking this
+        # window's real QWebEngineView/Page down with it wherever that
+        # happens to land. See tests/qt_profile.py's close_window()
+        # docstring - this is the same "killTimer ... another thread"/
+        # native-crash mechanism that investigation chased, this time in
+        # this file's own MainWindowHighlightTests (15 MainWindows built
+        # across this class's tests, none previously disposed this way).
+        close_window(self.window, _app)
         self.db.close()
         self._dir.cleanup()
-        pump(3)
 
     def test_saving_a_highlight_persists_it(self) -> None:
         self.window._save_highlight_from_selection(
