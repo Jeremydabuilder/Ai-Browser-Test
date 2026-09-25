@@ -1,0 +1,229 @@
+name: Fast sharded validation
+
+# Reusable manual validator for release-blocker work.  The expensive stress
+# count is spread across eight independent runners and the two full-suite runs
+# execute in parallel, so a validation that used to approach GitHub's six-hour
+# per-job ceiling normally finishes in roughly the duration of one shard.
+# This is diagnostic infrastructure only; release.yml remains unchanged.
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Commit/ref to validate"
+        type: string
+        default: "claude/python-desktop-browser-n20ht5"
+      platform:
+        description: "Runner platform"
+        type: choice
+        options:
+          - windows
+          - macos
+          - both
+        default: both
+      target:
+        description: "Space-separated unittest module/class/method targets"
+        type: string
+        default: "tests.test_highlights_integration.MainWindowHighlightTests"
+      runs_per_shard:
+        description: "Repetitions on each of 8 parallel stress shards"
+        type: number
+        default: 20
+      per_run_timeout_seconds:
+        description: "Timeout for each test process"
+        type: number
+        default: 1200
+      run_full_suite:
+        description: "Also run two full suites in parallel"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fast-validation-${{ github.ref }}-${{ inputs.ref }}
+  cancel-in-progress: false
+
+env:
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+  PYTHONFAULTHANDLER: "1"
+
+jobs:
+  windows-stress:
+    if: ${{ inputs.platform == 'windows' || inputs.platform == 'both' }}
+    name: Windows stress shard ${{ matrix.shard }}
+    runs-on: windows-latest
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        shard: [1, 2, 3, 4, 5, 6, 7, 8]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements.txt
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
+      - name: Run shard
+        shell: pwsh
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          $targets = "${{ inputs.target }}" -split '\s+' | Where-Object { $_ }
+          $args = @(
+            "tests/ci_stress.py",
+            "--label", "windows-${{ matrix.shard }}",
+            "--repeat", "${{ inputs.runs_per_shard }}",
+            "--timeout", "${{ inputs.per_run_timeout_seconds }}",
+            "--log-dir", "stress-logs/windows-${{ matrix.shard }}",
+            "--"
+          ) + $targets
+          & python @args
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Upload shard logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fast-validation-windows-stress-${{ matrix.shard }}
+          path: stress-logs/
+          if-no-files-found: ignore
+          retention-days: 7
+
+  windows-full-suite:
+    if: ${{ inputs.run_full_suite && (inputs.platform == 'windows' || inputs.platform == 'both') }}
+    name: Windows full suite ${{ matrix.iteration }}
+    runs-on: windows-latest
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        iteration: [1, 2]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements.txt
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
+      - name: Run full suite
+        shell: pwsh
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          $modules = Get-ChildItem tests/test_*.py | Sort-Object Name | ForEach-Object { "tests." + $_.BaseName }
+          $args = @(
+            "tests/ci_stress.py",
+            "--label", "windows-full-${{ matrix.iteration }}",
+            "--repeat", "1",
+            "--timeout", "1500",
+            "--log-dir", "stress-logs/windows-full-${{ matrix.iteration }}",
+            "--"
+          ) + $modules
+          & python @args
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Upload full-suite log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fast-validation-windows-full-${{ matrix.iteration }}
+          path: stress-logs/
+          if-no-files-found: ignore
+          retention-days: 7
+
+  macos-stress:
+    if: ${{ inputs.platform == 'macos' || inputs.platform == 'both' }}
+    name: macOS stress shard ${{ matrix.shard }}
+    runs-on: macos-latest
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        shard: [1, 2, 3, 4, 5, 6, 7, 8]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements.txt
+      - name: Install dependencies
+        run: python3 -m pip install -r requirements.txt
+      - name: Run shard
+        env:
+          QT_QPA_PLATFORM: offscreen
+          QTWEBENGINE_DISABLE_SANDBOX: "1"
+        run: |
+          read -r -a targets <<< "${{ inputs.target }}"
+          python3 tests/ci_stress.py \
+            --label "macos-${{ matrix.shard }}" \
+            --repeat "${{ inputs.runs_per_shard }}" \
+            --timeout "${{ inputs.per_run_timeout_seconds }}" \
+            --log-dir "stress-logs/macos-${{ matrix.shard }}" \
+            -- "${targets[@]}"
+      - name: Upload shard logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fast-validation-macos-stress-${{ matrix.shard }}
+          path: stress-logs/
+          if-no-files-found: ignore
+          retention-days: 7
+
+  macos-full-suite:
+    if: ${{ inputs.run_full_suite && (inputs.platform == 'macos' || inputs.platform == 'both') }}
+    name: macOS full suite ${{ matrix.iteration }}
+    runs-on: macos-latest
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        iteration: [1, 2]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements.txt
+      - name: Install dependencies
+        run: python3 -m pip install -r requirements.txt
+      - name: Run full suite
+        env:
+          QT_QPA_PLATFORM: offscreen
+          QTWEBENGINE_DISABLE_SANDBOX: "1"
+        run: |
+          modules=()
+          for f in $(find tests -maxdepth 1 -name 'test_*.py' | sort); do
+            base=$(basename "$f" .py)
+            modules+=("tests.$base")
+          done
+          python3 tests/ci_stress.py \
+            --label "macos-full-${{ matrix.iteration }}" \
+            --repeat 1 \
+            --timeout 1500 \
+            --log-dir "stress-logs/macos-full-${{ matrix.iteration }}" \
+            -- "${modules[@]}"
+      - name: Upload full-suite log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fast-validation-macos-full-${{ matrix.iteration }}
+          path: stress-logs/
+          if-no-files-found: ignore
+          retention-days: 7
