@@ -175,6 +175,7 @@ class TeamEngine:
             self._cancel = CancelToken()
             self._fatal = None
             self._prepare_resume(retry_only, skip)
+            m.calls_at_run_start = m.model_calls
             self._bonus_rounds = 1 if extra_round else 0
             self._replay_review = extra_round
             self._llm = TeamLLM(
@@ -305,6 +306,7 @@ class TeamEngine:
             if task.status == TaskStatus.PENDING:
                 task.not_before = 0.0
         m.throttled = False
+        self._invalidate_stale()
         m.error = ""
         m.error_kind = ""
         m.coordinator_note = ""
@@ -552,6 +554,7 @@ class TeamEngine:
                         task.status = TaskStatus.RUNNING
                         task.started_at = time.time()
                         task.attempts += 1
+                        task.upstream = self._snapshot(task)
                         degraded = []
                         for dep_id in task.depends_on:
                             dep = m.task(dep_id)
@@ -697,6 +700,8 @@ class TeamEngine:
                         f"Handed {made} to {to}.{note}")
         if outcome.verdict is not None:
             self._after_review(task, outcome.verdict)
+        if not outcome.skipped and self._invalidate_stale():
+            self._on_change("tasks")
 
     # -- the worker side ------------------------------------------------------
     def _worker(self, task: Task, token: CancelToken, degraded: list[str]) -> _Outcome:
@@ -730,7 +735,8 @@ class TeamEngine:
         return self._llm.complete(system, user, agent=task.agent).text
 
     # prompt assembly ---------------------------------------------------------
-    def _upstream(self, task: Task, *, transitive: bool) -> list[Artifact]:
+    def _dependency_ids(self, task: Task, transitive: bool) -> list[str]:
+        """Tasks whose results ``task`` is built on (a revision also inherits the original's)."""
         m = self.mission
         with self._lock:
             ids: list[str] = []
@@ -744,14 +750,69 @@ class TeamEngine:
                     parent = m.task(dep)
                     frontier += parent.depends_on if parent else []
             if task.revision_of:
-                previous = self._effective(task.revision_of)
-                if previous is not None and previous.id not in ids:
-                    ids.append(previous.id)
                 base = m.task(self._root(task.revision_of))
                 if base is not None:
                     for dep in base.depends_on:
                         if dep not in ids:
                             ids.append(dep)
+            return ids
+
+    def _snapshot(self, task: Task) -> dict[str, str]:
+        """The versions of upstream work ``task`` is about to build on. Reviews are feedback,
+        not inputs, so a newer review never makes a revision stale."""
+        with self._lock:
+            snap: dict[str, str] = {}
+            for dep in self._dependency_ids(task, task.agent in (AgentId.REVIEWER, AgentId.TESTER)):
+                root = self._root(dep)
+                effective = self._effective(root) or self.mission.task(dep)
+                if effective is None or effective.id == task.id or root == self._root(task.id):
+                    continue
+                if effective.agent == AgentId.REVIEWER:
+                    continue                    # a review is feedback for revisions, never an input to be stale against
+                snap[root] = f"{effective.id}:{','.join(effective.outputs)}"
+            return snap
+
+    def _invalidate_stale(self) -> list[str]:
+        """Re-queue finished tasks whose upstream work changed after they ran, until nothing
+        is stale. Only the newest member of a revision chain is considered (older ones are
+        history). Old artifacts are kept but marked replaced. Returns the re-queued ids."""
+        m = self.mission
+        reset: list[str] = []
+        with self._lock:
+            changed = True
+            while changed:
+                changed = False
+                superseded = {t.revision_of for t in m.tasks if t.revision_of}
+                for task in m.tasks:
+                    if task.id in superseded or task.status != TaskStatus.DONE or not task.upstream:
+                        continue
+                    now_snap = self._snapshot(task)
+                    moved = sorted(k for k in set(now_snap) | set(task.upstream)
+                                   if now_snap.get(k) != task.upstream.get(k))
+                    if not moved:
+                        continue
+                    for aid in task.outputs:
+                        artifact = m.artifact(aid)
+                        if artifact is not None:
+                            artifact.meta["replaced"] = True
+                    task.status, task.error, task.error_kind = TaskStatus.PENDING, "", ""
+                    task.outputs, task.summary, task.handoff = [], "", ""
+                    task.auto_retries, task.not_before = 0, 0.0
+                    reset.append(task.id)
+                    changed = True
+                    self._event(task.agent, EventKind.WARNING,
+                                f"{task.id} will be redone: its input from {', '.join(moved)} changed after it ran, "
+                                "so its result would be out of date.")
+        return reset
+
+    def _upstream(self, task: Task, *, transitive: bool) -> list[Artifact]:
+        m = self.mission
+        with self._lock:
+            ids = self._dependency_ids(task, transitive)
+            if task.revision_of:
+                previous = self._effective(task.revision_of)
+                if previous is not None and previous.id not in ids:
+                    ids.append(previous.id)
             order = {t.id: i for i, t in enumerate(m.tasks)}
             seen_task: set[str] = set()
             artifacts: list[Artifact] = []
@@ -1213,6 +1274,13 @@ class TeamEngine:
                 m.tasks.append(revision)
                 new_ids.append(revision.id)
                 revised_roots[root_id] = revision.id
+            # A revised consumer must wait for the revised producer it builds on, or it would
+            # be written against notes that are about to be replaced.
+            for root_id, revision_id in revised_roots.items():
+                upstream_roots = {self._root(d) for d in self._dependency_ids(m.task(root_id), True)}
+                for other_root, other_revision in revised_roots.items():
+                    if other_root in upstream_roots and other_revision not in m.task(revision_id).depends_on:
+                        m.task(revision_id).depends_on.append(other_revision)
             # Re-run testers that checked a revised coder task.
             for tester in [t for t in list(m.tasks) if t.agent == AgentId.TESTER and not t.revision_of]:
                 if any(self._root(d) in revised_roots for d in tester.depends_on):

@@ -165,18 +165,14 @@ class TeamLLM:
                     ErrorKind.BUDGET,
                     f"Stopped: this mission reached its limit of {self._limits.max_model_calls} "
                     "model calls. Raise it in Team settings if that is too low.")
-            lifetime = self._limits.max_model_calls * self.LIFETIME_RUNS
+            lifetime = self._limits.lifetime_calls
             if self._prior + self._calls >= lifetime:
                 raise TeamError(
                     ErrorKind.BUDGET,
                     f"Stopped: this mission has used {self._prior + self._calls} model calls across its runs "
-                    f"(the cap is {lifetime}: {self.LIFETIME_RUNS} runs' worth). Start a new mission, or raise "
+                    f"(the cap is {lifetime}: {self._limits.LIFETIME_RUNS} runs' worth). Start a new mission, or raise "
                     "the limit in Team settings.")
             self._calls += 1
-
-    #: Retry / Resume / Revise again each get a fresh per-run budget, but a mission
-    #: can never spend more than this many runs' worth in total.
-    LIFETIME_RUNS = 3
 
     def complete(self, system: str, user: str, *, agent: str, purpose: str = "") -> Reply:
         """One model call (with bounded retries). Raises TeamError or Cancelled."""

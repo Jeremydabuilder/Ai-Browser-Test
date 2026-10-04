@@ -52,6 +52,20 @@ class TeamLimits:
         "rate_limit_requeues": (0, 5), "rate_limit_cooldown_s": (1.0, 300.0),
     }
 
+    #: Retry / Resume / Revise again each get a fresh per-run budget, but a mission can never
+    #: spend more than this many runs' worth of model calls in total.
+    LIFETIME_RUNS = 3
+
+    @property
+    def lifetime_calls(self) -> int:
+        return self.max_model_calls * self.LIFETIME_RUNS
+
+    def allowance(self, mission_calls: int, calls_at_run_start: int = 0) -> tuple[int, int]:
+        """(calls left in this run, calls left for the whole mission) - never below zero."""
+        lifetime_left = max(0, self.lifetime_calls - mission_calls)
+        run_left = max(0, self.max_model_calls - max(0, mission_calls - calls_at_run_start))
+        return min(run_left, lifetime_left), lifetime_left
+
     def clamped(self) -> "TeamLimits":
         values = {}
         for f in fields(self):

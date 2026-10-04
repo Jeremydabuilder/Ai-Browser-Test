@@ -12,6 +12,8 @@ publishing or deleting tools at all**.
 
 ## Quick start on Windows
 
+A shorter step-by-step first-run list with expected results: [team_windows_checklist.md](team_windows_checklist.md).
+
 1. **Install** Python 3.11+ and Git, then in PowerShell:
    ```powershell
    git clone https://github.com/Jeremydabuilder/Ai-Browser-Test.git
@@ -104,7 +106,8 @@ Search results are attacker-influenced, so the page reader treats every URL as h
 * The host is resolved first and **every** address must be globally routable - loopback, private
   (RFC 1918/ULA), link-local (incl. `169.254.169.254` cloud metadata), CGNAT, multicast, reserved,
   and IPv4 hidden in IPv6 (mapped/6to4/Teredo/NAT64) are refused. The connection is then made to
-  the validated address (Host header and TLS name carry the hostname), so DNS cannot change its
+  the validated address (Host header, SNI and certificate verification use the original hostname -
+  a certificate that is only valid for the IP, expired, untrusted or for another name is refused), so DNS cannot change its
   answer between check and connect. Every redirect is re-validated (max 4).
 * **Proxies are ignored on purpose.** `HTTP(S)_PROXY` variables are not used: a proxy would make the
   connection go somewhere other than the address that was checked. On a network that forces a
@@ -128,6 +131,14 @@ Search results are attacker-influenced, so the page reader treats every URL as h
   (`M1`...). Only blocking issues trigger a revision, and the revising agent gets them as a
   checklist. On the next round the Reviewer must mark each earlier issue fixed / not fixed.
   Suggestions and the criteria check appear in the final result.
+* **No stale combinations:** every task records which versions of upstream work it was built on. If
+  that work changes afterwards (a revision of the research, a retried task), anything built on the old
+  version is redone - e.g. a revised research task re-queues the draft and the review - and the old
+  artifacts stay visible but marked replaced. Reviews count as feedback, not inputs.
+* **Spending limits:** each run (start, Retry, Resume, Revise again) has its own budget of model calls,
+  but one mission can never use more than **three runs' worth** in total. The panel shows what is left;
+  Retry is disabled when nothing is left. Cancel stops new work at once but cannot undo calls already
+  made or tokens already consumed, and a reply that arrives after Cancel is discarded.
 * **Rate limits:** after a call exhausts its retries, the task waits (a cool-down that grows,
   honouring Retry-After) and is re-queued up to twice; the team drops to one agent at a time and
   says so. Only then does the task fail.

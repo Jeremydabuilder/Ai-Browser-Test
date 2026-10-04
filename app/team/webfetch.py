@@ -34,6 +34,7 @@ from __future__ import annotations
 import ipaddress
 import re
 import socket
+import ssl
 import time
 import zlib
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
@@ -62,6 +63,7 @@ class FetchErrorKind:
     TOO_MANY_REDIRECTS = "too_many_redirects"
     UNSUPPORTED = "unsupported"
     EMPTY = "empty"
+    TLS = "tls"
 
 
 class FetchError(Exception):
@@ -386,7 +388,7 @@ class _BoundedDecoder:
 
 class PageFetcher:
     def __init__(self, *, timeout: float = 10.0, deadline: float = 20.0, max_bytes: int = 1_500_000,
-                 max_chars: int = 20_000, max_redirects: int = 4, resolver: Resolver | None = None,
+                 max_chars: int = 20_000, max_redirects: int = 4, resolver: Resolver | None = None, verify=True,
                  transport: "httpx.BaseTransport | None" = None, clock=time.monotonic) -> None:
         self.timeout = timeout
         self.deadline = deadline
@@ -394,6 +396,9 @@ class PageFetcher:
         self.max_chars = max_chars
         self.max_redirects = max_redirects
         self._resolver = resolver or system_resolver
+        #: Certificate verification. True = system/certifi trust; tests inject an ssl.SSLContext.
+        #: Never False in the app: the certificate must match the original hostname.
+        self._verify = verify
         self._transport = transport
         self._clock = clock
 
@@ -426,7 +431,7 @@ class PageFetcher:
         timeout = httpx.Timeout(connect=min(5.0, self.timeout), read=self.timeout, write=5.0, pool=5.0)
         try:
             with httpx.Client(timeout=timeout, transport=self._transport, follow_redirects=False,
-                              trust_env=False) as client:
+                              trust_env=False, verify=self._verify) as client:
                 with client.stream("GET", pinned, headers=headers, extensions=extensions) as response:
                     status = response.status_code
                     if status in (301, 302, 303, 307, 308):
@@ -470,7 +475,14 @@ class PageFetcher:
             raise
         except httpx.TimeoutException:
             raise FetchError(FetchErrorKind.TIMEOUT, "The site did not answer in time.") from None
-        except httpx.HTTPError:
+        except httpx.HTTPError as exc:
+            cause = exc
+            while cause is not None:
+                if isinstance(cause, ssl.SSLError):
+                    raise FetchError(FetchErrorKind.TLS,
+                                     "The site's security certificate could not be verified for this address, "
+                                     "so the page was not read.") from None
+                cause = cause.__cause__ or cause.__context__
             raise FetchError(FetchErrorKind.NETWORK, "Could not connect to the site.") from None
         except (OSError, ValueError, UnicodeError):
             raise FetchError(FetchErrorKind.NETWORK, "Could not connect to the site.") from None

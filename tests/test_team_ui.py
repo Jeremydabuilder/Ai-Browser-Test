@@ -899,6 +899,44 @@ class RecoveryAndGuidanceTests(TeamUITestCase):
         self.assertIn("page not opened", html)
         self.assertIn("Page not opened: blocked", html)
 
+
+    def test_remaining_allowance_is_shown_and_explains_cancellation(self) -> None:
+        from app.team.limits import TeamLimits
+        self.assertEqual(TeamLimits(max_model_calls=60).allowance(10, 0), (50, 170))
+        self.assertEqual(TeamLimits(max_model_calls=60).allowance(70, 60), (50, 110))
+        self.assertEqual(TeamLimits(max_model_calls=60).allowance(180, 120), (0, 0))
+        self.build()
+        mission = Mission(goal="g", status=MissionStatus.CANCELLED, model_calls=25, tasks=[
+            Task("T1", "t", AgentId.RESEARCHER, "i", status=TaskStatus.DONE)])
+        self.controller._view = mission
+        self.panel.refresh()
+        pump()
+        text = self.panel.run_status.text()
+        self.assertIn("25 model calls", text)
+        self.assertIn("155 left", text)                                   # 3 runs x 60 - 25
+        self.assertIn("cannot be undone", text)
+        self.assertIn("cannot undo calls already made", self.panel.run_status.toolTip())
+        self.assertIn("capped at 180", self.panel.run_status.toolTip())
+        self.assertIn("cannot be undone", self.panel.cancel_button.toolTip())
+        self.assertTrue(self.panel.retry_button.isEnabled())
+
+    def test_a_mission_with_no_allowance_left_cannot_be_retried_from_the_panel(self) -> None:
+        self.build()
+        mission = Mission(goal="g", status=MissionStatus.FAILED, model_calls=180, tasks=[
+            Task("T1", "t", AgentId.RESEARCHER, "i", status=TaskStatus.FAILED)])
+        self.controller._view = mission
+        self.panel.refresh()
+        pump()
+        self.assertFalse(self.panel.retry_button.isEnabled())
+        self.assertIn("whole model-call allowance", self.panel.retry_button.toolTip())
+
+    def test_next_step_states_the_lifetime_cap(self) -> None:
+        self.build()
+        self.panel.goal.setPlainText("Compare the products")
+        pump()
+        self.assertIn("capped at 180", self.panel.next_step.text())
+        self.assertIn("cannot undo", self.panel.next_step.text())
+
     def test_page_reading_is_wired_and_can_be_switched_off(self) -> None:
         from app.team.webfetch import PageFetcher
         self.build()

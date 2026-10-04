@@ -210,6 +210,10 @@ class Task:
     not_before: float = 0.0
     started_at: float = 0.0
     finished_at: float = 0.0
+    #: Which upstream results this task was built on when it started: {dependency root id:
+    #: "effective task id:artifact ids"}. If an upstream result later changes (a retry, a
+    #: revision) a finished task whose snapshot no longer matches is stale and is re-run.
+    upstream: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -252,6 +256,8 @@ class Mission:
     #: Set after a rate limit: one agent at a time for the rest of the run.
     throttled: bool = False
     model_calls: int = 0
+    #: ``model_calls`` when the current run started (to show what is left of this run's budget).
+    calls_at_run_start: int = 0
     input_tokens: int = 0
     output_tokens: int = 0
     model_label: str = ""

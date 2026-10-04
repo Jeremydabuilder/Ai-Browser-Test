@@ -154,5 +154,58 @@ class CancellationAndResume(unittest.TestCase):
         self.assertEqual(client.roles().count("writer"), writers)     # no second revision on a stale verdict
 
 
+class StaleDependentsAreInvalidated(unittest.TestCase):
+    """When upstream work changes, anything built on the old version is re-done, never combined with the new."""
+
+    def test_revised_research_makes_the_old_draft_and_review_stale(self) -> None:
+        plan = plan_json([task("T1", "researcher", sources=["S1"]), task("T2", "writer", ["T1"]),
+                          task("T3", "reviewer", ["T2"])])
+        ask_for_research = json.dumps({"verdict": "revise", "summary": "Research is thin.", "issues": [
+            {"task": "T1", "severity": "blocking", "where": "Findings", "problem": "Price is unsourced",
+             "evidence": "no [S#]", "change": "Add the price from S1"}]})
+        client = script(plan=[plan], researcher=["OLD-NOTES A is cheap [S1]", "NEW-NOTES A costs $10 [S1]"],
+                        writer=["OLD-DRAFT built on old notes", "NEW-DRAFT built on new notes"],
+                        reviewer=[ask_for_research, APPROVE])
+        _, m = start(client)
+        self.assertEqual(m.status, MissionStatus.COMPLETED)
+        self.assertEqual(client.roles().count("researcher"), 2)
+        self.assertEqual(client.roles().count("writer"), 2)            # the draft was redone on the new notes
+        writer_again = client.users("writer")[1]
+        self.assertIn("NEW-NOTES", writer_again)
+        self.assertNotIn("OLD-NOTES", writer_again)
+        second_review = client.users("reviewer")[1]
+        self.assertIn("NEW-DRAFT", second_review)
+        self.assertNotIn("OLD-DRAFT", second_review)
+        self.assertNotIn("OLD-NOTES", second_review)
+        final_prompt = client.users("final")[-1]
+        self.assertIn("NEW-DRAFT", final_prompt)
+        self.assertNotIn("OLD-DRAFT", final_prompt)
+        old = [a for a in m.artifacts if "OLD-DRAFT" in a.content]
+        self.assertTrue(old and all(a.meta.get("replaced") for a in old))      # kept for history, marked replaced
+
+    def test_retrying_a_failed_producer_reruns_a_review_that_ran_without_it(self) -> None:
+        plan = plan_json([task("T1", "researcher", sources=["S1"]), task("T2", "writer", ["T1"]),
+                          task("T3", "writer", ["T1"], title="Appendix"), task("T4", "reviewer", ["T2", "T3"])])
+        client = script(plan=[plan], writer=["MAIN-DRAFT", BOOM, "APPENDIX-DRAFT"])
+        limits = TeamLimits(max_retries=0, max_backoff_s=1.0, max_concurrency=1)
+        engine, m = start(client, limits)
+        self.assertEqual(m.task("T3").status, TaskStatus.FAILED)
+        self.assertEqual(m.task("T4").status, TaskStatus.DONE)         # reviewed without the appendix
+        self.assertNotIn("APPENDIX", client.users("reviewer")[0])
+        engine.run(retry_only={"T3"})
+        self.assertEqual(client.roles().count("reviewer"), 2)          # the stale review was redone
+        self.assertIn("APPENDIX-DRAFT", client.users("reviewer")[1])
+        self.assertEqual(client.roles().count("researcher"), 1)
+        self.assertEqual(m.status, MissionStatus.COMPLETED)
+
+    def test_unchanged_upstream_leaves_finished_work_alone(self) -> None:
+        client = script()
+        engine, m = start(client)
+        calls = len(client.calls)
+        engine.run()
+        self.assertEqual(len(client.calls), calls + 1)                 # only the final assembly
+        self.assertEqual(client.roles().count("reviewer"), 1)
+
+
 if __name__ == "__main__":
     unittest.main()

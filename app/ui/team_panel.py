@@ -593,7 +593,9 @@ class TeamPanel(QWidget):
                                                  and self.web_check.isChecked() else ""))
         limits = self._controller.limits()
         return ("Ready. " + ("; ".join(extras) + ". " if extras else "")
-                + f"A run uses at most {limits.max_model_calls} model calls and you can cancel at any time.")
+                + f"A run uses at most {limits.max_model_calls} model calls; one mission is capped at "
+                f"{limits.lifetime_calls} ({limits.LIFETIME_RUNS} runs) across retries. Cancelling stops new work "
+                "but cannot undo calls already made.")
 
     def _pick_tabs(self) -> None:
         if self._browser is None:
@@ -786,7 +788,21 @@ class TeamPanel(QWidget):
         label = MissionStatus.LABELS.get(mission.status, mission.status)
         done = sum(1 for t in mission.tasks if t.status in (TaskStatus.DONE, TaskStatus.SKIPPED))
         progress = f" · {done}/{len(mission.tasks)} tasks" if mission.tasks else ""
-        usage = f" · {mission.model_calls} model calls" if mission.model_calls else ""
+        limits = self._controller.limits()
+        run_left, mission_left = limits.allowance(mission.model_calls, mission.calls_at_run_start)
+        usage = ""
+        if mission.model_calls:
+            usage = f" · {mission.model_calls} model calls"
+            usage += (f" · {mission_left} left" if not active else f" · {run_left} left this run")
+            if mission_left <= limits.max_model_calls // 5:
+                usage = usage.replace(f"{mission_left} left", f"<span style='color:{c.warning}'>{mission_left} left</span>")
+        self.run_status.setToolTip(
+            f"Model-call allowance: each run may use up to {limits.max_model_calls} calls (retries included). "
+            f"Retry / Resume / Revise again start a fresh run, but one mission is capped at "
+            f"{limits.lifetime_calls} calls in total ({limits.LIFETIME_RUNS} runs' worth). "
+            f"Used {mission.model_calls}; {mission_left} left for this mission.\n"
+            "Cancelling stops new work at once but cannot undo calls already made or tokens already "
+            "consumed; a reply that arrives after Cancel is discarded.")
         model = f" · {escape(mission.model_label)}" if mission.model_label else ""
         text = f"<span style='color:{colour}'>●</span> <b>{label}</b>{progress}{usage}{model}"
         if mission.error:
@@ -801,6 +817,9 @@ class TeamPanel(QWidget):
             seconds = int(max(1, max(t.not_before for t in waiting) - time.time()))
             text += (f"<br><span style='color:{c.warning}'>Waiting about {seconds}s for the rate limit to "
                      f"clear before {waiting[0].id}.</span>")
+        if mission.status == MissionStatus.CANCELLED and mission.model_calls:
+            text += (f"<br><span style='color:{c.muted}'>Cancelled. The {mission.model_calls} model calls already "
+                     "made (and their tokens) were used and cannot be undone.</span>")
         if not active and mission.status in (MissionStatus.INTERRUPTED, MissionStatus.CANCELLED,
                                              MissionStatus.FAILED) and mission.tasks:
             kept = sum(1 for t in mission.tasks if t.status in (TaskStatus.DONE, TaskStatus.SKIPPED))
@@ -823,7 +842,15 @@ class TeamPanel(QWidget):
             MissionStatus.COMPLETED_WITH_ISSUES) and actionable and not self._controller.is_running)
         label, tip = self._retry_label(mission)
         self.retry_button.setText(label)
-        self.retry_button.setToolTip(tip)
+        self.retry_button.setToolTip(tip + f"\nAllowance left for this mission: {mission_left} model calls.")
+        self.retry_button.setEnabled(mission_left > 0)
+        if mission_left <= 0:
+            self.retry_button.setToolTip("This mission has used its whole model-call allowance "
+                                         f"({limits.lifetime_calls}). Start a new mission, or raise the limit "
+                                         "in Settings.")
+        self.cancel_button.setToolTip("Stops new work immediately. Calls already made and tokens already "
+                                      "consumed cannot be undone, and a reply that arrives after Cancel is "
+                                      "discarded.")
         self.new_button.setVisible(not active)
         self._render_agents(mission)
         self._render_tasks(mission)
