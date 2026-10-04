@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import json
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from app.team.model import AgentId, ArtifactKind
@@ -103,6 +103,12 @@ Output Markdown with these sections:
 ## Gaps and uncertainty   - what the sources do not say, conflicts between sources, anything unverified
 If no sources were supplied, say so at the top, label every claim "unverified (model knowledge)",
 and do not cite or fabricate any source.
+Prefer sources whose origin is "web page (read in full)" or an attached source over "web search result
+(snippet)" ones; when a claim rests only on a snippet, say "per a search snippet".
+
+End with a short section titled exactly "## Handoff" (at most 4 bullets, under 90 words): what you
+completed, what is uncertain or missing, and what the next agent should do or double-check. It is
+passed to the next agent separately from your deliverable.
 """
 
 WRITER = _COMMON + """
@@ -111,6 +117,10 @@ ROLE: Writer. Produce the report, comparison, draft or documentation the task as
 Use the handed-off research notes as your evidence; keep their [S#] citations on every claim that
 comes from them. Do not add facts the notes do not support. Output the finished document in Markdown,
 ready to read, with no preamble about what you are doing.
+
+End with a short section titled exactly "## Handoff" (at most 4 bullets, under 90 words): what you
+completed, what is uncertain or missing, and what the next agent should do or double-check. It is
+passed to the next agent separately from your deliverable.
 """
 
 CODER = _COMMON + """
@@ -118,6 +128,7 @@ ROLE: Coder. Create or edit code files for the task.
 
 Reply with ONE JSON object and nothing else:
 {"summary": "what you built/changed and why, in a few sentences",
+ "handoff": "under 90 words: what is done, what is uncertain, what the tester/reviewer should check",
  "files": [{"path": "relative/path.ext", "content": "the COMPLETE new content of the file"}]}
 
 Rules: paths are relative, no "..", no absolute paths. Give the complete file content, not a diff.
@@ -146,12 +157,24 @@ acceptance criteria, check that claims are supported by the cited evidence, chec
 
 Reply with ONE JSON object and nothing else:
 {"verdict": "approve" | "revise",
- "summary": "two or three sentences",
- "issues": [{"task": "T2", "problem": "specific defect", "change": "the specific revision required"}]}
+ "summary": "two or three sentences a busy person can act on",
+ "criteria": [{"criterion": "a success criterion, verbatim", "met": true, "note": "why, briefly"}],
+ "issues": [{"task": "T2", "severity": "blocking" | "minor", "where": "section heading, paragraph, or file:line",
+             "problem": "the specific defect", "evidence": "quote it, or cite [S#] / the failing test output",
+             "change": "the exact change that would fix it"}],
+ "previous": [{"id": "B1", "status": "fixed" | "not_fixed", "note": "..."}]}
 
-Use "revise" only for concrete, fixable problems; each issue must name the task that produced the
-deficient artifact and say exactly what to change. Failed tests are always a reason to revise the code.
-Do not nitpick style when the substance is right. If you approve, issues may be empty.
+Rules for useful feedback:
+- "blocking" = the deliverable is wrong, unsupported, incomplete against a success criterion, or fails a
+  test. "minor" = optional polish; minor issues never cause a revision.
+- Every issue names the task that produced the deficient artifact, WHERE the problem is, WHY (evidence),
+  and EXACTLY what to change. No vague advice ("improve clarity", "add more detail").
+- At most 6 blocking issues - the fewest changes that make the deliverable acceptable. Do not nitpick style
+  when the substance is right.
+- Failed tests are always blocking for the code. If tests were not run, say so in the summary.
+- Use "revise" only if there is at least one blocking issue; otherwise "approve".
+- If "PREVIOUS BLOCKING ISSUES" are listed, report each in "previous" as fixed or not_fixed; a not_fixed
+  one must appear again in "issues" with what is still wrong.
 """
 
 SPECS: dict[str, AgentSpec] = {
@@ -355,6 +378,26 @@ def looks_like_code_mission(goal: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Handoffs
+# ---------------------------------------------------------------------------
+
+_HANDOFF_HEADING = re.compile(r"(?im)^[ \t]*(?:#{1,4}[ \t]*|\*\*)handoff\b[^\n]*$")
+
+
+def split_handoff(text: str) -> tuple[str, str]:
+    """(deliverable, handoff). The agent's trailing "## Handoff" section is
+    peeled off so it travels as a note, not as part of the document."""
+    matches = list(_HANDOFF_HEADING.finditer(text or ""))
+    if not matches:
+        return (text or "").strip(), ""
+    last = matches[-1]
+    note = text[last.end():].strip().strip("*").strip()
+    if not note or len(note) > 1500:           # an over-long "handoff" is really content; keep it
+        return (text or "").strip(), ""
+    return text[:last.start()].rstrip(), note
+
+
+# ---------------------------------------------------------------------------
 # Verdicts and code output
 # ---------------------------------------------------------------------------
 
@@ -364,6 +407,19 @@ class Issue:
     task: str
     problem: str
     change: str
+    severity: str = "blocking"
+    where: str = ""
+    evidence: str = ""
+    id: str = ""
+
+    def as_dict(self) -> dict:
+        return {"id": self.id, "task": self.task, "severity": self.severity, "where": self.where,
+                "problem": self.problem, "evidence": self.evidence, "change": self.change}
+
+    def checklist_line(self) -> str:
+        where = f" [{self.where}]" if self.where else ""
+        proof = f" Evidence: {self.evidence}" if self.evidence else ""
+        return f"{self.id or '-'}{where} {self.problem}{proof} -> REQUIRED: {self.change}"
 
 
 @dataclass
@@ -371,6 +427,16 @@ class Verdict:
     approve: bool
     summary: str
     issues: list[Issue]
+    criteria: list[dict] = field(default_factory=list)
+    previous: list[dict] = field(default_factory=list)
+
+    @property
+    def blocking(self) -> list[Issue]:
+        return [i for i in self.issues if i.severity == "blocking"]
+
+    @property
+    def minor(self) -> list[Issue]:
+        return [i for i in self.issues if i.severity != "blocking"]
 
 
 def parse_verdict(text: str) -> Verdict:
@@ -382,20 +448,47 @@ def parse_verdict(text: str) -> Verdict:
     if verdict not in ("approve", "revise"):
         raise OutputError('"verdict" must be "approve" or "revise"')
     issues: list[Issue] = []
+    counts = {"blocking": 0, "minor": 0}
     for raw in data.get("issues") or []:
-        if isinstance(raw, dict) and (raw.get("problem") or raw.get("change")):
-            issues.append(Issue(str(raw.get("task") or "").strip(),
-                                str(raw.get("problem") or "").strip()[:500],
-                                str(raw.get("change") or "").strip()[:500]))
-    if verdict == "revise" and not issues:
-        raise OutputError('"revise" needs at least one specific issue')
-    return Verdict(verdict == "approve", str(data.get("summary") or "").strip()[:600], issues[:8])
+        if not isinstance(raw, dict) or not (raw.get("problem") or raw.get("change")):
+            continue
+        severity = "minor" if str(raw.get("severity") or "blocking").strip().lower() in ("minor", "nit", "suggestion") \
+            else "blocking"
+        counts[severity] += 1
+        issues.append(Issue(
+            str(raw.get("task") or "").strip(), str(raw.get("problem") or "").strip()[:500],
+            str(raw.get("change") or "").strip()[:500], severity, str(raw.get("where") or "").strip()[:160],
+            str(raw.get("evidence") or "").strip()[:400],
+            ("B" if severity == "blocking" else "M") + str(counts[severity])))
+    issues = issues[:12]
+    criteria = []
+    for raw in data.get("criteria") or []:
+        if isinstance(raw, dict) and raw.get("criterion"):
+            criteria.append({"criterion": str(raw["criterion"]).strip()[:200], "met": bool(raw.get("met")),
+                             "note": str(raw.get("note") or "").strip()[:240]})
+    previous = []
+    for raw in data.get("previous") or []:
+        if isinstance(raw, dict) and raw.get("id"):
+            previous.append({"id": str(raw["id"]).strip()[:10],
+                             "status": "fixed" if str(raw.get("status")).lower() == "fixed" else "not_fixed",
+                             "note": str(raw.get("note") or "").strip()[:240]})
+    result = Verdict(False, str(data.get("summary") or "").strip()[:600], issues, criteria[:10], previous[:12])
+    if verdict == "revise" and not result.blocking:
+        if not result.minor:
+            raise OutputError('"revise" needs at least one specific blocking issue')
+        verdict = "approve"                 # only polish was suggested: nothing to send back
+    # Concrete blocking issues outweigh a verdict that says "approve".
+    result.approve = verdict == "approve" and not result.blocking
+    return result
 
 
 MAX_FILES = 20
 MAX_FILE_CHARS = 200_000
 MAX_TOTAL_CHARS = 800_000
 _PATH_OK = re.compile(r"^[A-Za-z0-9_.\-/ ]{1,200}$")
+#: Windows device names: a file called "con.py" cannot be created there, and
+#: a model-chosen name must work on every platform the app runs on.
+_RESERVED = {"con", "prn", "aux", "nul", *(f"com{i}" for i in range(1, 10)), *(f"lpt{i}" for i in range(1, 10))}
 
 
 def safe_relative_path(path: str) -> str:
@@ -408,10 +501,14 @@ def safe_relative_path(path: str) -> str:
     parts = [p for p in raw.split("/") if p not in ("", ".")]
     if not parts or any(p == ".." for p in parts) or any(p.startswith(".git") for p in parts[:1]):
         raise OutputError(f"file path {path!r} is not allowed")
+    for part in parts:
+        if part.split(".")[0].strip().lower() in _RESERVED or part != part.rstrip(" ."):
+            raise OutputError(f"file name {part!r} is reserved or invalid on Windows")
     return "/".join(parts)
 
 
-def parse_code(text: str) -> tuple[str, list[tuple[str, str]]]:
+def parse_code(text: str) -> tuple[str, list[tuple[str, str]], str]:
+    """(summary, [(path, content)], handoff)"""
     try:
         data = extract_json(text)
     except OutputError as exc:
@@ -438,4 +535,5 @@ def parse_code(text: str) -> tuple[str, list[tuple[str, str]]]:
             raise OutputError("the files together are too large")
         seen.add(path)
         out.append((path, content))
-    return str(data.get("summary") or "").strip()[:800], out
+    return (str(data.get("summary") or "").strip()[:800], out,
+            str(data.get("handoff") or "").strip()[:600])

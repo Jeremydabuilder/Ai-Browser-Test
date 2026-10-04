@@ -80,6 +80,18 @@ class SandboxStatus:
                 "CPU/memory/file/time limits)")
 
 
+#: Windows: without this every docker call from the windowed app flashes a console.
+_NO_WINDOW: dict = ({"creationflags": getattr(subprocess, "CREATE_NO_WINDOW", 0)} if os.name == "nt" else {})
+
+
+def _bind_mount(source: str, target: str) -> str:
+    """``--mount`` value. The option is comma-separated, so a Windows profile
+    folder such as ``C:\\Users\\Doe, Jane\\AppData\\Local\\Temp`` must be CSV-quoted."""
+    if "," in source or '"' in source:
+        return 'type=bind,"source=%s",target=%s' % (source.replace('"', '""'), target)
+    return f"type=bind,source={source},target={target}"
+
+
 @dataclass
 class CheckResult:
     name: str
@@ -239,7 +251,7 @@ class _Container(_Backend):
             "--ulimit", "nofile=256:256", "--ulimit", "fsize=10485760:10485760",
             "--ulimit", f"cpu={cpu}:{cpu}", "--user", "65534:65534",
             "--tmpfs", "/tmp:rw,noexec,nosuid,size=64m",
-            "--mount", f"type=bind,source={workdir},target=/work",
+            "--mount", _bind_mount(workdir, "/work"),
             "--workdir", "/work",
             "--env", "HOME=/tmp", "--env", "PYTHONDONTWRITEBYTECODE=1", "--env", "PYTHONNOUSERSITE=1",
             "--env", "PYTHONIOENCODING=utf-8",
@@ -258,7 +270,7 @@ class _Container(_Backend):
 
     def kill(self, process, run_id):
         try:
-            subprocess.run([self.runtime, "rm", "-f", run_id], capture_output=True, timeout=15)
+            subprocess.run([self.runtime, "rm", "-f", run_id], capture_output=True, timeout=15, **_NO_WINDOW)
         except (OSError, subprocess.SubprocessError):
             pass
         try:
@@ -393,13 +405,14 @@ def _container_backend(image: str) -> tuple[_Backend | None, str, str]:
         return None, "Docker/Podman was not found on PATH.", hint
     try:
         info = subprocess.run([runtime, "version", "--format", "{{.Server.Version}}"],
-                              capture_output=True, text=True, timeout=15)
+                              capture_output=True, text=True, encoding="utf-8", errors="replace",
+                              timeout=15, **_NO_WINDOW)
     except (OSError, subprocess.SubprocessError) as exc:
         return None, f"could not run {os.path.basename(runtime)}: {exc}", hint
     if info.returncode != 0 or not info.stdout.strip():
         return None, "the container daemon is not running (start Docker Desktop / the Docker service).", hint
     try:
-        have = subprocess.run([runtime, "image", "inspect", image], capture_output=True, timeout=15)
+        have = subprocess.run([runtime, "image", "inspect", image], capture_output=True, timeout=15, **_NO_WINDOW)
     except (OSError, subprocess.SubprocessError) as exc:
         return None, f"could not inspect the image: {exc}", hint
     if have.returncode != 0:
@@ -458,7 +471,8 @@ def pull_image(image: str = DEFAULT_IMAGE, timeout: float = 900.0) -> tuple[bool
     if runtime is None:
         return False, "Docker/Podman was not found on PATH."
     try:
-        result = subprocess.run([runtime, "pull", image], capture_output=True, text=True, timeout=timeout)
+        result = subprocess.run([runtime, "pull", image], capture_output=True, text=True, encoding="utf-8",
+                                errors="replace", timeout=timeout, **_NO_WINDOW)
     except (OSError, subprocess.SubprocessError) as exc:
         return False, str(exc)
     _cache.clear()

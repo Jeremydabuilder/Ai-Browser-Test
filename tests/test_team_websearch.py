@@ -270,7 +270,7 @@ class EngineIntegrationTests(unittest.TestCase):
         self.assertEqual([s.url for s in web_sources], ["https://reviews.example/b-warranty", "https://teardown.example/a"])
         self.assertEqual([s.id for s in web_sources], ["S3", "S4"])          # numbered after the attached ones
         prompt = client.users("researcher")[0]
-        self.assertIn('"origin": "web search result"', prompt)
+        self.assertIn('"origin": "web search result (snippet)"', prompt)
         self.assertIn('"origin": "attached tab"', prompt)
         self.assertIn('"origin": "attached text"', prompt)
         self.assertIn("three year warranty", prompt)

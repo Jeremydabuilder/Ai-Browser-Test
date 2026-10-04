@@ -843,5 +843,86 @@ class WebSearchToggleTests(TeamUITestCase):
         self.assertEqual([k["web_search"] for k in seen], [True, False])
 
 
+class RecoveryAndGuidanceTests(TeamUITestCase):
+    def failing_writer(self):
+        from app.agent.claude_client import ClaudeError
+        boom = ClaudeError("provider down", retryable=False)
+        return happy_client(writer=[boom, "# Comparison\nA is cheap [S1]"])
+
+    def test_next_step_guides_from_empty_to_ready(self) -> None:
+        self.build()
+        self.assertIn("describe the mission", self.panel.next_step.text())
+        self.panel.goal.setPlainText("Compare the products")
+        pump()
+        self.assertIn("Ready.", self.panel.next_step.text())
+        self.assertIn("model calls", self.panel.next_step.text())
+
+    def test_failed_task_offers_retry_and_skip_links_and_only_that_task_reruns(self) -> None:
+        client = self.failing_writer()
+        self.build(client)
+        self.start_mission()
+        self.assertTrue(wait_for(lambda: self.controller.snapshot().status in (
+            MissionStatus.FAILED, MissionStatus.COMPLETED_WITH_ISSUES)))
+        pump(10)
+        self.assertEqual(self.panel.retry_button.text(), "Retry failed")
+        self.assertTrue(self.panel.progress.isVisibleTo(self.panel))
+        failed = next(t for t in self.controller.snapshot().tasks if t.status == TaskStatus.FAILED)
+        cards = [self.panel._tasks_box.itemAt(i).widget() for i in range(self.panel._tasks_box.count() - 1)]
+        self.assertTrue(any(f"retry:{failed.id}" in (c.text() if c else "") for c in cards))
+        researchers = client.roles().count("researcher")
+        self.panel._on_task_link(f"retry:{failed.id}")
+        self.assertTrue(wait_for(lambda: self.controller.snapshot().status == MissionStatus.COMPLETED))
+        self.assertEqual(client.roles().count("researcher"), researchers)       # finished work is not repeated
+
+    def test_interrupted_mission_explains_what_is_kept(self) -> None:
+        self.build()
+        mission = Mission(goal="g", status=MissionStatus.INTERRUPTED, tasks=[
+            Task("T1", "t", AgentId.RESEARCHER, "i", status=TaskStatus.DONE),
+            Task("T2", "t", AgentId.WRITER, "i", status=TaskStatus.CANCELLED)])
+        self.controller._view = mission
+        self.panel.refresh()
+        pump()
+        self.assertEqual(self.panel.retry_button.text(), "Resume")
+        self.assertIn("1 finished task(s) are kept", self.panel.run_status.text())
+        self.assertTrue(self.controller.interrupted)
+
+    def test_sources_view_separates_pages_from_snippets(self) -> None:
+        self.build()
+        mission = Mission(goal="g", sources=[
+            Source("S1", SourceKind.WEB, "Full", "https://a.example/", "t", SourceStatus.INCLUDED,
+                   depth="page", retrieved="2026-01-02"),
+            Source("S2", SourceKind.WEB, "Snip", "https://b.example/", "t", SourceStatus.INCLUDED,
+                   depth="snippet", note="Page not opened: blocked")])
+        html = self.panel._sources_html(mission)
+        self.assertIn("Web pages read in full", html)
+        self.assertIn("retrieved 2026-01-02", html)
+        self.assertIn("snippet only", html)
+        self.assertIn("Page not opened: blocked", html)
+
+    def test_page_reading_is_wired_and_can_be_switched_off(self) -> None:
+        from app.team.webfetch import PageFetcher
+        self.build()
+        self.assertIsInstance(self.controller.page_fetcher(), PageFetcher)
+        self.assertEqual(self.controller.page_fetcher().max_chars, self.controller.limits().fetch_max_chars)
+        self.controller._settings = {"team_max_fetch_pages": "0"}
+        self.assertIsNone(self.controller.page_fetcher())
+
+    def test_fetch_limits_are_in_the_settings_dialog(self) -> None:
+        from app.ui.team_settings import _FIELDS
+        self.assertIn("max_fetch_pages", [f[0] for f in _FIELDS])
+
+
+class WindowsSafeNamesTests(unittest.TestCase):
+    def test_generated_files_never_use_windows_device_names(self) -> None:
+        from app.browser.downloads import DownloadManager
+        with tempfile.TemporaryDirectory() as folder:
+            manager = DownloadManager()
+            item = manager.save_generated("con.py", "x = 1", folder, "team://test")
+            self.assertEqual(item.file_name, "_con.py")
+            item = manager.save_generated("src/NUL.txt", "x", folder, "team://test", subfolder="AI Team: run?")
+            self.assertTrue(os.path.exists(os.path.join(item.directory, "_NUL.txt")))
+            self.assertNotIn("?", item.directory)
+
+
 if __name__ == "__main__":
     unittest.main()

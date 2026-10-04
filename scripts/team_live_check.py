@@ -38,7 +38,18 @@ GOAL = ("Compare Widget A and Widget B using the attached pages and write a shor
         "someone who keeps things for many years. Cite the sources.")
 
 
+def _utf8_console() -> None:
+    """A Windows console defaults to cp1252 and would crash on the model's
+    unicode (curly quotes, arrows) when printing the result."""
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError, OSError):
+            pass
+
+
 def main() -> int:
+    _utf8_console()
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--model", default="")
     parser.add_argument("--provider", default="")

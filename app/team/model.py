@@ -134,9 +134,17 @@ class Source:
     text: str = ""
     status: str = SourceStatus.INCLUDED
     error: str = ""
+    #: For web sources: "snippet" (search-engine excerpt) or "page" (opened and read).
+    depth: str = ""
+    #: ISO date a web page was read - part of an honest citation.
+    retrieved: str = ""
+    #: Why a page could not be read in full, when only the snippet is available.
+    note: str = ""
 
     @property
     def origin_label(self) -> str:
+        if self.kind == SourceKind.WEB:
+            return "web page (read in full)" if self.depth == "page" else "web search result (snippet)"
         return SourceKind.LABELS.get(self.kind, self.kind)
 
     @property
@@ -188,6 +196,14 @@ class Task:
     error_kind: str = ""
     revision_of: str = ""
     round: int = 0
+    #: What this task tells the next agent: done / uncertain / what to do next.
+    handoff: str = ""
+    #: Source ids this task gathered itself (search/page reads) - reused on a
+    #: retry so completed searches are never repeated.
+    gathered: list[str] = field(default_factory=list)
+    #: Automatic requeues after a rate limit, and when the next attempt may start.
+    auto_retries: int = 0
+    not_before: float = 0.0
     started_at: float = 0.0
     finished_at: float = 0.0
 
@@ -225,6 +241,12 @@ class Mission:
     error_kind: str = ""
     review_rounds: int = 0
     unresolved_issues: list[str] = field(default_factory=list)
+    #: Non-blocking reviewer suggestions and the success-criteria checklist
+    #: from the latest review.
+    suggestions: list[str] = field(default_factory=list)
+    criteria_check: list[dict] = field(default_factory=list)
+    #: Set after a rate limit: one agent at a time for the rest of the run.
+    throttled: bool = False
     model_calls: int = 0
     input_tokens: int = 0
     output_tokens: int = 0

@@ -47,10 +47,12 @@ class ErrorKind:
 
 
 class TeamError(Exception):
-    def __init__(self, kind: str, message: str) -> None:
+    def __init__(self, kind: str, message: str, retry_after: float = 0.0) -> None:
         super().__init__(message)
         self.kind = kind
         self.message = message
+        #: Seconds the provider last asked us to wait (rate limits only).
+        self.retry_after = retry_after
 
 
 class Cancelled(Exception):
@@ -125,13 +127,14 @@ class TeamLLM:
     def __init__(self, client_factory: Callable[[], Any], limits: TeamLimits, cancel: CancelToken,
                  *, emit: Callable[[str, str, str], None] | None = None,
                  secret: str = "", on_usage: Callable[[int, int, int], None] | None = None,
-                 label: str = "") -> None:
+                 label: str = "", on_rate_limit: Callable[[], None] | None = None) -> None:
         self._factory = client_factory
         self._limits = limits
         self._cancel = cancel
         self._emit = emit or (lambda agent, kind, text: None)
         self._secret = secret
         self._on_usage = on_usage or (lambda calls, tin, tout: None)
+        self._on_rate_limit = on_rate_limit or (lambda: None)
         self.label = label
         self._client: Any = None
         self._lock = threading.Lock()
@@ -178,6 +181,8 @@ class TeamLLM:
                     system=system, messages=[{"role": "user", "content": user}], tools=[])
             except ClaudeError as exc:
                 kind = classify_error(exc)
+                if kind == ErrorKind.RATE_LIMIT:
+                    self._on_rate_limit()
                 retryable = bool(exc.retryable) and kind in (
                     ErrorKind.RATE_LIMIT, ErrorKind.NETWORK, ErrorKind.PROVIDER)
                 if retryable and attempt < self._limits.max_retries:
@@ -197,7 +202,7 @@ class TeamLLM:
                     message = (f"{self.label or 'The provider'} kept rate-limiting requests; gave up "
                                f"after {self._limits.max_retries} retries. Wait a minute and Retry, "
                                "or lower concurrency in Team settings.")
-                raise TeamError(kind, message) from exc
+                raise TeamError(kind, message, float(exc.retry_after or 0.0)) from exc
             finally:
                 if acquired:
                     self._slots.release()

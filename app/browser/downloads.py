@@ -167,6 +167,9 @@ class DownloadManager(QObject):
         parts = [re.sub(r'[<>:"|?*\x00-\x1f]', "_", p).strip(" .") for p in
                  (subfolder + "/" + file_name).replace("\\", "/").split("/") if p not in ("", ".", "..")]
         parts = [p for p in parts if p] or ["file.txt"]
+        # Windows device names (CON, NUL, COM1...) cannot be created, whatever the extension.
+        reserved = {"con", "prn", "aux", "nul", *(f"com{i}" for i in range(1, 10)), *(f"lpt{i}" for i in range(1, 10))}
+        parts = [("_" + p) if p.split(".")[0].lower() in reserved else p for p in parts]
         target = base.joinpath(*parts)
         if base != target.parent and base not in target.parents:
             target = base / parts[-1]

@@ -15,7 +15,7 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QColor, QFontMetrics, QPalette, QTextCharFormat, QTextCursor, QTextFormat
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFileDialog, QHBoxLayout, QFrame, QInputDialog, QLabel,
-    QListWidget, QListWidgetItem, QMenu, QMessageBox, QPlainTextEdit, QPushButton, QScrollArea,
+    QListWidget, QListWidgetItem, QMenu, QMessageBox, QPlainTextEdit, QProgressBar, QPushButton, QScrollArea,
     QSizePolicy, QStackedWidget, QTabBar, QTabWidget, QTextBrowser, QVBoxLayout, QWidget,
 )
 
@@ -279,8 +279,15 @@ class TeamPanel(QWidget):
         self.compose_error.hide()
         box.addWidget(self.compose_error)
 
+        self.next_step = QLabel("", page)
+        self.next_step.setWordWrap(True)
+        self.next_step.setProperty("kind", "muted")
+        self.next_step.setAccessibleName("Next step")
+        box.addWidget(self.next_step)
+
         self.web_check = QCheckBox("Search the web", page)
         self.web_check.setChecked(True)
+        self.web_check.toggled.connect(lambda _on: self._sync_start())
         box.addWidget(self.web_check)
 
         self.start_button = QPushButton("Start team", page)
@@ -325,6 +332,11 @@ class TeamPanel(QWidget):
         self.run_status.setWordWrap(True)
         self.run_status.setTextFormat(Qt.TextFormat.RichText)
         box.addWidget(self.run_status)
+        self.progress = QProgressBar(page)
+        self.progress.setTextVisible(False)
+        self.progress.setFixedHeight(6)
+        self.progress.setAccessibleName("Mission progress")
+        box.addWidget(self.progress)
 
         self.run_tabs = QTabWidget(page)
         # Four short labels must fit a 300px column: the global tab style has a
@@ -565,6 +577,23 @@ class TeamPanel(QWidget):
             self.start_button.setToolTip("No model key is configured yet - see the message above")
         else:
             self.start_button.setToolTip("")
+        self.next_step.setText(self._next_step_text(running))
+
+    def _next_step_text(self, running: bool) -> str:
+        if running:
+            return "A mission is running - open the Mission view to follow it."
+        if not getattr(self, "_provider_ready", True):
+            return "Next: add your model key (Set up\u2026 above). It stays in your system keyring."
+        if not self.goal.toPlainText().strip():
+            return ("Next: describe the mission, or pick an example. Optional: add open tabs, text or files "
+                    "for the team to read.")
+        extras = []
+        if not self._sources:
+            extras.append("no pages attached" + (" - the team will search the web" if self._web_available
+                                                 and self.web_check.isChecked() else ""))
+        limits = self._controller.limits()
+        return ("Ready. " + ("; ".join(extras) + ". " if extras else "")
+                + f"A run uses at most {limits.max_model_calls} model calls and you can cancel at any time.")
 
     def _pick_tabs(self) -> None:
         if self._browser is None:
@@ -704,7 +733,28 @@ class TeamPanel(QWidget):
 
     # ------------------------------------------------------------- run view
     def _retry(self) -> None:
-        self._controller.retry()
+        mission = self._controller.snapshot()
+        more = (mission is not None and mission.status == MissionStatus.COMPLETED_WITH_ISSUES
+                and bool(mission.unresolved_issues)
+                and not any(t.status in (TaskStatus.FAILED, TaskStatus.BLOCKED) for t in mission.tasks))
+        self._controller.retry(extra_round=more)
+
+    def _on_task_link(self, link: str) -> None:
+        action, _, task_id = link.partition(":")
+        if action in ("retry", "skip") and not self._controller.is_running:
+            self._controller.retry(task_id, skip=action == "skip")
+
+    def _retry_label(self, mission: Mission) -> tuple[str, str]:
+        failed = [t for t in mission.tasks if t.status in (TaskStatus.FAILED, TaskStatus.BLOCKED)]
+        if mission.status == MissionStatus.COMPLETED_WITH_ISSUES:
+            if failed:
+                return "Retry failed", "Run only the tasks that failed; finished work is kept"
+            return "Revise again", "Give the team one more review round to fix the open issues"
+        if mission.status == MissionStatus.FAILED and not mission.tasks:
+            return "Try again", "Plan the mission again"
+        if mission.status in (MissionStatus.INTERRUPTED, MissionStatus.CANCELLED):
+            return "Resume", "Continue from where it stopped; finished work is kept"
+        return "Retry failed", "Run only the tasks that failed; finished work is kept"
 
     def _new_mission(self) -> None:
         self._controller.new_mission()
@@ -743,11 +793,34 @@ class TeamPanel(QWidget):
             text += f"<br><span style='color:{c.danger}'>{escape(mission.error)}</span>"
         elif mission.coordinator_note:
             text += f"<br><span style='color:{c.muted}'>{escape(mission.coordinator_note)}…</span>"
+        if active and mission.throttled:
+            text += (f"<br><span style='color:{c.warning}'>The provider is rate-limiting, so the team is "
+                     "working one task at a time.</span>")
+        waiting = [t for t in mission.tasks if t.status == TaskStatus.PENDING and t.not_before > time.time()]
+        if active and waiting:
+            seconds = int(max(1, max(t.not_before for t in waiting) - time.time()))
+            text += (f"<br><span style='color:{c.warning}'>Waiting about {seconds}s for the rate limit to "
+                     f"clear before {waiting[0].id}.</span>")
+        if not active and mission.status in (MissionStatus.INTERRUPTED, MissionStatus.CANCELLED,
+                                             MissionStatus.FAILED) and mission.tasks:
+            kept = sum(1 for t in mission.tasks if t.status in (TaskStatus.DONE, TaskStatus.SKIPPED))
+            word = "was interrupted" if mission.status == MissionStatus.INTERRUPTED else "stopped"
+            text += (f"<br><span style='color:{c.muted}'>This mission {word}. {kept} finished task(s) are kept - "
+                     "pressing the button continues without repeating them.</span>")
+        if not active and mission.status == MissionStatus.COMPLETED_WITH_ISSUES and mission.unresolved_issues:
+            text += (f"<br><span style='color:{c.warning}'>{len(mission.unresolved_issues)} review issue(s) "
+                     "are still open - see the Final result.</span>")
         self.run_status.setText(self._link_css() + text)
+        self.progress.setRange(0, max(1, len(mission.tasks)))
+        self.progress.setValue(done if mission.tasks else 0)
+        self.progress.setVisible(bool(mission.tasks))
         self.cancel_button.setVisible(active)
         self.retry_button.setVisible(mission.status in (
             MissionStatus.FAILED, MissionStatus.CANCELLED, MissionStatus.INTERRUPTED,
             MissionStatus.COMPLETED_WITH_ISSUES) and not self._controller.is_running)
+        label, tip = self._retry_label(mission)
+        self.retry_button.setText(label)
+        self.retry_button.setToolTip(tip)
         self.new_button.setVisible(not active)
         self._render_agents(mission)
         self._render_tasks(mission)
@@ -851,7 +924,19 @@ class TeamPanel(QWidget):
                 html += f"<br><span style='color:{tone}'>{escape(_elide(task.error, 200))}</span>"
             elif task.summary and task.status == TaskStatus.DONE:
                 html += f"<br>{escape(_elide(task.summary, 140))}"
-            label = self._card(html)
+            if task.handoff and task.status == TaskStatus.DONE:
+                html += (f"<br><span style='color:{self._c.muted}'>handoff: "
+                         f"{escape(_elide(task.handoff, 200))}</span>")
+            if task.status == TaskStatus.PENDING and task.not_before > time.time():
+                html += (f"<br><span style='color:{self._c.warning}'>waiting for the rate limit "
+                         f"(about {int(task.not_before - time.time()) + 1}s)</span>")
+            if task.status in (TaskStatus.FAILED, TaskStatus.BLOCKED) and not self._controller.is_running:
+                html += (f"<br><a href='retry:{task.id}'>Retry this task</a>"
+                         + (f" \u00b7 <a href='skip:{task.id}'>Skip it</a>" if task.status == TaskStatus.FAILED else ""))
+            label = self._card(self._link_css() + html)
+            label.setOpenExternalLinks(False)
+            label.linkActivated.connect(self._on_task_link)
+            self._theme_links(label)
             if task.acceptance:
                 label.setToolTip("Acceptance criteria:\n- " + "\n- ".join(task.acceptance))
             box.insertWidget(box.count() - 1, label)
@@ -969,7 +1054,9 @@ class TeamPanel(QWidget):
             return f"<p style='color:{c.muted}'>No pages, text or files were attached to this mission.</p>"
         groups = (
             ("Attached by you", [s for s in mission.sources if s.kind in SourceKind.ATTACHED]),
-            ("Found by web search (snippets, not opened pages)", [s for s in mission.sources if s.kind == SourceKind.WEB]),
+            ("Web pages read in full", [s for s in mission.sources if s.kind == SourceKind.WEB and s.depth == "page"]),
+            ("Found by web search (snippet only - the page was not opened)",
+             [s for s in mission.sources if s.kind == SourceKind.WEB and s.depth != "page"]),
             ("From your local knowledge", [s for s in mission.sources if s.kind == SourceKind.KNOWLEDGE]),
         )
         out = []
@@ -985,7 +1072,10 @@ class TeamPanel(QWidget):
                 else:
                     state = f"<span style='color:{c.danger}'>not included</span> \u2014 {escape(source.error)}"
                 link = f"<br><a href='{escape(source.url)}'>{escape(source.url)}</a>" if source.url else ""
-                out.append(f"<p style='margin-top:2px'><b>[{source.id}] {escape(source.title)}</b><br>{state}{link}</p>")
+                when = f" \u00b7 retrieved {escape(source.retrieved)}" if source.retrieved else ""
+                note = f"<br><span style='color:{c.muted}'>{escape(source.note)}</span>" if source.note else ""
+                out.append(f"<p style='margin-top:2px'><b>[{source.id}] {escape(source.title)}</b><br>"
+                           f"{state}{when}{link}{note}</p>")
         return "".join(out)
 
     def _current_artifact(self) -> Artifact | None:

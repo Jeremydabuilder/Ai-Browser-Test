@@ -29,6 +29,9 @@ _FIELDS = (
     ("max_revision_rounds", "Max review revision rounds", "0 makes the Reviewer advisory only."),
     ("max_retries", "Retries after a rate limit", "Per call. Waits honour the provider's Retry-After."),
     ("max_backoff_s", "Longest wait between retries (s)", ""),
+    ("max_fetch_pages", "Web pages to read per research task", "0 = snippets only. Only public pages are opened."),
+    ("fetch_timeout_s", "Page read timeout (s)", "A slow page is skipped, not waited on."),
+    ("fetch_max_chars", "Max characters kept per page", "Longer pages are shortened."),
     ("task_timeout_s", "Task timeout (s)", "A task that runs longer is failed, not waited on."),
     ("check_timeout_s", "Sandbox check timeout (s)", "Per test command."),
 )

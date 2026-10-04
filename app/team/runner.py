@@ -23,6 +23,7 @@ from app.team.engine import Capabilities, TeamEngine
 from app.team.limits import TeamLimits
 from app.team.llm import ProviderStatus, make_client_factory, resolve_provider
 from app.team.model import Mission, MissionStatus, Source, SourceKind, SourceStatus
+from app.team.webfetch import PageFetcher
 from app.team.workspace import Workspace, WorkspaceError
 
 MAX_SOURCES = 8
@@ -155,7 +156,7 @@ class TeamController(QObject):
 
     def __init__(self, store, settings=None, knowledge=None, parent: QObject | None = None,
                  *, client_factory: Callable[[], Any] | None = None, downloads=None,
-                 downloads_dir: str | None = None, search_transport=None) -> None:
+                 downloads_dir: str | None = None, search_transport=None, page_fetcher=None) -> None:
         """``client_factory`` and ``search_transport`` are test seams only: they
         replace the real provider client / search HTTP transport. The UI never
         sets them. ``downloads`` is the profile's DownloadManager."""
@@ -164,6 +165,7 @@ class TeamController(QObject):
         self._downloads = downloads
         self._downloads_dir = downloads_dir
         self._search_transport = search_transport
+        self._page_fetcher = page_fetcher
         self._sandbox_done = threading.Event()
         self._sandbox_thread: threading.Thread | None = None
         self._store = store
@@ -265,9 +267,20 @@ class TeamController(QObject):
         except WorkspaceError:
             return None
 
+    def page_fetcher(self) -> PageFetcher | None:
+        """Reads public pages for the Researcher; None when switched off (0 pages)."""
+        limits = self.limits()
+        if limits.max_fetch_pages <= 0:
+            return None
+        if self._page_fetcher is not None:
+            return self._page_fetcher
+        return PageFetcher(timeout=limits.fetch_timeout_s, deadline=limits.fetch_timeout_s * 2,
+                           max_chars=limits.fetch_max_chars)
+
     def capabilities(self, workspace_path: str = "") -> Capabilities:
         web = self.web_search_client()
         return Capabilities(
+            fetcher=self.page_fetcher() if web else None,
             sandbox=self._sandbox or sandbox_mod.checking_status(),
             workspace=self.workspace_for(workspace_path),
             search=knowledge_search_adapter(self._knowledge, self._dispatcher),
@@ -301,16 +314,37 @@ class TeamController(QObject):
         self.history_changed.emit()
         return mission
 
-    def retry(self) -> bool:
-        """Continue the current mission from where it stopped."""
+    def retry(self, task_id: str = "", *, skip: bool = False, extra_round: bool = False) -> bool:
+        """Continue the current mission from where it stopped. Finished work is
+        kept. ``task_id`` retries only that failed task (and what it blocked);
+        ``skip`` skips it instead; ``extra_round`` allows one more review round."""
         mission = self.snapshot()
         if mission is None or self.is_running or self._closed:
             return False
         if mission.status not in (MissionStatus.FAILED, MissionStatus.CANCELLED, MissionStatus.INTERRUPTED,
                                   MissionStatus.COMPLETED_WITH_ISSUES):
             return False
-        self._launch(mission, self.provider_status())
+        if self._sandbox is not None and not self._sandbox.available:
+            # The user may have started Docker since; a stale "unavailable" must not stick.
+            sandbox_mod._cache.clear()
+            self._sandbox = None
+            self._sandbox_key = None
+            self._sandbox_done.clear()
+        kwargs: dict = {"extra_round": extra_round}
+        if task_id:
+            known = mission.task(task_id)
+            if known is None:
+                return False
+            kwargs["skip" if skip else "retry_only"] = {task_id}
+        self._launch(mission, self.provider_status(), **kwargs)
         return True
+
+    @property
+    def interrupted(self) -> bool:
+        """The shown mission stopped before finishing (crash, restart, cancel, failure)."""
+        view = self.snapshot()
+        return view is not None and not self.is_running and view.status in (
+            MissionStatus.INTERRUPTED, MissionStatus.CANCELLED, MissionStatus.FAILED)
 
     def open_mission(self, mission_id: int) -> Mission | None:
         if self.is_running or self._store is None:
@@ -360,7 +394,7 @@ class TeamController(QObject):
         return written
 
     # -- plumbing ---------------------------------------------------------------------
-    def _launch(self, mission: Mission, status: ProviderStatus) -> None:
+    def _launch(self, mission: Mission, status: ProviderStatus, **run_kwargs) -> None:
         limits = self.limits()
         factory = self._client_factory or make_client_factory(status, self._settings, limits)
         engine = TeamEngine(
@@ -369,18 +403,18 @@ class TeamController(QObject):
             on_change=self._on_engine_change, secret=status.secret, provider_label=status.label)
         self._engine = engine
         self._view = None
-        thread = threading.Thread(target=self._run, args=(engine,), name="team-engine")
+        thread = threading.Thread(target=self._run, args=(engine,), kwargs=run_kwargs, name="team-engine")
         self._thread = thread
         thread.start()
         self.changed.emit()
 
-    def _run(self, engine: TeamEngine) -> None:
+    def _run(self, engine: TeamEngine, **run_kwargs) -> None:
         # The sandbox may still be proving itself; wait here, off the GUI thread.
         if self._sandbox is None:
             engine.capabilities.sandbox = self.await_sandbox()
         else:
             engine.capabilities.sandbox = self._sandbox
-        engine.run()
+        engine.run(**run_kwargs)
 
     def _on_engine_change(self, _kind: str) -> None:
         """Called on engine/worker threads: coalesce and bounce to the GUI thread."""

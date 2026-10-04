@@ -17,10 +17,12 @@ publishing or deleting tools at all**.
    git clone https://github.com/Jeremydabuilder/Ai-Browser-Test.git
    cd Ai-Browser-Test
    python -m venv .venv
-   .venv\Scripts\activate
-   pip install -r requirements.txt
-   python main.py
+   .venv\Scripts\python -m pip install -r requirements.txt
+   .venv\Scripts\python main.py
    ```
+   Calling `.venv\Scripts\python` directly avoids PowerShell's *"running scripts is disabled"*
+   error that `Activate.ps1` triggers under the default execution policy (or run
+   `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned` once, or use `cmd`).
 2. **Add your Groq key** (once). Open **Tools -> AI Team...**, press **Set up Groq...**
    - this opens the existing *Configure AI Agent* dialog already on Groq. Paste the
    key, **Save**. It goes to the Windows Credential Manager (the same entry the AI
@@ -34,6 +36,8 @@ publishing or deleting tools at all**.
    then `docker pull python:3.12-slim`. Team tab -> **Settings** -> *Code sandbox* ->
    **Check sandbox**. Without it everything else works; the Tester is simply dropped and
    the result says tests were not run.
+   If Windows reports a path error from Docker, check that your `%TEMP%` is on a local drive
+   that Docker Desktop shares; folders containing commas are handled.
 5. **Try it.** Open two product pages in tabs, Team tab -> **Compare tabs** example ->
    **Add tabs...** (tick both) -> **Start team**. Watch Agents / Tasks / Activity; the
    **Results** tab opens when it finishes. **Save to Downloads** puts the result in your
@@ -81,13 +85,50 @@ default once configured).
 * **What leaves your machine:** only 1-2 short search queries per research task, written by
   the model from the mission wording (never page contents), with likely secrets removed by
   the app's firewall first. Page text, files and answers are never sent to the search service.
-* **What comes back:** title, URL and a snippet per hit. Pages are *not* opened.
-* **Kept distinct:** web hits are `web search result` sources, shown and cited separately
-  from what you attached (`attached tab / text / file`) in the prompt to the agents, the
-  Sources view and the final "Sources" / "Web search results" sections, and the result says
-  they are snippets and should be treated as leads.
+* **What comes back:** title, URL and a snippet per hit. The top few hits are then **opened and read** (see
+  "Reading pages" below); a hit that cannot be opened stays a snippet.
+* **Kept distinct:** web sources are labelled `web page (read in full)` or `web search result
+  (snippet)`, separate from what you attached (`attached tab / text / file`), in the prompt to
+  the agents, the Sources view and the final "Sources" / "Web pages read" / "Web search results"
+  sections (pages show their retrieval date). The result says which are snippets to treat as leads.
 * A failing search (rate limit, quota, bad key) degrades gracefully: the mission continues
   on attached sources and records the failure as a limitation.
+
+## Reading pages (SSRF-safe)
+
+Search results are attacker-influenced, so the page reader treats every URL as hostile
+(`app/team/webfetch.py`):
+
+* Only `http`/`https` on ports 80/443; no credentials in the URL; numeric/obfuscated hosts
+  (`2130706433`, `0x7f.1`) and local names (`localhost`, `*.local`, `*.internal`...) are refused.
+* The host is resolved first and **every** address must be globally routable - loopback, private
+  (RFC 1918/ULA), link-local (incl. `169.254.169.254` cloud metadata), CGNAT, multicast, reserved,
+  and IPv4 hidden in IPv6 (mapped/6to4/Teredo/NAT64) are refused. The connection is then made to
+  the validated address (Host header and TLS name carry the hostname), so DNS cannot change its
+  answer between check and connect. Every redirect is re-validated (max 4).
+* Limits: 10s per request (20s total), 1.5 MB decoded (compression bombs are cut off), 20,000
+  characters kept, HTML/plain text only, no cookies, no credentials, no referrer.
+* Text extraction drops scripts, styles, navigation, footers, forms and visually hidden text.
+  What comes back is still **untrusted data**: fenced and cited like any attached page.
+* Settings: *Web pages to read per research task* (0 = snippets only), timeout, characters.
+  A mission reads at most three times the per-task number. On **Retry** the pages already read
+  are reused - nothing is searched or downloaded twice.
+
+## Handoffs, review feedback and recovery
+
+* Every agent ends with a short **handoff note** (what it finished, what is uncertain, what it
+  asks of the next agent). Notes are shown on the task card and passed to downstream agents.
+* The **Reviewer** returns structured feedback: a per-criterion check, *blocking* issues (id
+  `B1`..., task, where, problem, evidence, exact change) and optional *minor* suggestions
+  (`M1`...). Only blocking issues trigger a revision, and the revising agent gets them as a
+  checklist. On the next round the Reviewer must mark each earlier issue fixed / not fixed.
+  Suggestions and the criteria check appear in the final result.
+* **Rate limits:** after a call exhausts its retries, the task waits (a cool-down that grows,
+  honouring Retry-After) and is re-queued up to twice; the team drops to one agent at a time and
+  says so. Only then does the task fail.
+* **Retry** continues from finished work. Failed tasks show **Retry this task** / **Skip it**;
+  after the revision limit **Revise again** grants one more review round; an interrupted mission
+  (closed app, crash) is marked and **Resume**d without repeating completed tasks.
 
 ## What it does
 
@@ -176,13 +217,15 @@ See the test files. In summary: engine behaviour, the Groq HTTP request/retry/er
 (against a mock transport and a local OpenAI-compatible server), both search providers'
 request/response handling (mock transports), Linux bubblewrap isolation (real), the
 container backend (against a stub `docker` - **not** a real Docker daemon), and the whole
-panel in the real window with the real theme are verified. **Not verified anywhere in CI:**
+panel in the real window with the real theme are verified. Page fetching is verified against a fake network (address policy, pinning, redirects, size and time
+limits) - not against the live internet. **Not verified anywhere in CI:**
 a live Groq call, live Tavily/Brave calls, a real Docker/Windows run, macOS `sandbox-exec`.
 `scripts/team_live_check.py` and **Test** buttons exist so you can verify those yourself.
 
 ## Known limitations
 
-* Web search returns snippets, not full pages; the model may over-trust a snippet.
+* Page reading is text-only: JavaScript-rendered pages, PDFs, images and sign-in walls are not seen
+  (such a result stays a snippet). The model may still over-trust a snippet.
 * The Tester only runs **Python** checks. The Linux sandbox shows read-only `/usr`; it is
   namespace isolation, not a hypervisor.
 * A model request already in flight cannot be aborted mid-HTTP; its result is discarded.

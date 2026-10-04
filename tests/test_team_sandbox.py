@@ -318,5 +318,17 @@ class ContainerBackendTests(unittest.TestCase):
             backend.command(["python"], 'C:\\Temp\\x",target=/etc', TeamLimits(), "n")
 
 
+class WindowsPathAndWindowTests(unittest.TestCase):
+    def test_bind_mount_survives_commas_in_the_path(self) -> None:
+        self.assertEqual(sb._bind_mount("/tmp/x", "/work"), "type=bind,source=/tmp/x,target=/work")
+        quoted = sb._bind_mount("C:\\Users\\Doe, Jane\\Temp", "/work")
+        self.assertEqual(quoted, 'type=bind,"source=C:\\Users\\Doe, Jane\\Temp",target=/work')
+        self.assertIn('""', sb._bind_mount('/a"b', "/work"))
+
+    def test_docker_calls_do_not_open_a_console_window_on_windows(self) -> None:
+        with mock.patch.object(sb.os, "name", "nt"):
+            self.assertIn("creationflags", sb._Container("docker", "img").popen_kwargs(TeamLimits()))
+
+
 if __name__ == "__main__":
     unittest.main()

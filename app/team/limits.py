@@ -32,6 +32,13 @@ class TeamLimits:
     max_checks: int = 4
     sandbox_memory_mb: int = 1024
     sandbox_cpu_s: int = 60
+    # Reading search-result pages in full
+    max_fetch_pages: int = 3
+    fetch_timeout_s: float = 10.0
+    fetch_max_chars: int = 20000
+    # Task-level recovery after a rate limit (on top of per-call retries)
+    rate_limit_requeues: int = 2
+    rate_limit_cooldown_s: float = 20.0
 
     #: field -> (low, high). The only place bounds live.
     BOUNDS = {
@@ -41,6 +48,8 @@ class TeamLimits:
         "max_context_chars": (2000, 120000), "max_output_tokens": (256, 16000),
         "check_timeout_s": (5.0, 600.0), "max_checks": (1, 10),
         "sandbox_memory_mb": (128, 8192), "sandbox_cpu_s": (5, 600),
+        "max_fetch_pages": (0, 6), "fetch_timeout_s": (3.0, 60.0), "fetch_max_chars": (2000, 60000),
+        "rate_limit_requeues": (0, 5), "rate_limit_cooldown_s": (1.0, 300.0),
     }
 
     def clamped(self) -> "TeamLimits":

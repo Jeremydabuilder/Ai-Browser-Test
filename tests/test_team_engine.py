@@ -397,7 +397,7 @@ class CredentialAndRateLimitTests(unittest.TestCase):
         limited = ClaudeError("Groq hit a temporary rate limit. Py can retry shortly.",
                               retryable=True, retry_after=0.01)
         client = FakeClient({"plan": [RESEARCH_WRITE_REVIEW], "researcher": [limited]})
-        engine, mission = make(client, limits=TeamLimits(max_retries=2, max_backoff_s=1.0))
+        engine, mission = make(client, limits=TeamLimits(max_retries=2, max_backoff_s=1.0, rate_limit_requeues=0))
         engine.run()
         self.assertEqual(client.roles().count("researcher"), 3)    # 1 try + exactly 2 retries
         researcher = mission.task("T1")
