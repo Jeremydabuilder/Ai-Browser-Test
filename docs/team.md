@@ -87,10 +87,10 @@ default once configured).
   the app's firewall first. Page text, files and answers are never sent to the search service.
 * **What comes back:** title, URL and a snippet per hit. The top few hits are then **opened and read** (see
   "Reading pages" below); a hit that cannot be opened stays a snippet.
-* **Kept distinct:** web sources are labelled `web page (read in full)` or `web search result
-  (snippet)`, separate from what you attached (`attached tab / text / file`), in the prompt to
-  the agents, the Sources view and the final "Sources" / "Web pages read" / "Web search results"
-  sections (pages show their retrieval date). The result says which are snippets to treat as leads.
+* **Kept distinct:** web sources are labelled `web page text (retrieved)`, `web page text (shortened)` or
+  `web search snippet (page not opened)`, separate from what you attached (`attached tab / text / file`), in the prompt to
+  the agents, the Sources view and the final "Sources" / "Web pages (retrieved text)" / "Web search snippets"
+  sections (retrieved pages show their retrieval date and whether they were shortened). The result says which are snippets to treat as leads.
 * A failing search (rate limit, quota, bad key) degrades gracefully: the mission continues
   on attached sources and records the failure as a limitation.
 

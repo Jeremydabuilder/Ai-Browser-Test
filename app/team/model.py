@@ -138,13 +138,17 @@ class Source:
     depth: str = ""
     #: ISO date a web page was read - part of an honest citation.
     retrieved: str = ""
-    #: Why a page could not be read in full, when only the snippet is available.
+    #: Why the page itself is not available, when only the snippet is.
     note: str = ""
+    #: The retrieved page text was cut at a size limit (so later content is missing).
+    truncated: bool = False
 
     @property
     def origin_label(self) -> str:
         if self.kind == SourceKind.WEB:
-            return "web page (read in full)" if self.depth == "page" else "web search result (snippet)"
+            if self.depth != "page":
+                return "web search snippet (page not opened)"
+            return "web page text (shortened)" if self.truncated else "web page text (retrieved)"
         return SourceKind.LABELS.get(self.kind, self.kind)
 
     @property

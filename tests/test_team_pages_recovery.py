@@ -69,11 +69,29 @@ class PageReadingTests(unittest.TestCase):
         self.assertEqual(mission.status, MissionStatus.COMPLETED)
         web = [s for s in mission.sources if s.kind == SourceKind.WEB]
         self.assertTrue(web and all(s.depth == "page" and s.retrieved for s in web))
-        self.assertIn('"origin": "web page (read in full)"', client.users("researcher")[0])
+        self.assertIn('"origin": "web page text (retrieved)"', client.users("researcher")[0])
         final = mission.artifact(mission.final_artifact_id).content
-        self.assertIn("## Web pages read", final)
-        self.assertIn("retrieved ", final)
-        self.assertIn("read in full", final)
+        self.assertIn("## Web pages (retrieved text)", final)
+        self.assertIn("page text retrieved ", final)
+        self.assertNotIn("read in full", final)
+        self.assertIn("extracted from HTML", final)
+
+    def test_truncated_pages_are_labelled_shortened_with_their_date(self) -> None:
+        class Cut(FakeFetcher):
+            def fetch(self, url):
+                page = super().fetch(url)
+                page.truncated = True
+                return page
+        client = script()
+        _, mission = run(client, fetcher=Cut())
+        web = [s for s in mission.sources if s.kind == SourceKind.WEB]
+        self.assertTrue(web and all(s.truncated and s.origin_label == "web page text (shortened)" for s in web))
+        prompt = client.users("researcher")[0]
+        self.assertIn('"origin": "web page text (shortened)"', prompt)
+        self.assertIn('"retrieved": "', prompt)
+        final = mission.artifact(mission.final_artifact_id).content
+        self.assertIn("shortened)", final)
+        self.assertIn("shortened at the size limit", final)
 
     def test_a_blocked_page_keeps_its_snippet_and_says_why(self) -> None:
         bad = "https://reviews.example/b-warranty"

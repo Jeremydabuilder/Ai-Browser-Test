@@ -270,7 +270,7 @@ class EngineIntegrationTests(unittest.TestCase):
         self.assertEqual([s.url for s in web_sources], ["https://reviews.example/b-warranty", "https://teardown.example/a"])
         self.assertEqual([s.id for s in web_sources], ["S3", "S4"])          # numbered after the attached ones
         prompt = client.users("researcher")[0]
-        self.assertIn('"origin": "web search result (snippet)"', prompt)
+        self.assertIn('"origin": "web search snippet (page not opened)"', prompt)
         self.assertIn('"origin": "attached tab"', prompt)
         self.assertIn('"origin": "attached text"', prompt)
         self.assertIn("three year warranty", prompt)
@@ -280,7 +280,7 @@ class EngineIntegrationTests(unittest.TestCase):
         mission = run_mission(script(), FakeWeb())
         final = mission.artifact(mission.final_artifact_id).content
         attached = final.index("## Sources\n_attached by you_")
-        web = final.index("## Web search results")
+        web = final.index("## Web search snippets")
         self.assertLess(attached, web)
         self.assertIn("[S1] Widget A - https://a.example/widget", final[attached:web])
         self.assertIn("[S3] Widget B warranty - Review Site - https://reviews.example/b-warranty", final[web:])

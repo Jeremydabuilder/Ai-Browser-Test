@@ -103,8 +103,10 @@ Output Markdown with these sections:
 ## Gaps and uncertainty   - what the sources do not say, conflicts between sources, anything unverified
 If no sources were supplied, say so at the top, label every claim "unverified (model knowledge)",
 and do not cite or fabricate any source.
-Prefer sources whose origin is "web page (read in full)" or an attached source over "web search result
-(snippet)" ones; when a claim rests only on a snippet, say "per a search snippet".
+Prefer sources whose origin is "web page text" or an attached source over "web search snippet" ones; when a
+claim rests only on a snippet, say "per a search snippet". Page text is extracted from HTML: tables,
+images, scripts and anything cut off ("shortened") may be missing, so do not claim a page "does not
+mention" something when its text was shortened.
 
 End with a short section titled exactly "## Handoff" (at most 4 bullets, under 90 words): what you
 completed, what is uncertain or missing, and what the next agent should do or double-check. It is

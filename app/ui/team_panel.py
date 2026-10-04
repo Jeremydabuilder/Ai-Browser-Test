@@ -815,9 +815,12 @@ class TeamPanel(QWidget):
         self.progress.setValue(done if mission.tasks else 0)
         self.progress.setVisible(bool(mission.tasks))
         self.cancel_button.setVisible(active)
+        actionable = mission.status != MissionStatus.COMPLETED_WITH_ISSUES or bool(
+            mission.unresolved_issues or any(t.status in (TaskStatus.FAILED, TaskStatus.BLOCKED)
+                                             for t in mission.tasks))
         self.retry_button.setVisible(mission.status in (
             MissionStatus.FAILED, MissionStatus.CANCELLED, MissionStatus.INTERRUPTED,
-            MissionStatus.COMPLETED_WITH_ISSUES) and not self._controller.is_running)
+            MissionStatus.COMPLETED_WITH_ISSUES) and actionable and not self._controller.is_running)
         label, tip = self._retry_label(mission)
         self.retry_button.setText(label)
         self.retry_button.setToolTip(tip)
@@ -1054,8 +1057,8 @@ class TeamPanel(QWidget):
             return f"<p style='color:{c.muted}'>No pages, text or files were attached to this mission.</p>"
         groups = (
             ("Attached by you", [s for s in mission.sources if s.kind in SourceKind.ATTACHED]),
-            ("Web pages read in full", [s for s in mission.sources if s.kind == SourceKind.WEB and s.depth == "page"]),
-            ("Found by web search (snippet only - the page was not opened)",
+            ("Web pages (retrieved text)", [s for s in mission.sources if s.kind == SourceKind.WEB and s.depth == "page"]),
+            ("Web search snippets (page not opened)",
              [s for s in mission.sources if s.kind == SourceKind.WEB and s.depth != "page"]),
             ("From your local knowledge", [s for s in mission.sources if s.kind == SourceKind.KNOWLEDGE]),
         )
@@ -1072,7 +1075,8 @@ class TeamPanel(QWidget):
                 else:
                     state = f"<span style='color:{c.danger}'>not included</span> \u2014 {escape(source.error)}"
                 link = f"<br><a href='{escape(source.url)}'>{escape(source.url)}</a>" if source.url else ""
-                when = f" \u00b7 retrieved {escape(source.retrieved)}" if source.retrieved else ""
+                when = (f" \u00b7 page text retrieved {escape(source.retrieved)}"
+                        + (" \u00b7 shortened" if source.truncated else "") if source.retrieved else "")
                 note = f"<br><span style='color:{c.muted}'>{escape(source.note)}</span>" if source.note else ""
                 out.append(f"<p style='margin-top:2px'><b>[{source.id}] {escape(source.title)}</b><br>"
                            f"{state}{when}{link}{note}</p>")

@@ -67,7 +67,7 @@ class Capabilities:
 
     def describe(self, *, web_enabled: bool = True, fetch_pages: int = 0) -> list[str]:
         if self.web_search is not None and web_enabled:
-            reading = (f"; the top {fetch_pages} result pages are opened and read in full (public sites only)"
+            reading = (f"; the text of the top {fetch_pages} result pages is retrieved (public sites only)"
                        if self.fetcher is not None and fetch_pages > 0 else "; results are snippets")
             web = (f"web search: {self.web_search.label} is available (short search queries are sent to "
                    f"{self.web_search.label}{reading}, always kept distinct from attached sources)")
@@ -415,18 +415,22 @@ class TeamEngine:
                 web_on = m.web_search and caps.web_search is not None
                 web = [x for x in m.sources if x.kind == SourceKind.WEB]
                 pages = [x for x in web if x.depth == "page"]
+                shortened = sum(1 for x in pages if x.truncated)
+                cut = f" ({shortened} shortened at the size limit)" if shortened else ""
+                extraction = ("Page text is extracted from HTML: images, scripts, tables' layout and anything "
+                              "behind a sign-in are not seen.")
                 snippets = [x for x in web if x.depth != "page"]
                 if web_on:
                     label = caps.web_search.label
                     if pages and snippets:
                         m.limitations.append(
-                            f"[capability] {len(pages)} web page(s) were read in full (text only, public pages, "
-                            f"shortened to a size limit); {len(snippets)} {label} result(s) are search snippets "
-                            "only, so treat those as leads.")
+                            f"[capability] Text was retrieved from {len(pages)} web page(s)" + cut
+                            + f"; {len(snippets)} {label} result(s) are search snippets only (page not opened), "
+                            "so treat those as leads. " + extraction)
                     elif pages:
                         m.limitations.append(
-                            f"[capability] {len(pages)} web page(s) were read in full (text only; images, scripts "
-                            "and anything behind a sign-in are not seen, and long pages are shortened).")
+                            f"[capability] Text was retrieved from {len(pages)} web page(s)" + cut + ". "
+                            + extraction)
                     else:
                         m.limitations.append(
                             f"[capability] Web results come from {label} search snippets (title, URL and excerpt); "
@@ -811,7 +815,8 @@ class TeamEngine:
             for source in sources:
                 parts.append(wrap_untrusted(
                     {"id": source.id, "origin": source.origin_label, "title": source.title,
-                     "url": source.url, "text": _clip(source.text, size)},
+                     "url": source.url, **({"retrieved": source.retrieved} if source.retrieved else {}),
+                     "text": _clip(source.text, size)},
                     provenance=(Provenance.WEBPAGE if source.kind in (SourceKind.TAB, SourceKind.WEB)
                                 else Provenance.FILE),
                     source=source.url or source.title))
@@ -945,7 +950,8 @@ class TeamEngine:
                 source.text = page.text
                 source.depth = "page"
                 source.retrieved = date.today().isoformat()
-                source.note = "Text was shortened to the size limit." if page.truncated else ""
+                source.truncated = bool(page.truncated)
+                source.note = "Page text was cut at the size limit; later content is missing." if page.truncated else ""
                 if page.title and (not source.title or source.title == source.url):
                     source.title = page.title
             opened += 1
@@ -1352,15 +1358,17 @@ class TeamEngine:
             cited |= set(artifact.meta.get("cited", []))
         out: list[str] = []
         def line(s) -> str:
-            when = f" (retrieved {s.retrieved})" if s.retrieved else ""
+            when = (f" (page text retrieved {s.retrieved}" + (", shortened" if s.truncated else "") + ")"
+                    if s.retrieved else "")
             return f"- [{s.id}] {s.title}" + (f" - {s.url}" if s.url else "") + when
 
         used = [s for s in m.sources if s.id in cited]
         groups = (
             ("Sources", "attached by you", [s for s in used if s.kind in SourceKind.ATTACHED]),
-            ("Web pages read", "opened and read by the Researcher (public pages, text only)",
+            ("Web pages (retrieved text)", "text extracted from the page by the Researcher - images, scripts and "
+             "layout are not captured; \"shortened\" means later content is missing",
              [s for s in used if s.kind == SourceKind.WEB and s.depth == "page"]),
-            ("Web search results", "search snippets only - the page was not opened; treat as leads",
+            ("Web search snippets", "search-engine excerpts only - the page was not opened; treat as leads",
              [s for s in used if s.kind == SourceKind.WEB and s.depth != "page"]),
             ("Local knowledge", "from your own history, missions and files",
              [s for s in used if s.kind == SourceKind.KNOWLEDGE]),

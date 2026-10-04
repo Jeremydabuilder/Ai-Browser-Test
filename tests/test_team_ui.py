@@ -894,9 +894,9 @@ class RecoveryAndGuidanceTests(TeamUITestCase):
             Source("S2", SourceKind.WEB, "Snip", "https://b.example/", "t", SourceStatus.INCLUDED,
                    depth="snippet", note="Page not opened: blocked")])
         html = self.panel._sources_html(mission)
-        self.assertIn("Web pages read in full", html)
-        self.assertIn("retrieved 2026-01-02", html)
-        self.assertIn("snippet only", html)
+        self.assertIn("Web pages (retrieved text)", html)
+        self.assertIn("page text retrieved 2026-01-02", html)
+        self.assertIn("page not opened", html)
         self.assertIn("Page not opened: blocked", html)
 
     def test_page_reading_is_wired_and_can_be_switched_off(self) -> None:
