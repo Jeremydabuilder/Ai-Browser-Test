@@ -213,7 +213,7 @@ class RecoveryTests(unittest.TestCase):
         engine.run(retry_only={"T2"}, skip={"T3"})
         self.assertEqual(mission.task("T3").status, TaskStatus.SKIPPED)
         self.assertEqual(mission.task("T2").status, TaskStatus.DONE)
-        self.assertEqual(mission.status, MissionStatus.COMPLETED)
+        self.assertEqual(mission.status, MissionStatus.COMPLETED_WITH_ISSUES)    # a skipped task is never a clean success
 
 
 if __name__ == "__main__":
