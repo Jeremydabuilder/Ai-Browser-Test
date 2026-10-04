@@ -9,6 +9,7 @@ from __future__ import annotations
 import os
 import sys
 import tempfile
+import time
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -47,13 +48,24 @@ class TabSearchDialogTests(unittest.TestCase):
         self.tabs = TabManager(_profile, "about:blank")
         self.tabs.resize(900, 500)
         self.tabs.show()
-        self.tabs.new_tab("about:blank")
-        self.tabs.tabBar().setTabText(0, "GitHub - PyBrowser")
-        self.tabs.new_tab("about:blank")
-        self.tabs.tabBar().setTabText(1, "Python.org")
-        self.tabs.new_tab("about:blank")
-        self.tabs.tabBar().setTabText(2, "News")
+        finished: list[bool] = []
+        for _ in range(3):
+            tab = self.tabs.new_tab("about:blank")
+            tab.load_finished.connect(lambda ok, f=finished: f.append(ok))
+        # Each tab's own about:blank load rewrites its tab label when it
+        # completes. Setting our labels before that happens loses the race
+        # (the label silently reverts), so wait for every load first.
+        deadline = time.monotonic() + 15
+        while len(finished) < 3 and time.monotonic() < deadline:
+            pump(2)
+            time.sleep(0.005)
+        self.assertEqual(len(finished), 3, "tabs never finished loading")
+        pump(5)
+        for index, title in enumerate(("GitHub - PyBrowser", "Python.org", "News")):
+            self.tabs.tabBar().setTabText(self.tabs.count() - 3 + index, title)
         pump()
+        self.assertEqual([self.tabs.tabText(i) for i in range(self.tabs.count() - 3, self.tabs.count())],
+                         ["GitHub - PyBrowser", "Python.org", "News"])
 
     def tearDown(self) -> None:
         for tab in self.tabs.tabs():

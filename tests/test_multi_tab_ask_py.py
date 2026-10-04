@@ -12,6 +12,7 @@ from __future__ import annotations
 import os
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -177,9 +178,18 @@ class CloseTabsAtTests(unittest.TestCase):
         self.profile = _profile
         self.window = MainWindow(self.profile, self.db, start_urls=["about:blank"])
         self.window.resize(1000, 700)
+        finished: list[bool] = []
+        for _ in range(2):
+            tab = self.window.tabs.new_tab("about:blank")
+            tab.load_finished.connect(lambda ok, f=finished: f.append(ok))
+        # A tab's own about:blank load rewrites its label when it completes,
+        # so labels set earlier can silently revert. Wait for every load first.
+        deadline = time.monotonic() + 15
+        while len(finished) < 2 and time.monotonic() < deadline:
+            pump(2)
+            time.sleep(0.005)
+        pump(5)
         for index, name in enumerate(("First", "Second", "Third")):
-            if index > 0:
-                self.window.tabs.new_tab("about:blank")
             self.window.tabs.tabBar().setTabText(index, name)
         pump()
 
