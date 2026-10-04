@@ -218,7 +218,11 @@ waits. Retry continues from the finished work.
 
 ## What has and has not been verified
 
-See the test files. In summary: engine behaviour, the Groq HTTP request/retry/error paths
+See the test files. `tests/test_team_e2e_missions.py` runs realistic missions (compare two products from
+fetched pages, hostile page, reviewer-driven revision, provider failure + retry without re-fetching, rate
+limit, skip) with the real engine and page fetcher over real local sockets and a prompt-reading stand-in
+model - it checks that facts reach the final result with correct citations, not just that tasks ran.
+`tests/test_team_webfetch_network.py` proves which address the fetcher actually dials. In summary: engine behaviour, the Groq HTTP request/retry/error paths
 (against a mock transport and a local OpenAI-compatible server), both search providers'
 request/response handling (mock transports), Linux bubblewrap isolation (real), the
 container backend (against a stub `docker` - **not** a real Docker daemon), and the whole
