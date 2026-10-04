@@ -44,6 +44,8 @@ from app.team.webfetch import FetchError, PageFetcher
 from app.team.websearch import SearchError, SearchErrorKind, WebSearch
 from app.team.workspace import Workspace, WorkspaceError
 
+USER_SKIP = "Skipped by you."
+
 SearchFn = Callable[[str], "list[dict[str, str]]"]
 
 
@@ -178,7 +180,7 @@ class TeamEngine:
             self._llm = TeamLLM(
                 self._client_factory, self.limits, self._cancel, emit=self._llm_event,
                 secret=self._secret, on_usage=self._usage, label=self._label,
-                on_rate_limit=self._on_rate_limit)
+                on_rate_limit=self._on_rate_limit, prior_calls=m.model_calls)
             self._refresh_limitations()
         try:
             if not m.tasks:
@@ -276,7 +278,7 @@ class TeamEngine:
             task = m.task(task_id)
             if task is not None and task.status in (TaskStatus.FAILED, TaskStatus.BLOCKED, TaskStatus.PENDING,
                                                     TaskStatus.CANCELLED, TaskStatus.RUNNING):
-                task.status, task.error, task.error_kind = TaskStatus.SKIPPED, "Skipped by you.", ""
+                task.status, task.error, task.error_kind = TaskStatus.SKIPPED, USER_SKIP, ""
                 task.finished_at = now
                 unblock.add(task_id)
         wanted = set(retry_only) if retry_only is not None else None
@@ -328,6 +330,9 @@ class TeamEngine:
                          and t.status == TaskStatus.DONE and t.outputs]
             if not reviewers:
                 return
+            if any(t.agent == AgentId.REVIEWER and t.status in (TaskStatus.PENDING, TaskStatus.RUNNING)
+                   for t in self.mission.tasks):
+                return          # a newer review is about to run; replaying a stale one would double-revise
             last = reviewers[-1]
             artifact = self.mission.artifact(last.outputs[0])
             names = set(agent_defs.Issue.__dataclass_fields__)
@@ -636,6 +641,12 @@ class TeamEngine:
                 task.status, task.finished_at = TaskStatus.FAILED, time.time()
                 task.error, task.error_kind = f"Internal error: {type(exc).__name__}: {exc}", ErrorKind.PROVIDER
             self._event(task.agent, EventKind.ERROR, f"{task.id} failed: internal error.")
+            return
+        if self._cancel.cancelled:
+            # A reply that lands after Cancel is discarded, so a cancelled run never
+            # half-applies work (a review verdict would otherwise spawn new tasks).
+            with self._lock:
+                task.status, task.finished_at = TaskStatus.CANCELLED, time.time()
             return
         with self._lock:
             ids = []
@@ -1283,6 +1294,7 @@ class TeamEngine:
             if testers and testers[-1].outputs:
                 tests = [a for a in (m.artifact(i) for i in testers[-1].outputs) if a]
             failed_tasks = [t for t in m.tasks if t.status in (TaskStatus.FAILED, TaskStatus.BLOCKED)]
+            skipped_tasks = [t for t in m.tasks if t.status == TaskStatus.SKIPPED and t.error == USER_SKIP]
         share = max(2000, self.limits.max_context_chars // (len(deliverables) + 2))
         parts = [f"MISSION (from the user): {m.goal}",
                  "SUCCESS CRITERIA:\n" + "\n".join(f"- {c}" for c in m.success_criteria),
@@ -1297,6 +1309,9 @@ class TeamEngine:
                 f"- [{'met' if c.get('met') else 'NOT met'}] {c.get('criterion')}" for c in m.criteria_check))
         if m.unresolved_issues:
             parts.append("UNRESOLVED REVIEW ISSUES:\n" + "\n".join(f"- {i}" for i in m.unresolved_issues))
+        if skipped_tasks:
+            parts.append("TASKS THE USER CHOSE TO SKIP (their work is NOT in the deliverables; say so plainly): "
+                         + ", ".join(f"{t.id} ({AgentId.LABELS[t.agent]}: {t.title})" for t in skipped_tasks))
         if failed_tasks:
             parts.append("TASKS THAT DID NOT FINISH: " + ", ".join(f"{t.id} ({t.error_kind or t.status})" for t in failed_tasks))
         degraded_note = ""
@@ -1311,12 +1326,12 @@ class TeamEngine:
                              "the team's deliverables are shown as written.")
             self._event(AgentId.COORDINATOR, EventKind.WARNING, degraded_note)
         body, cite_meta = self._check_final_citations(body)
-        final = body.rstrip() + "\n" + self._appendix(deliverables, cite_meta, degraded_note)
+        final = body.rstrip() + "\n" + self._appendix(deliverables, cite_meta, degraded_note, skipped_tasks)
         with self._lock:
             artifact = self._new_artifact(ArtifactKind.FINAL, "Final result", final, AgentId.COORDINATOR, "", cite_meta)
             m.final_artifact_id = artifact.id
             tests_failed = any(a.meta.get("passed") is False for a in tests)
-            issues = bool(m.unresolved_issues or failed_tasks or tests_failed or degraded_note)
+            issues = bool(m.unresolved_issues or failed_tasks or skipped_tasks or tests_failed or degraded_note)
             m.coordinator_note = ""
         self._set_status(MissionStatus.COMPLETED_WITH_ISSUES if issues else MissionStatus.COMPLETED)
         self._event(AgentId.COORDINATOR, EventKind.STATUS,
@@ -1329,7 +1344,8 @@ class TeamEngine:
             text = text.replace(f"[{bad}]", "[unverified citation removed]")
         return text, {"cited": [c for c in cited if c in known]}
 
-    def _appendix(self, deliverables: list[Artifact], cite_meta: dict, degraded_note: str) -> str:
+    def _appendix(self, deliverables: list[Artifact], cite_meta: dict, degraded_note: str,
+                  skipped: list[Task] | None = None) -> str:
         m = self.mission
         cited = set(cite_meta.get("cited", []))
         for artifact in deliverables:
@@ -1379,6 +1395,10 @@ class TeamEngine:
             out.append("\n## Optional improvements (from the Reviewer)")
             out += [f"- {x}" for x in m.suggestions]
         notes = [x.replace("[capability] ", "") for x in m.limitations]
+        for t in skipped or ():
+            what = ("it was not reviewed" if t.agent == AgentId.REVIEWER
+                    else "this result does not include its work")
+            notes.append(f"You skipped {t.id} ({AgentId.LABELS[t.agent]}: {t.title}); {what}.")
         if m.unresolved_issues:
             notes += [f"Open review issue - {i}" for i in m.unresolved_issues]
         if degraded_note:

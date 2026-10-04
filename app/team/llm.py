@@ -127,7 +127,8 @@ class TeamLLM:
     def __init__(self, client_factory: Callable[[], Any], limits: TeamLimits, cancel: CancelToken,
                  *, emit: Callable[[str, str, str], None] | None = None,
                  secret: str = "", on_usage: Callable[[int, int, int], None] | None = None,
-                 label: str = "", on_rate_limit: Callable[[], None] | None = None) -> None:
+                 label: str = "", on_rate_limit: Callable[[], None] | None = None,
+                 prior_calls: int = 0) -> None:
         self._factory = client_factory
         self._limits = limits
         self._cancel = cancel
@@ -139,6 +140,7 @@ class TeamLLM:
         self._client: Any = None
         self._lock = threading.Lock()
         self._calls = 0
+        self._prior = max(0, int(prior_calls))
         self._slots = threading.Semaphore(limits.max_concurrency)
 
     @property
@@ -163,7 +165,18 @@ class TeamLLM:
                     ErrorKind.BUDGET,
                     f"Stopped: this mission reached its limit of {self._limits.max_model_calls} "
                     "model calls. Raise it in Team settings if that is too low.")
+            lifetime = self._limits.max_model_calls * self.LIFETIME_RUNS
+            if self._prior + self._calls >= lifetime:
+                raise TeamError(
+                    ErrorKind.BUDGET,
+                    f"Stopped: this mission has used {self._prior + self._calls} model calls across its runs "
+                    f"(the cap is {lifetime}: {self.LIFETIME_RUNS} runs' worth). Start a new mission, or raise "
+                    "the limit in Team settings.")
             self._calls += 1
+
+    #: Retry / Resume / Revise again each get a fresh per-run budget, but a mission
+    #: can never spend more than this many runs' worth in total.
+    LIFETIME_RUNS = 3
 
     def complete(self, system: str, user: str, *, agent: str, purpose: str = "") -> Reply:
         """One model call (with bounded retries). Raises TeamError or Cancelled."""
