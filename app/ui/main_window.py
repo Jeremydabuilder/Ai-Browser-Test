@@ -155,6 +155,14 @@ class MainWindow(QMainWindow):
         self.missions = MissionService(
             self.mission_store, self.controller, self.tabs, self,
             knowledge=self.knowledge_index, graph=self.knowledge_graph)
+        #: The multi-agent Team (app/team). Owned here for the same reason as
+        #: Missions: a run must keep going when the side panel is closed and
+        #: reopened. Parented to this window so its dispatcher timer is torn
+        #: down on the GUI thread, and shut down explicitly in closeEvent.
+        from app.storage.team_store import TeamStore
+        from app.team.runner import TeamController
+
+        self.team = TeamController(TeamStore(database), self.settings, self.knowledge_index, parent=self)
         #: MCP client core (Phase 1, read-only). Owned here for the same
         #: reason as Missions: it must outlive the agent panel and every
         #: rebuilt AgentSession, and connections should stay live across a
@@ -441,6 +449,7 @@ class MainWindow(QMainWindow):
         self._agent_action = self._add_action(
             tools_menu, "Show &AI Agent", "Ctrl+Shift+A", self._toggle_agent_panel)
         self._agent_action.setCheckable(True)
+        self._add_action(tools_menu, "AI &Team…", None, self._open_team)
         self._add_action(tools_menu, "&Configure AI Agent…", None, self._configure_agent)
         self._add_action(tools_menu, "Agent &Diagnostics…", None, self._show_diagnostics)
         tools_menu.addSeparator()
@@ -2572,6 +2581,14 @@ class MainWindow(QMainWindow):
                 self._credential_id = credential.fingerprint if credential else ""
         return self._agent_session
 
+    def _open_team(self) -> None:
+        """Open the side panel on its Team section."""
+        if self._side_panel is None:
+            self._toggle_agent_panel()
+        show_team = getattr(self._side_panel, "show_team", None)
+        if show_team is not None:
+            show_team()
+
     def _toggle_agent_panel(self) -> None:
         """Show or hide the agent. Built lazily, on first use."""
         if self._side_panel is not None:
@@ -2583,7 +2600,8 @@ class MainWindow(QMainWindow):
         session = self._ensure_agent_session()
         self.set_side_panel(AgentPanel(session, self, self.missions, self.mcp,
                                        browser=self.controller, highlights=self.highlights,
-                                       knowledge=self.knowledge_index, graph=self.knowledge_graph))
+                                       knowledge=self.knowledge_index, graph=self.knowledge_graph,
+                                       team=self.team))
         self._agent_action.setChecked(True)
 
     # ------------------------------------------------------------------
@@ -2995,6 +3013,10 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event) -> None:  # noqa: N802
         self._save_current_workspace_tab_state()
         self.task_runner.stop()
+        # Stop a running Team mission and its dispatcher before the panel and
+        # window go away (the engine thread never touches Qt, but its
+        # callbacks target this window's controller).
+        self.team.shutdown()
         # Drops the panel's own connections to the session first (see
         # set_side_panel's own comment) - otherwise the session<->panel
         # cycle they form outlives this method, same risk as a session

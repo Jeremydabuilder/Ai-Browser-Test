@@ -862,3 +862,17 @@ soft delete the third, v3 -> v4. Each step is idempotent, runs in one
 transaction, and is never edited once shipped - a mistake is fixed by adding
 the next step, because someone's profile has already run the old one. A profile
 stamped *newer* than this build is left alone rather than downgraded.
+
+---
+
+## Team
+
+A second, independent multi-agent system lives in `app/team/` (UI:
+`app/ui/team_panel.py`): Coordinator, Researcher, Writer, Coder, Reviewer and
+Tester exchanging explicit artifacts. Unlike Missions it does not drive
+`AgentSession`; the engine (`engine.py`) is plain Python, runs on one background
+thread with a bounded worker pool, and reaches the GUI only through
+`GuiDispatcher` (`runner.TeamController`). Credentials are resolved through the
+existing `resolve_for()` path and never leave the provider client. Code is run
+only by `sandbox.py`. Full description, safety model and limitations:
+`docs/team.md`.

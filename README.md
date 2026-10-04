@@ -12,6 +12,9 @@ Qt WebEngine (Chromium) — no Node.js, no Electron, no npm, no mocked pages.
 SQLite, keyboard shortcuts.
 **Phase 2:** a Claude-powered AI agent that operates web pages through the
 browser's structured API — see [`docs/ai_agent.md`](docs/ai_agent.md).
+**AI Team:** six cooperating agents (Coordinator, Researcher, Writer, Coder, Reviewer,
+Tester) that plan, hand off artifacts, review and test - Tools → AI Team…, see
+[`docs/team.md`](docs/team.md).
 **Missions:** a goal survives across tabs and restarts as a Mission - its
 pages, findings, decisions and progress kept together and resumable - see
 the Mission Library sections of [`ARCHITECTURE.md`](ARCHITECTURE.md).

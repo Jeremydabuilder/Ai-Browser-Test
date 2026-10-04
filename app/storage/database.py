@@ -25,7 +25,7 @@ import threading
 from pathlib import Path
 from typing import Any, Callable, Iterable, Sequence
 
-SCHEMA_VERSION = 27
+SCHEMA_VERSION = 28
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS history (
@@ -739,6 +739,16 @@ CREATE TABLE IF NOT EXISTS workspaces (
     last_used_at  REAL NOT NULL,
     data_json     TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS team_missions (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    goal        TEXT NOT NULL,
+    status      TEXT NOT NULL,
+    created_at  REAL NOT NULL,
+    updated_at  REAL NOT NULL,
+    data_json   TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_team_missions_updated ON team_missions(updated_at DESC);
 """
 
 #: How a profile at version N becomes a profile at version N+1.
@@ -1430,6 +1440,20 @@ CREATE TABLE IF NOT EXISTS decision_alternatives (
     );
     CREATE INDEX IF NOT EXISTS idx_mission_activity_mission
         ON mission_activity(mission_id, created_at);
+    """,
+    # v27 -> v28: the multi-agent Team (app/team, app/storage/team_store.py).
+    # One row per mission; tasks, artifacts, sources and the activity feed
+    # live in data_json so a whole run round-trips as one document.
+    27: """
+    CREATE TABLE IF NOT EXISTS team_missions (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        goal        TEXT NOT NULL,
+        status      TEXT NOT NULL,
+        created_at  REAL NOT NULL,
+        updated_at  REAL NOT NULL,
+        data_json   TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_team_missions_updated ON team_missions(updated_at DESC);
     """,
 }
 

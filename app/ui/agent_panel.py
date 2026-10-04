@@ -24,6 +24,8 @@ from PySide6.QtWidgets import (
     QPlainTextEdit,
     QPushButton,
     QSizePolicy,
+    QStackedWidget,
+    QTabBar,
     QTextBrowser,
     QVBoxLayout,
     QWidget,
@@ -601,7 +603,7 @@ class AgentPanel(QWidget):
 
     def __init__(self, session: AgentSession | None, parent: QWidget | None = None,
                  missions=None, mcp=None, browser=None, highlights=None, knowledge=None,
-                 graph=None) -> None:
+                 graph=None, team=None) -> None:
         super().__init__(parent)
         m = theme.METRICS
         self._colours = theme.palette_for(QApplication.instance())
@@ -645,8 +647,16 @@ class AgentPanel(QWidget):
         #: needing them retyped.
         self._last_user_message = ""
 
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(8, 8, 8, 8)
+        # The panel has two sections sharing one header: the conversation with
+        # Py (every widget below that is added to ``layout``) and, when the
+        # window owns a TeamController, the multi-agent Team. ``layout`` lives
+        # on ``chat_page`` so the conversation's widgets are untouched.
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(8, 8, 8, 8)
+        outer.setSpacing(6)
+        chat_page = QWidget(self)
+        layout = QVBoxLayout(chat_page)
+        layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(6)
 
         model = ""
@@ -724,7 +734,27 @@ class AgentPanel(QWidget):
             f" border-radius:{m.radius_lg}px; }}")
         header_card.setLayout(top)
         top.setContentsMargins(m.space_2, m.space_2, m.space_2, m.space_2)
-        layout.addWidget(header_card)
+        outer.addWidget(header_card)
+
+        self.team_panel = None
+        self._section_tabs = None
+        self._sections = QStackedWidget(self)
+        self._sections.addWidget(chat_page)
+        if team is not None:
+            from app.ui.team_panel import TeamPanel
+
+            self._section_tabs = QTabBar(self)
+            self._section_tabs.addTab("Chat")
+            self._section_tabs.addTab("Team")
+            self._section_tabs.setExpanding(True)
+            self._section_tabs.setDrawBase(False)
+            self._section_tabs.setAccessibleName("Panel section")
+            self._section_tabs.currentChanged.connect(self._sections.setCurrentIndex)
+            outer.addWidget(self._section_tabs)
+            self.team_panel = TeamPanel(team, browser, self)
+            self.team_panel.configure_requested.connect(self._open_configure)
+            self._sections.addWidget(self.team_panel)
+        outer.addWidget(self._sections, 1)
 
         # -- Missions ------------------------------------------------------
         # Two states of one slot: the invitation when nothing is active, the
@@ -942,6 +972,16 @@ class AgentPanel(QWidget):
     def resizeEvent(self, event) -> None:  # noqa: N802
         super().resizeEvent(event)
         self._resync_model_badge()
+
+    def show_team(self) -> None:
+        """Switch to the Team section (no-op when the window has no Team)."""
+        if self._section_tabs is not None:
+            self._section_tabs.setCurrentIndex(1)
+
+    def _open_configure(self) -> None:
+        configure = getattr(self.window(), "_configure_agent", None)
+        if configure is not None:
+            configure()
 
     def _resync_model_badge(self) -> None:
         """Show as much of the model name as the panel's real width allows.
