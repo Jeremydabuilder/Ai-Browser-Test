@@ -35,6 +35,7 @@ import ipaddress
 import re
 import socket
 import time
+import zlib
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 from dataclasses import dataclass, field
 from html.parser import HTMLParser
@@ -148,6 +149,13 @@ def validate_url(url: str) -> tuple[str, str, int, str]:
     host = (parts.hostname or "").rstrip(".").lower()
     if not host:
         raise FetchError(FetchErrorKind.BAD_URL, "The address has no host.")
+    if not host.isascii():
+        try:                                   # one canonical ASCII form for DNS, Host header and TLS name
+            host = host.encode("idna").decode("ascii")
+        except UnicodeError:
+            raise FetchError(FetchErrorKind.BAD_URL, "The host name is not valid.") from None
+    if "%" in host or not re.fullmatch(r"[a-z0-9.:\-_\[\]]+", host):
+        raise FetchError(FetchErrorKind.BAD_URL, "The host name has characters that are not allowed.")
     scheme = parts.scheme.lower()
     port = port or (443 if scheme == "https" else 80)
     if port not in ALLOWED_PORTS:
@@ -335,6 +343,47 @@ def extract_text(html: str, max_chars: int) -> tuple[str, str, bool]:
 # ---------------------------------------------------------------------------
 
 
+class _BoundedDecoder:
+    """Content-Encoding decoder that never produces more than it is allowed to."""
+
+    def __init__(self, encoding: str) -> None:
+        name = encoding.strip().lower()
+        self._name = name
+        self._tried_raw = False
+        if name in ("", "identity"):
+            self._d = None
+        elif name in ("gzip", "x-gzip"):
+            self._d = zlib.decompressobj(16 + zlib.MAX_WBITS)
+        elif name == "deflate":
+            self._d = zlib.decompressobj()
+        else:
+            raise FetchError(FetchErrorKind.UNSUPPORTED, f"The site used an unsupported encoding ({name[:20]}).")
+
+    def feed(self, data: bytes, room: int) -> tuple[bytes, bool]:
+        """(decoded bytes, True when ``room`` ran out)."""
+        if room <= 0:
+            return b"", True
+        if self._d is None:
+            return (data[:room], len(data) > room)
+        out: list[bytes] = []
+        pending = data
+        try:
+            while pending and room > 0:
+                piece = self._d.decompress(pending, room)
+                out.append(piece)
+                room -= len(piece)
+                pending = self._d.unconsumed_tail
+                if not piece and not pending:
+                    break
+        except zlib.error:
+            if self._name == "deflate" and not self._tried_raw and not out:
+                self._tried_raw = True                      # some servers send raw deflate
+                self._d = zlib.decompressobj(-zlib.MAX_WBITS)
+                return self.feed(data, room)
+            raise FetchError(FetchErrorKind.NETWORK, "The site sent data that could not be decoded.") from None
+        return b"".join(out), room <= 0 and bool(pending)
+
+
 class PageFetcher:
     def __init__(self, *, timeout: float = 10.0, deadline: float = 20.0, max_bytes: int = 1_500_000,
                  max_chars: int = 20_000, max_redirects: int = 4, resolver: Resolver | None = None,
@@ -395,24 +444,35 @@ class PageFetcher:
                     header_type = response.headers.get("content-type", "").lower()
                     if "charset=" in header_type:
                         charset = header_type.split("charset=")[-1].split(";")[0].strip(" \"'")
+                    decoder = _BoundedDecoder(response.headers.get("content-encoding", ""))
                     chunks: list[bytes] = []
-                    total = 0
+                    total = raw_total = 0
                     clipped = False
-                    for chunk in response.iter_bytes():
+                    # Raw (still compressed) bytes are read and inflated by us, never by the HTTP
+                    # client, so memory stays bounded by max_bytes even for a gzip/deflate bomb.
+                    # (A test double's in-memory body is already consumed; a real response never is.)
+                    stream = list(response.stream) if response.is_stream_consumed else response.iter_raw()
+                    for raw in stream:
                         if self._clock() - started > self.deadline:
                             raise FetchError(FetchErrorKind.TIMEOUT, "Reading the page took too long.")
-                        total += len(chunk)
-                        if total > self.max_bytes:
-                            chunks.append(chunk[: len(chunk) - (total - self.max_bytes)])
+                        raw_total += len(raw)
+                        if raw_total > self.max_bytes:
+                            raw = raw[: len(raw) - (raw_total - self.max_bytes)]
+                            clipped = True
+                        decoded, hit_limit = decoder.feed(raw, self.max_bytes - total)
+                        total += len(decoded)
+                        chunks.append(decoded)
+                        if hit_limit or clipped:
                             clipped = True
                             break
-                        chunks.append(chunk)
                     return b"".join(chunks), content_type or "text/html", charset, clipped
         except FetchError:
             raise
         except httpx.TimeoutException:
             raise FetchError(FetchErrorKind.TIMEOUT, "The site did not answer in time.") from None
         except httpx.HTTPError:
+            raise FetchError(FetchErrorKind.NETWORK, "Could not connect to the site.") from None
+        except (OSError, ValueError, UnicodeError):
             raise FetchError(FetchErrorKind.NETWORK, "Could not connect to the site.") from None
 
     def _page(self, url: str, body: bytes, content_type: str, charset: str, clipped: bool,

@@ -939,7 +939,9 @@ class TeamEngine:
             host = urlsplit(source.url).hostname or source.url
             try:
                 page = fetcher.fetch(source.url)
-            except FetchError as exc:
+            except Exception as exc:  # noqa: BLE001 - any failure leaves the snippet in place
+                if not isinstance(exc, FetchError):
+                    exc = FetchError("network", "The page could not be fetched.")
                 with self._lock:
                     source.note = f"Page not opened: {exc.message}"
                 self._event(AgentId.RESEARCHER, EventKind.WARNING,

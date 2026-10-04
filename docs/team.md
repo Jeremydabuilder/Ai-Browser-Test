@@ -106,6 +106,11 @@ Search results are attacker-influenced, so the page reader treats every URL as h
   and IPv4 hidden in IPv6 (mapped/6to4/Teredo/NAT64) are refused. The connection is then made to
   the validated address (Host header and TLS name carry the hostname), so DNS cannot change its
   answer between check and connect. Every redirect is re-validated (max 4).
+* **Proxies are ignored on purpose.** `HTTP(S)_PROXY` variables are not used: a proxy would make the
+  connection go somewhere other than the address that was checked. On a network that forces a
+  proxy, page reading simply fails (the result stays a snippet) rather than bypassing the check.
+* Content is inflated by the app itself with a hard output cap, so a gzip/deflate "bomb" cannot
+  exhaust memory; encodings other than gzip/deflate are refused.
 * Limits: 10s per request (20s total), 1.5 MB decoded (compression bombs are cut off), 20,000
   characters kept, HTML/plain text only, no cookies, no credentials, no referrer.
 * Text extraction drops scripts, styles, navigation, footers, forms and visually hidden text.
