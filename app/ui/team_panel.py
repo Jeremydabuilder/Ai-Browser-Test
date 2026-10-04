@@ -1004,6 +1004,7 @@ class TeamPanel(QWidget):
                 continue
             who = AgentId.LABELS.get(artifact.agent, artifact.agent)
             version = f" v{artifact.version}" if artifact.version > 1 else ""
+            version += " \u00b7 replaced" if artifact.meta.get("replaced") else ""
             entries.append((f"{artifact.id} · {_elide(artifact.title, 28)}{version} · {who}", artifact.id))
         ids = [e[1] for e in entries]
         previous = self.viewer_choice.currentData()

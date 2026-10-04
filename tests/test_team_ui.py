@@ -937,6 +937,18 @@ class RecoveryAndGuidanceTests(TeamUITestCase):
         self.assertIn("capped at 180", self.panel.next_step.text())
         self.assertIn("cannot undo", self.panel.next_step.text())
 
+    def test_replaced_artifacts_are_labelled_in_the_results_list(self) -> None:
+        self.build()
+        mission = Mission(goal="g", status=MissionStatus.COMPLETED, artifacts=[
+            Artifact("A1", ArtifactKind.REPORT, "Draft", "old", AgentId.WRITER, "T2", meta={"replaced": True}),
+            Artifact("A2", ArtifactKind.REPORT, "Draft", "new", AgentId.WRITER, "T2")])
+        self.controller._view = mission
+        self.panel.refresh()
+        pump()
+        labels = [self.panel.viewer_choice.itemText(i) for i in range(self.panel.viewer_choice.count())]
+        self.assertTrue(any("A1" in t and "replaced" in t for t in labels))
+        self.assertFalse(any("A2" in t and "replaced" in t for t in labels))
+
     def test_page_reading_is_wired_and_can_be_switched_off(self) -> None:
         from app.team.webfetch import PageFetcher
         self.build()
