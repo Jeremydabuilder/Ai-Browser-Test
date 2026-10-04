@@ -36,7 +36,7 @@ NO_SANDBOX = sandbox_mod.SandboxStatus(False, "test: no sandbox")
 REAL_SANDBOX = sandbox_mod.probe()
 
 ROLE_MARKERS = (
-    ("ROLE: Coordinator. Turn", "plan"), ("ROLE: Coordinator, assembling", "final"),
+    ("ROLE: Search planner", "searchplan"), ("ROLE: Coordinator. Turn", "plan"), ("ROLE: Coordinator, assembling", "final"),
     ("ROLE: Researcher", "researcher"), ("ROLE: Writer", "writer"), ("ROLE: Coder", "coder"),
     ("ROLE: Tester", "tester"), ("ROLE: Reviewer", "reviewer"),
 )
@@ -645,7 +645,7 @@ class SandboxSafetyTests(unittest.TestCase):
             with self.assertRaises(sandbox_mod.RefusedCommand, msg=str(bad)):
                 sandbox_mod.validate_command(bad, staged, pytest_available=False)
         ok = sandbox_mod.validate_command(["python", "a.py"], staged, pytest_available=False)
-        self.assertEqual(ok[0], sys.executable)
+        self.assertEqual(ok[:2], ["python", "-s"])        # each backend picks its own interpreter
 
     @unittest.skipUnless(REAL_SANDBOX.available, "sandbox unavailable")
     def test_generated_code_cannot_see_credentials_reach_the_network_or_run_forever(self) -> None:

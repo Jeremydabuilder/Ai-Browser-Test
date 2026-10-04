@@ -22,7 +22,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import Qt  # noqa: E402
-from PySide6.QtWidgets import QApplication, QScrollBar, QWidget  # noqa: E402
+from PySide6.QtWidgets import QApplication, QLabel, QScrollBar, QWidget  # noqa: E402
 
 from app.agent.credentials import Credential, Mode  # noqa: E402
 from app.storage.database import Database  # noqa: E402
@@ -71,12 +71,13 @@ def happy_client(**overrides) -> FakeClient:
 
 
 class TeamUITestCase(unittest.TestCase):
-    def build(self, client=None, browser=None) -> None:
+    def build(self, client=None, browser=None, settings=None, **controller_kwargs) -> None:
         self._dir = tempfile.TemporaryDirectory()
         self.db = Database(os.path.join(self._dir.name, "t.sqlite3"))
         self.store = TeamStore(self.db)
         self.client = client or happy_client()
-        self.controller = TeamController(self.store, None, None, client_factory=lambda: self.client)
+        self.controller = TeamController(self.store, settings, None, client_factory=lambda: self.client,
+                                         **controller_kwargs)
         self.panel = TeamPanel(self.controller, browser)
         self.panel.resize(380, 700)
         self.panel.show()
@@ -206,9 +207,10 @@ class EnvironmentHonestyTests(TeamUITestCase):
             self.panel.show()
             pump()
             text = self.panel.env.text()
-            self.assertIn("not ready", text)
-            self.assertIn("GROQ_API_KEY", text)
+            self.assertIn("not set up", text)
+            self.assertIn("GROQ_API_KEY", self.panel.env.toolTip())      # the full instructions are one hover away
             self.assertTrue(self.panel.configure_button.isVisibleTo(self.panel))
+            self.assertEqual(self.panel.configure_button.text(), "Set up Groq…")
             seen = []
             self.panel.configure_requested.connect(lambda: seen.append(1))
             self.panel.configure_button.click()
@@ -227,8 +229,8 @@ class EnvironmentHonestyTests(TeamUITestCase):
         self.build()
         self.assertFalse(self.panel.configure_button.isVisibleTo(self.panel))
         self.assertIn("scripted", self.panel.env.text())
-        self.assertIn("Web search: unavailable", self.panel.env.text())    # limitations are shown up front
-        self.assertIn("Execution:", self.panel.env.text())
+        self.assertIn("Web: off", self.panel.env.text())    # limitations are shown up front
+        self.assertIn("Sandbox:", self.panel.env.text())
 
 
 class FakeBrowser:
@@ -322,7 +324,7 @@ class KnowledgeSearchAcrossThreadsTests(TeamUITestCase):
         self.panel = TeamPanel(self.controller)
         self.panel.show()
         pump()
-        self.assertIn("Search: local knowledge only", self.panel.env.text())
+        self.assertIn("Knowledge: on", self.panel.env.text())
         self.panel.goal.setPlainText("What warranty does Widget B have?")
         self.panel.start_button.click()
         self.assertTrue(wait_for(lambda: self.controller.snapshot().status == MissionStatus.COMPLETED))
@@ -395,7 +397,7 @@ class WorkspaceApplyTests(TeamUITestCase):
             self.panel.run_tabs.setCurrentIndex(3)             # the Results tab holds these buttons
             pump()
             self.assertTrue(self.panel.apply_button.isVisibleTo(self.panel))
-            self.assertTrue(self.panel.save_files_button.isVisibleTo(self.panel))
+            self.assertTrue(self.panel.save_files_action.isVisible())
             # Declining the confirmation writes nothing.
             with patch("app.ui.team_panel.QMessageBox.exec"), \
                     patch("app.ui.team_panel.QMessageBox.clickedButton", return_value=None):
@@ -456,7 +458,7 @@ class UnexpectedContentTests(TeamUITestCase):
         self.assertTrue(wait_for(lambda: self.controller.snapshot().status == MissionStatus.COMPLETED))
         pump(10)
         self.assertEqual(self.panel.run_goal.textFormat(), Qt.TextFormat.PlainText)
-        self.assertEqual(self.panel.run_goal.text(), "<b>bold goal</b>")
+        self.assertEqual(self.panel.run_goal._full, "<b>bold goal</b>")
         self.panel.viewer_choice.setCurrentIndex(self.panel.viewer_choice.findData("__sources__"))
         pump()
         html = self.panel.viewer.toHtml().lower()
@@ -471,6 +473,374 @@ class UnexpectedContentTests(TeamUITestCase):
         self.panel._open_link(QUrl("javascript:alert(1)"))
         self.panel._open_link(QUrl("file:///etc/passwd"))
         self.assertEqual(opened, ["https://good.example/a"])
+
+
+class DownloadsIntegrationTests(TeamUITestCase):
+    def build_with_downloads(self) -> None:
+        from app.browser.downloads import DownloadManager
+        self.downloads_dir = tempfile.mkdtemp(prefix="pybrowser-dl-")
+        self.manager = DownloadManager()
+        self.build(downloads=self.manager, downloads_dir=self.downloads_dir)
+        self.saved_messages = []
+        self.controller.file_saved.connect(self.saved_messages.append)
+
+    def tearDown(self) -> None:
+        super().tearDown()
+        if hasattr(self, "downloads_dir"):
+            import shutil
+            shutil.rmtree(self.downloads_dir, ignore_errors=True)
+
+    def finish_mission(self) -> None:
+        self.start_mission()
+        self.assertTrue(wait_for(lambda: self.controller.snapshot().status == MissionStatus.COMPLETED))
+        pump(10)
+        self.panel.run_tabs.setCurrentIndex(3)
+        pump()
+
+    def test_save_goes_through_the_download_manager_and_never_overwrites(self) -> None:
+        self.build_with_downloads()
+        self.finish_mission()
+        self.panel.save_button.click()
+        self.assertEqual(len(self.manager.items()), 1)
+        item = self.manager.items()[0]
+        self.assertEqual((item.state, item.url.startswith("pybrowser://ai-team/")), ("completed", True))
+        path = os.path.join(item.directory, item.file_name)
+        self.assertEqual(os.path.dirname(path), self.downloads_dir)
+        with open(path, encoding="utf-8") as handle:
+            self.assertIn("Buy A", handle.read())
+        self.assertIn(path, self.panel.saved_note.text())
+        self.assertTrue(self.saved_messages and "Downloads" in self.saved_messages[0])
+        self.panel.save_button.click()                                  # the same file again...
+        names = sorted(i.file_name for i in self.manager.items())
+        self.assertEqual(len(names), 2)
+        self.assertTrue(any("(1)" in n for n in names))                 # ...is a new file, not an overwrite
+
+    def test_save_as_writes_where_the_user_chose_and_still_lists_it_in_downloads(self) -> None:
+        self.build_with_downloads()
+        self.finish_mission()
+        chosen = os.path.join(self.downloads_dir, "elsewhere", "mine.md")
+        os.makedirs(os.path.dirname(chosen))
+        with open(chosen, "w", encoding="utf-8") as handle:
+            handle.write("old")
+        with patch("app.ui.team_panel.QFileDialog.getSaveFileName", return_value=(chosen, "")):
+            self.panel.save_as_action.trigger()                           # the dialog already asked "replace?"
+        with open(chosen, encoding="utf-8") as handle:
+            self.assertIn("Buy A", handle.read())
+        self.assertEqual(self.manager.items()[0].file_name, "mine.md")
+
+    def test_generated_files_are_saved_into_one_downloads_subfolder(self) -> None:
+        self.build_with_downloads()
+        mission = Mission(goal="Write a calculator!?", status=MissionStatus.COMPLETED)
+        mission.artifacts += [
+            Artifact("A1", ArtifactKind.FILE, "calc.py", "v1\n", AgentId.CODER, "T1", meta={"path": "calc.py"}),
+            Artifact("A2", ArtifactKind.FILE, "calc.py", "v2\n", AgentId.CODER, "T3", 2, "A1", meta={"path": "calc.py"}),
+            Artifact("A3", ArtifactKind.FILE, "tests/test_calc.py", "t\n", AgentId.CODER, "T1",
+                     meta={"path": "tests/test_calc.py"})]
+        self.store.create(mission)
+        self.controller.open_mission(mission.id)
+        pump(10)
+        self.panel.run_tabs.setCurrentIndex(3)
+        pump()
+        self.panel.save_files_action.trigger()
+        saved = {os.path.relpath(os.path.join(i.directory, i.file_name), self.downloads_dir): i
+                 for i in self.manager.items()}
+        folder = next(iter(saved)).split(os.sep)[0]
+        self.assertTrue(folder.startswith("AI Team - Write a calculator"))
+        self.assertEqual(sorted(k.split(os.sep, 1)[1] for k in saved), ["calc.py", os.path.join("tests", "test_calc.py")])
+        with open(os.path.join(self.downloads_dir, folder, "calc.py"), encoding="utf-8") as handle:
+            self.assertEqual(handle.read(), "v2\n")                      # only the latest version of each file
+
+    def test_a_generated_file_name_can_never_escape_the_downloads_folder(self) -> None:
+        self.build_with_downloads()
+        path = self.controller.save_to_downloads("../../../evil.txt", "x", 7)
+        self.assertTrue(os.path.realpath(path).startswith(os.path.realpath(self.downloads_dir) + os.sep))
+        path = self.controller.save_to_downloads("C:\\Windows\\system32\\evil.txt", "x", 7)
+        self.assertTrue(os.path.realpath(path).startswith(os.path.realpath(self.downloads_dir) + os.sep))
+
+    def test_the_downloads_window_lists_a_generated_file_like_any_other(self) -> None:
+        from app.ui.downloads_panel import DownloadsDialog
+        self.build_with_downloads()
+        self.controller.save_to_downloads("notes.md", "# hi", 3)
+        dialog = DownloadsDialog(self.manager)
+        try:
+            texts = " ".join(label.text() for label in dialog.findChildren(QLabel))
+            self.assertIn("notes.md", texts)
+            self.assertIn("Completed", texts)
+        finally:
+            dialog.deleteLater()
+            pump()
+
+
+class SetupFlowTests(TeamUITestCase):
+    KEY = "gsk_setup_flow_key_0123456789abcdef"
+
+    def setUp(self) -> None:
+        import keyring
+        from tests.test_team_websearch import MemoryKeyring
+        self._previous = keyring.get_keyring()
+        self.memory = MemoryKeyring()
+        keyring.set_keyring(self.memory)
+        self.addCleanup(keyring.set_keyring, self._previous)
+        env = patch.dict(os.environ, {}, clear=False)
+        env.start()
+        self.addCleanup(env.stop)
+        for name in ("GROQ_API_KEY", "PYBROWSER_DISABLE_KEYRING", "PYBROWSER_TEAM_PROVIDER", "PYBROWSER_TEAM_MODEL"):
+            os.environ.pop(name, None)
+
+    def build_real_provider(self) -> None:
+        self._dir = tempfile.TemporaryDirectory()
+        self.db = Database(os.path.join(self._dir.name, "t.sqlite3"))
+        from app.storage.settings import SettingsStore
+        self.settings = SettingsStore(self.db)
+        self.controller = TeamController(TeamStore(self.db), self.settings, None)    # no injected client
+        self.panel = TeamPanel(self.controller)
+        self.panel.show()
+        pump()
+
+    def test_the_key_dialog_opens_on_groq(self) -> None:
+        from app.storage.settings import SettingsStore
+        from app.ui.agent_setup import ApiKeyDialog
+        self._dir = tempfile.TemporaryDirectory()
+        self.db = Database(os.path.join(self._dir.name, "t.sqlite3"))
+        self.controller = TeamController(TeamStore(self.db), None, None, client_factory=lambda: None)
+        self.panel = TeamPanel(self.controller)
+        dialog = ApiKeyDialog(None, SettingsStore(self.db), initial_provider="groq")
+        self.addCleanup(dialog.deleteLater)
+        self.assertEqual(dialog.provider_box.currentData(), "groq")
+        self.assertTrue(dialog._other_widget.isVisibleTo(dialog) or not dialog._other_widget.isHidden())
+
+    def test_the_window_passes_groq_to_the_existing_dialog(self) -> None:
+        from app.ui import main_window as mw
+        seen = {}
+
+        class FakeDialog:
+            def __init__(self, parent, settings, initial_provider=None):
+                seen["provider"] = initial_provider
+
+            def exec(self):
+                return 0
+
+        fake_window = SimpleNamespace(settings=object(), _apply_agent_settings=lambda: seen.setdefault("applied", True))
+        with patch("app.ui.agent_setup.ApiKeyDialog", FakeDialog):
+            mw.MainWindow._configure_agent(fake_window, "groq")
+            self.assertEqual(seen, {"provider": "groq", "applied": True})
+            seen.clear()
+            mw.MainWindow._configure_agent(fake_window)             # the Tools-menu path is unchanged
+            self.assertIsNone(seen["provider"])
+
+    def test_a_key_entered_once_is_reused_everywhere_without_being_shown(self) -> None:
+        from app.agent.credentials import provider_key_store
+        from app.agent.openai_compatible import GroqClient
+        from app.team.llm import make_client_factory, resolve_provider
+        self.build_real_provider()
+        self.assertNotIn(">Test</a>", self.panel.env.text())
+        self.assertIn("not set up", self.panel.env.text())
+        provider_key_store("groq").set_key(self.KEY)        # exactly what the dialog's "Save API key" does
+        with patch.object(GroqClient, "test_connection", return_value=(True, "Connected. The model accepted a request.")):
+            self.panel.refresh_environment()
+            self.assertTrue(wait_for(lambda: "Connected" in self.panel.env.text()))
+        text = self.panel.env.text()
+        self.assertIn("Groq</b> \u00b7 llama-3.3-70b-versatile", text)
+        self.assertIn(">Test</a>", text)
+        self.assertFalse(self.panel.configure_button.isVisibleTo(self.panel))
+        self.assertNotIn(self.KEY, text + self.panel.env.toolTip())
+        status = resolve_provider(self.settings)
+        self.assertEqual(status.secret, self.KEY)
+        client = make_client_factory(status, self.settings)()
+        self.assertEqual(client._client.headers["Authorization"], f"Bearer {self.KEY}")   # same key, same store
+        self.assertNotIn(self.KEY, self.db.query_one("SELECT group_concat(value) FROM settings")[0] or "")
+
+    def test_a_failed_connection_test_is_shown_with_the_key_redacted(self) -> None:
+        from app.agent.credentials import provider_key_store
+        from app.agent.openai_compatible import GroqClient
+        self.build_real_provider()
+        provider_key_store("groq").set_key(self.KEY)
+        with patch.object(GroqClient, "test_connection",
+                          return_value=(False, f"Groq rejected the request (401): bad key {self.KEY}")):
+            self.panel.refresh_environment()
+            self.assertTrue(wait_for(lambda: "rejected" in self.panel.env.text()))
+        self.assertNotIn(self.KEY, self.panel.env.text())
+        self.assertIn("[redacted]", self.panel.env.text())
+
+    def test_the_test_button_runs_the_check_on_demand(self) -> None:
+        from app.agent.credentials import provider_key_store
+        from app.agent.openai_compatible import GroqClient
+        self.build_real_provider()
+        provider_key_store("groq").set_key(self.KEY)
+        self.panel._refresh_env()
+        calls = []
+        with patch.object(GroqClient, "test_connection",
+                          side_effect=lambda key, model: (calls.append((key == self.KEY, model)), (True, "ok"))[1]):
+            self.panel._on_env_link("test")
+            self.assertTrue(wait_for(lambda: bool(calls)))
+        self.assertEqual(calls, [(True, "llama-3.3-70b-versatile")])
+
+
+class SettingsDialogTests(TeamUITestCase):
+    def setUp(self) -> None:
+        import keyring
+        from tests.test_team_websearch import MemoryKeyring
+        self._previous = keyring.get_keyring()
+        self.memory = MemoryKeyring()
+        keyring.set_keyring(self.memory)
+        self.addCleanup(keyring.set_keyring, self._previous)
+        env = patch.dict(os.environ, {}, clear=False)
+        env.start()
+        self.addCleanup(env.stop)
+        for name in ("PYBROWSER_SEARCH_PROVIDER", "TAVILY_API_KEY", "BRAVE_SEARCH_API_KEY",
+                     "PYBROWSER_DISABLE_KEYRING"):
+            os.environ.pop(name, None)
+
+    def make(self):
+        from app.storage.settings import SettingsStore
+        from app.ui.team_settings import TeamSettingsDialog
+        self.build(settings=SettingsStore(Database(os.path.join(tempfile.mkdtemp(), "s.sqlite3"))))
+        dialog = TeamSettingsDialog(self.controller.settings, self.controller)
+        self.addCleanup(dialog.deleteLater)
+        return dialog
+
+    def test_a_search_key_goes_to_the_keyring_and_never_into_the_settings_table(self) -> None:
+        dialog = self.make()
+        self.assertFalse(dialog.search_key.isEnabled())                  # off until a provider is chosen
+        dialog.search_provider.setCurrentIndex(dialog.search_provider.findData("tavily"))
+        self.assertTrue(dialog.search_key.isEnabled())
+        self.assertIn("TAVILY_API_KEY", dialog.search_help.text())
+        self.assertIn("tavily.com", dialog.search_help.text())
+        dialog.search_key.setText("tvly-dialog-key-0123456789")
+        dialog.search_save.click()
+        self.assertEqual(self.memory.data[("PyBrowser", "tavily-api-key")], "tvly-dialog-key-0123456789")
+        self.assertEqual(dialog.search_key.text(), "")                    # cleared; never shown again
+        self.assertIn("Key found", dialog.search_status.text())
+        stored = self.controller.settings._db.query("SELECT key, value FROM settings")
+        self.assertFalse(any("tvly-dialog" in (row[1] or "") for row in stored))
+        self.assertEqual(self.controller.web_status().available, True)
+        self.assertEqual(self.controller.web_status().provider, "tavily")
+        dialog.search_remove.click()
+        self.assertFalse(self.controller.web_status().available)
+
+    def test_saving_persists_limits_provider_and_sandbox_choices_and_has_no_unsafe_option(self) -> None:
+        from app.team.limits import TeamLimits
+        dialog = self.make()
+        self.assertFalse(hasattr(dialog, "unisolated"))                  # there is no switch for unconfined execution
+        dialog._inputs["max_concurrency"].setValue(1)
+        dialog._inputs["max_revision_rounds"].setValue(3)
+        dialog.model.setText("openai/gpt-oss-20b")
+        dialog.backend.setCurrentIndex(dialog.backend.findData("container"))
+        dialog.image.setText("python:3.11-slim")
+        dialog._save()
+        limits = TeamLimits.from_settings(self.controller.settings)
+        self.assertEqual((limits.max_concurrency, limits.max_revision_rounds), (1, 3))
+        self.assertEqual(self.controller._sandbox_params(), ("container", "python:3.11-slim"))
+        self.assertEqual(self.controller.settings.get("team_model"), "openai/gpt-oss-20b")
+
+    def test_the_sandbox_section_explains_what_is_missing_and_how_to_fix_it(self) -> None:
+        unavailable = sandbox_unavailable("the container daemon is not running.",
+                                          "Install Docker Desktop, then run: docker pull python:3.12-slim")
+        with patch("app.team.sandbox.probe", return_value=unavailable):
+            dialog = self.make()
+            self.controller.recheck_sandbox()
+            self.assertTrue(wait_for(lambda: not self.controller.sandbox_status().checking))
+            dialog._show_sandbox_status()
+        self.assertIn("Unavailable: the container daemon is not running", dialog.sandbox_status.text())
+        self.assertIn("docker pull python:3.12-slim", dialog.sandbox_status.text())
+
+
+def sandbox_unavailable(reason: str, hint: str):
+    from app.team.sandbox import SandboxStatus
+    return SandboxStatus(False, reason, setup_hint=hint)
+
+
+class SandboxStatusInThePanelTests(TeamUITestCase):
+    def test_probing_never_blocks_the_gui_and_the_panel_updates_when_it_finishes(self) -> None:
+        from app.team import sandbox as sb
+
+        def slow_probe(*args, **kwargs):
+            time.sleep(0.6)
+            return sandbox_unavailable("Docker/Podman was not found on PATH.", "Install Docker Desktop.")
+
+        with patch("app.team.sandbox.probe", side_effect=slow_probe):
+            started = time.monotonic()
+            self.build()
+            self.assertLess(time.monotonic() - started, 0.5)            # constructing the panel did not wait
+            self.assertIn("Sandbox: checking", self.panel.env.text())
+            self.assertTrue(wait_for(lambda: "how to enable" in self.panel.env.text(), 10))
+            with patch("app.ui.team_panel.QMessageBox.information") as shown:
+                self.panel._on_env_link("sandbox-setup")
+            body = shown.call_args[0][2]
+            self.assertIn("Docker/Podman was not found", body)
+            self.assertIn("Install Docker Desktop", body)
+            self.assertIn("no unrestricted fallback", body)
+
+    def test_the_engine_waits_for_the_probe_off_the_gui_thread(self) -> None:
+        from app.team.sandbox import SandboxStatus
+
+        def slow_probe(*args, **kwargs):
+            time.sleep(0.4)
+            return SandboxStatus(False, "none here")
+
+        with patch("app.team.sandbox.probe", side_effect=slow_probe):
+            self.build()
+            self.start_mission()                                       # starts while the probe is still running
+            self.assertTrue(wait_for(lambda: self.controller.snapshot().status == MissionStatus.COMPLETED))
+        self.assertFalse(self.controller._sandbox.available)
+
+
+class StaleStateTests(TeamUITestCase):
+    def test_a_missing_key_warning_goes_away_once_the_key_exists(self) -> None:
+        from app.team.llm import ProviderStatus
+        self.build()
+        missing = ProviderStatus("groq", "Groq", "m", False, "No Groq API key is configured.")
+        with patch.object(self.controller, "provider_status", return_value=missing):
+            self.panel.goal.setPlainText("anything")
+            self.panel.start_button.click()
+            self.assertTrue(self.panel.compose_error.isVisibleTo(self.panel))
+        self.panel.refresh_environment()                  # the key dialog closed; a key exists now
+        self.assertFalse(self.panel.compose_error.isVisibleTo(self.panel))
+
+    def test_web_search_defaults_on_when_it_becomes_available_and_off_when_it_goes_away(self) -> None:
+        from app.team.websearch import SearchStatus
+        self.build()
+        off = SearchStatus("", "", False, "off")
+        on = SearchStatus("tavily", "Tavily", True, "ok", "keyring", "k" * 12)
+        with patch.object(self.controller, "web_status", return_value=off):
+            self.panel._refresh_env()
+            self.assertFalse(self.panel.web_check.isChecked())
+        with patch.object(self.controller, "web_status", return_value=on):
+            self.panel._refresh_env()
+            self.assertTrue(self.panel.web_check.isChecked())
+            self.panel.web_check.setChecked(False)          # the user's per-mission choice sticks
+            self.panel._refresh_env()
+            self.assertFalse(self.panel.web_check.isChecked())
+        with patch.object(self.controller, "web_status", return_value=off):
+            self.panel._refresh_env()
+            self.assertFalse(self.panel.web_check.isEnabled())
+
+
+class WebSearchToggleTests(TeamUITestCase):
+    def test_the_checkbox_follows_whether_a_search_provider_is_set_up_and_is_passed_to_the_mission(self) -> None:
+        from app.team.websearch import SearchStatus
+        self.build()
+        with patch.object(self.controller, "web_status",
+                          return_value=SearchStatus("", "", False, "Web search is off. Pick Tavily or Brave.")):
+            self.panel._refresh_env()
+            self.assertFalse(self.panel.web_check.isEnabled())
+            self.assertFalse(self.panel.web_check.isChecked())
+            self.assertIn("not set up", self.panel.web_check.text())
+        ready = SearchStatus("tavily", "Tavily", True, "Tavily key from the OS keyring", "keyring", "k" * 12)
+        seen = []
+        with patch.object(self.controller, "web_status", return_value=ready), \
+                patch.object(self.controller, "start", side_effect=lambda *a, **k: seen.append(k) or None):
+            self.panel._refresh_env()
+            self.assertTrue(self.panel.web_check.isEnabled())
+            self.assertIn("Tavily", self.panel.web_check.text())
+            self.assertIn("sent to Tavily", self.panel.web_check.toolTip())
+            self.panel.web_check.setChecked(True)
+            self.panel.goal.setPlainText("research this")
+            self.panel.start_button.click()
+            self.panel.web_check.setChecked(False)
+            self.panel.goal.setPlainText("research that")
+            self.panel.start_button.click()
+        self.assertEqual([k["web_search"] for k in seen], [True, False])
 
 
 if __name__ == "__main__":

@@ -96,6 +96,13 @@ class SourceKind:
     PASTE = "paste"
     FILE = "file"
     KNOWLEDGE = "knowledge"
+    #: A search-engine result the Researcher found - NOT something the user attached.
+    WEB = "web"
+
+    #: Kinds the user chose to attach.
+    ATTACHED = (TAB, PASTE, FILE)
+    LABELS = {TAB: "attached tab", PASTE: "attached text", FILE: "attached file",
+              KNOWLEDGE: "local knowledge", WEB: "web search result"}
 
 
 class SourceStatus:
@@ -129,6 +136,10 @@ class Source:
     error: str = ""
 
     @property
+    def origin_label(self) -> str:
+        return SourceKind.LABELS.get(self.kind, self.kind)
+
+    @property
     def usable(self) -> bool:
         return self.status in (SourceStatus.INCLUDED, SourceStatus.TRUNCATED) and bool(self.text.strip())
 
@@ -136,7 +147,7 @@ class Source:
         state = self.status if self.status != SourceStatus.INCLUDED else "included"
         extra = f" - {self.error}" if self.error else ""
         where = f" <{self.url}>" if self.url else ""
-        return f"[{self.id}] ({self.kind}, {state}) {self.title}{where}{extra} - {len(self.text)} chars"
+        return f"[{self.id}] ({self.origin_label}, {state}) {self.title}{where}{extra} - {len(self.text)} chars"
 
 
 @dataclass
@@ -207,6 +218,8 @@ class Mission:
     #: What the Coordinator is doing outside any task node.
     coordinator_note: str = ""
     workspace_path: str = ""
+    #: The user allowed this run to send search queries to a web search API.
+    web_search: bool = False
     final_artifact_id: str = ""
     error: str = ""
     error_kind: str = ""

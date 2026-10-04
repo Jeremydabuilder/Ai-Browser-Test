@@ -94,10 +94,14 @@ class ApiKeyDialog(QDialog):
     #: Something changed that the agent needs to pick up.
     saved = Signal()
 
-    def __init__(self, parent: QWidget | None = None, settings=None) -> None:
+    def __init__(self, parent: QWidget | None = None, settings=None,
+                 initial_provider: str | None = None) -> None:
         super().__init__(parent)
         from app.agent.keys import ApiKeyStore
 
+        #: Opened from a feature that needs a specific provider (the Team tab
+        #: asks for Groq): start on it, so setup is one step.
+        self._initial_provider = initial_provider
         self._store = ApiKeyStore()
         self._settings = settings
         #: The in-flight background call, if any - kept alive here so it is
@@ -164,7 +168,9 @@ class ApiKeyDialog(QDialog):
         self.provider_box = QComboBox(box)
         for info in PROVIDERS:
             self.provider_box.addItem(info.label, info.id)
-        index = self.provider_box.findData(current.provider)
+        index = self.provider_box.findData(self._initial_provider or current.provider)
+        if index < 0:
+            index = self.provider_box.findData(current.provider)
         self.provider_box.setCurrentIndex(index if index >= 0 else 0)
         self.provider_box.currentIndexChanged.connect(
             lambda: self._show_provider(self.provider_box.currentData()))

@@ -12,8 +12,9 @@ from html import escape
 from pathlib import Path
 
 from PySide6.QtCore import Qt, Signal
+from PySide6.QtGui import QColor, QFontMetrics, QPalette, QTextCharFormat, QTextCursor, QTextFormat
 from PySide6.QtWidgets import (
-    QApplication, QComboBox, QDialog, QDialogButtonBox, QFileDialog, QFrame, QInputDialog, QLabel,
+    QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFileDialog, QHBoxLayout, QFrame, QInputDialog, QLabel,
     QListWidget, QListWidgetItem, QMenu, QMessageBox, QPlainTextEdit, QPushButton, QScrollArea,
     QSizePolicy, QStackedWidget, QTabBar, QTabWidget, QTextBrowser, QVBoxLayout, QWidget,
 )
@@ -53,6 +54,63 @@ def _elide(text: str, size: int) -> str:
     return text if len(text) <= size else text[: size - 1] + "…"
 
 
+#: A QScrollArea's viewport paints the palette's Window colour, which is a
+#: different grey from the panel's own background - make both see-through.
+_TRANSPARENT_SCROLL = ("QScrollArea { background: transparent; border: none; }"
+                       " QScrollArea > QWidget > QWidget { background: transparent; }")
+
+
+def _style_markdown(document, m) -> None:
+    """Qt turns markdown headings into large fixed-size text; scale them to a
+    side panel (and keep them bold) after the document is set."""
+    sizes = {1: m.text_lg, 2: m.text + 1, 3: m.text, 4: m.text, 5: m.text_sm, 6: m.text_sm}
+    block = document.begin()
+    while block.isValid():
+        level = block.blockFormat().headingLevel()
+        if level:
+            cursor = QTextCursor(block)
+            cursor.select(QTextCursor.SelectionType.BlockUnderCursor)
+            fmt = QTextCharFormat()
+            # Qt marks markdown headings with a relative size adjustment that
+            # wins over any explicit size; zero it, then set a real one.
+            fmt.setProperty(QTextFormat.Property.FontSizeAdjustment, 0)
+            fmt.setProperty(QTextFormat.Property.FontPixelSize, sizes.get(level, m.text))
+            fmt.setFontWeight(700)
+            cursor.mergeCharFormat(fmt)
+        block = block.next()
+
+
+class _ElidedLabel(QLabel):
+    """One line of plain text that shortens itself to the width it is given,
+    instead of demanding the width of its text (which is what pushes a narrow
+    panel wider than its column)."""
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._full = ""
+        self.setTextFormat(Qt.TextFormat.PlainText)
+        self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+
+    def set_full_text(self, text: str) -> None:
+        self._full = text
+        self.setToolTip(text)
+        self._fit()
+
+    def minimumSizeHint(self):  # noqa: N802
+        hint = super().minimumSizeHint()
+        hint.setWidth(0)
+        return hint
+
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        self._fit()
+
+    def _fit(self) -> None:
+        width = max(10, self.width())
+        self.setText(QFontMetrics(self.font()).elidedText(
+            " ".join(self._full.split()), Qt.TextElideMode.ElideRight, width))
+
+
 class TeamPanel(QWidget):
     configure_requested = Signal()
 
@@ -67,6 +125,9 @@ class TeamPanel(QWidget):
         self._last_event_seq = 0
         self._viewer_ids: list[str] = []
         self._announced: tuple | None = None
+        self._test_note = ""
+        self._test_ok = True
+        self._web_available = False
         self._viewer_mission = -1
         self._provider_ready = True
         m = theme.METRICS
@@ -74,31 +135,47 @@ class TeamPanel(QWidget):
         self._c = theme.palette_for(QApplication.instance())
         c = self._c
 
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
+        # Everything lives in one vertical scroll area: when the window is short
+        # the panel scrolls instead of letting rows draw over each other.
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        self._scroll = QScrollArea(self)
+        self._scroll.setWidgetResizable(True)
+        self._scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._scroll.setStyleSheet(_TRANSPARENT_SCROLL)
+        body = QWidget(self._scroll)
+        body.setAutoFillBackground(False)
+        self._scroll.setWidget(body)
+        outer.addWidget(self._scroll)
+        layout = QVBoxLayout(body)
+        layout.setContentsMargins(0, 0, m.space_1, 0)
         layout.setSpacing(m.space_2)
 
-        # Honest environment line: provider/model, then what the team can and cannot do.
-        self.env = QLabel(self)
+        # Honest, compact environment: model on line one, capabilities on line two.
+        self.env = QLabel(body)
         self.env.setWordWrap(True)
         self.env.setTextFormat(Qt.TextFormat.RichText)
         self.env.setOpenExternalLinks(False)
         self.env.setAccessibleName("Team environment")
+        self.env.linkActivated.connect(self._on_env_link)
+        self._theme_links(self.env)
         layout.addWidget(self.env)
-        self.configure_button = QPushButton("Configure AI Agent…", self)
+        self.configure_button = QPushButton("Configure AI Agent…", body)
         self.configure_button.setProperty("kind", "chip")
         self.configure_button.clicked.connect(self.configure_requested.emit)
         layout.addWidget(self.configure_button, 0, Qt.AlignmentFlag.AlignLeft)
 
-        self.top_tabs = QTabBar(self)
+        self.top_tabs = QTabBar(body)
         self.top_tabs.addTab("Mission")
         self.top_tabs.addTab("History")
         self.top_tabs.setExpanding(True)
         self.top_tabs.setDrawBase(False)
+        self.top_tabs.setStyleSheet("QTabBar::tab { min-width: 0px; padding: 4px 8px; }")
         self.top_tabs.currentChanged.connect(self._on_top_tab)
         layout.addWidget(self.top_tabs)
 
-        self.pages = QStackedWidget(self)
+        self.pages = QStackedWidget(body)
         layout.addWidget(self.pages, 1)
         self.pages.addWidget(self._build_compose())
         self.pages.addWidget(self._build_run())
@@ -106,9 +183,19 @@ class TeamPanel(QWidget):
 
         controller.changed.connect(self.refresh)
         controller.history_changed.connect(self._refresh_history)
+        controller.environment_changed.connect(self._refresh_env)
         self._refresh_env()
         self._refresh_history()
         self.refresh()
+
+    def _link_css(self) -> str:
+        return f"<style>a {{ color: {self._c.accent}; text-decoration: none; }}</style>"
+
+    def _theme_links(self, label: QLabel) -> None:
+        palette = label.palette()
+        palette.setColor(QPalette.ColorRole.Link, QColor(self._c.accent))
+        palette.setColor(QPalette.ColorRole.LinkVisited, QColor(self._c.accent))
+        label.setPalette(palette)
 
     # ------------------------------------------------------------------ build
     def _build_compose(self) -> QWidget:
@@ -192,6 +279,10 @@ class TeamPanel(QWidget):
         self.compose_error.hide()
         box.addWidget(self.compose_error)
 
+        self.web_check = QCheckBox("Search the web", page)
+        self.web_check.setChecked(True)
+        box.addWidget(self.web_check)
+
         self.start_button = QPushButton("Start team", page)
         self.start_button.setProperty("kind", "primary")
         self.start_button.clicked.connect(self._start)
@@ -210,18 +301,12 @@ class TeamPanel(QWidget):
         box.setContentsMargins(0, 0, 0, 0)
         box.setSpacing(m.space_2)
 
-        self.run_goal = QLabel("", page)
-        self.run_goal.setWordWrap(True)
+        head = QHBoxLayout()
+        head.setSpacing(m.space_1)
+        self.run_goal = _ElidedLabel(page)
         # The goal is free text (and may quote a web page): never interpret it as markup.
-        self.run_goal.setTextFormat(Qt.TextFormat.PlainText)
         self.run_goal.setStyleSheet(f"color:{c.text}; font-weight:600;")
-        box.addWidget(self.run_goal)
-        self.run_status = QLabel("", page)
-        self.run_status.setWordWrap(True)
-        self.run_status.setTextFormat(Qt.TextFormat.RichText)
-        box.addWidget(self.run_status)
-
-        controls = FlowLayout(spacing=m.space_1)
+        head.addWidget(self.run_goal, 1)
         self.cancel_button = QPushButton("Cancel", page)
         self.cancel_button.setProperty("kind", "danger")
         self.cancel_button.clicked.connect(self._controller.cancel)
@@ -229,12 +314,17 @@ class TeamPanel(QWidget):
         self.retry_button.setProperty("kind", "chip")
         self.retry_button.setToolTip("Continue from where it stopped; finished work is kept")
         self.retry_button.clicked.connect(self._retry)
-        self.new_button = QPushButton("New mission", page)
+        self.new_button = QPushButton("New", page)
         self.new_button.setProperty("kind", "chip")
+        self.new_button.setToolTip("Start another mission")
         self.new_button.clicked.connect(self._new_mission)
         for button in (self.cancel_button, self.retry_button, self.new_button):
-            controls.addWidget(button)
-        box.addLayout(controls)
+            head.addWidget(button)
+        box.addLayout(head)
+        self.run_status = QLabel("", page)
+        self.run_status.setWordWrap(True)
+        self.run_status.setTextFormat(Qt.TextFormat.RichText)
+        box.addWidget(self.run_status)
 
         self.run_tabs = QTabWidget(page)
         # Four short labels must fit a 300px column: the global tab style has a
@@ -242,7 +332,9 @@ class TeamPanel(QWidget):
         self.run_tabs.setUsesScrollButtons(False)
         self.run_tabs.tabBar().setExpanding(True)
         self.run_tabs.setElideMode(Qt.TextElideMode.ElideRight)
-        self.run_tabs.setStyleSheet("QTabBar::tab { min-width: 0px; padding: 6px 6px; }")
+        self.run_tabs.setStyleSheet("QTabBar::tab { min-width: 0px; padding: 4px 6px; }"
+                                    " QTabWidget::pane { background: transparent; border: none; }")
+        self.run_tabs.setMinimumHeight(300)
         self.run_tabs.addTab(self._scroll_into("agents"), "Agents")
         self.run_tabs.addTab(self._scroll_into("tasks"), "Tasks")
         activity = QTextBrowser(page)
@@ -259,6 +351,7 @@ class TeamPanel(QWidget):
         area = QScrollArea(self)
         area.setWidgetResizable(True)
         area.setFrameShape(QFrame.Shape.NoFrame)
+        area.setStyleSheet(_TRANSPARENT_SCROLL)
         holder = QWidget(area)
         inner = QVBoxLayout(holder)
         inner.setContentsMargins(0, self._m.space_1, 0, 0)
@@ -270,7 +363,7 @@ class TeamPanel(QWidget):
         return area
 
     def _build_results(self) -> QWidget:
-        m = self._m
+        m, c = self._m, self._c
         page = QWidget(self)
         box = QVBoxLayout(page)
         box.setContentsMargins(0, m.space_1, 0, 0)
@@ -281,27 +374,52 @@ class TeamPanel(QWidget):
         self.viewer_choice.setMinimumContentsLength(12)
         self.viewer_choice.currentIndexChanged.connect(self._show_selected)
         box.addWidget(self.viewer_choice)
+        self.saved_note = QLabel("", page)
+        self.saved_note.setWordWrap(True)
+        self.saved_note.setStyleSheet(f"color:{c.success}; font-size:{m.text_xs}px;")
+        self.saved_note.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.saved_note.hide()
+        box.addWidget(self.saved_note)
         self.viewer = QTextBrowser(page)
         self.viewer.setProperty("kind", "flat")
         self.viewer.setOpenExternalLinks(False)
         self.viewer.setOpenLinks(False)
         self.viewer.setAccessibleName("Result")
+        self.viewer.setMinimumHeight(150)
+        # Markdown headings default to page-sized type; scale them to a side panel.
+        self.viewer.document().setDefaultStyleSheet(
+            f"h1 {{ font-size: {m.text_lg}px; }} h2 {{ font-size: {m.text + 1}px; }} "
+            f"h3, h4 {{ font-size: {m.text}px; }} body, p, li, td {{ font-size: {m.text_sm}px; }} "
+            f"pre, code {{ font-size: {m.text_xs}px; }}")
         self.viewer.anchorClicked.connect(self._open_link)
         box.addWidget(self.viewer, 1)
+
+        # Wraps rather than forcing the panel wider than a narrow column.
         actions = FlowLayout(spacing=m.space_1)
-        self.save_button = QPushButton("Save…", page)
+        self.save_button = QPushButton("Save to Downloads", page)
+        self.save_button.setProperty("kind", "chip")
+        self.save_button.setToolTip("Saves into your Downloads folder and lists it in the Downloads window (Ctrl+J)")
         self.save_button.clicked.connect(self._save_current)
         self.copy_button = QPushButton("Copy", page)
+        self.copy_button.setProperty("kind", "chip")
         self.copy_button.clicked.connect(self._copy_current)
-        self.save_files_button = QPushButton("Save all files…", page)
-        self.save_files_button.clicked.connect(self._save_all_files)
-        self.apply_button = QPushButton("Apply to workspace…", page)
-        self.apply_button.setToolTip("Shows each change first; nothing is written until you confirm")
-        self.apply_button.clicked.connect(self._apply_to_workspace)
-        for button in (self.save_button, self.copy_button, self.save_files_button, self.apply_button):
-            button.setProperty("kind", "chip")
+        self.more_button = QPushButton("More", page)
+        self.more_button.setProperty("kind", "chip")
+        menu = QMenu(self.more_button)
+        self.save_as_action = menu.addAction("Save as\u2026")
+        self.save_as_action.triggered.connect(self._save_current_as)
+        self.save_files_action = menu.addAction("Save all files to Downloads")
+        self.save_files_action.triggered.connect(self._save_all_files)
+        self.more_button.setMenu(menu)
+        self._more_menu = menu
+        for button in (self.save_button, self.copy_button, self.more_button):
             actions.addWidget(button)
         box.addLayout(actions)
+        self.apply_button = QPushButton("Apply to workspace\u2026", page)
+        self.apply_button.setProperty("kind", "primary")
+        self.apply_button.setToolTip("Shows each change first; nothing is written until you confirm")
+        self.apply_button.clicked.connect(self._apply_to_workspace)
+        box.addWidget(self.apply_button)
         return page
 
     def _build_history(self) -> QWidget:
@@ -311,6 +429,9 @@ class TeamPanel(QWidget):
         box.setContentsMargins(0, 0, 0, 0)
         box.setSpacing(m.space_2)
         self.history_list = QListWidget(page)
+        self.history_list.setMinimumHeight(200)
+        self.history_list.setStyleSheet(
+            f"QListWidget::item {{ padding: 6px 4px; border-bottom: 1px solid {self._c.line}; }}")
         self.history_list.setWordWrap(True)
         self.history_list.setAccessibleName("Saved missions")
         self.history_list.itemDoubleClicked.connect(lambda _i: self._open_history())
@@ -335,24 +456,86 @@ class TeamPanel(QWidget):
         c = self._c
         status = self._controller.provider_status()
         sandbox = self._controller.sandbox_status()
-        caps = [
-            "Search: local knowledge only" if self._controller._knowledge is not None
-            and getattr(self._controller._knowledge, "enabled", False) else "Web search: unavailable",
-            f"Execution: {'sandboxed' if sandbox.available else 'unavailable'}"
-            + (" (no network isolation)" if sandbox.available and not sandbox.network_isolated else ""),
-        ]
+        web = self._controller.web_status()
+        knowledge = self._controller._knowledge
+        muted = c.muted
         if status.available:
-            head = (f"<span style='color:{c.success}'>●</span> <b>{escape(status.label)}</b> "
-                    f"· {escape(status.model)}")
+            first = (f"<span style='color:{c.success}'>\u25cf</span> <b>{escape(status.label)}</b> "
+                     f"\u00b7 {escape(status.model)} \u00b7 <a href='test'>Test</a> \u00b7 "
+                     "<a href='settings'>Settings</a>")
             self.configure_button.hide()
         else:
-            head = f"<span style='color:{c.danger}'>●</span> <b>{escape(status.label)}</b> not ready"
+            first = (f"<span style='color:{c.danger}'>\u25cf</span> <b>{escape(status.label)}</b> not set up "
+                     "\u00b7 <a href='settings'>Settings</a>")
+            self.configure_button.setText(f"Set up {status.label}\u2026")
             self.configure_button.show()
-        extra = "" if status.available else f"<br>{escape(status.detail)}"
-        self.env.setText(f"{head}<br><span style='color:{c.muted}'>{escape(' · '.join(caps))}</span>{extra}")
-        self.env.setToolTip(f"Execution: {sandbox.summary()}")
+        lines = [first]
+        if not status.available:
+            lines.append(f"<span style='color:{muted}'>Add your {escape(status.label)} key to start.</span>")
+        if self._test_note:
+            tone = c.success if self._test_ok else c.danger
+            lines.append(f"<span style='color:{tone}'>{escape(self._test_note)}</span>")
+        if sandbox.checking:
+            box = "Sandbox: checking\u2026"
+        elif sandbox.available:
+            box = f"Sandbox: {escape(sandbox.backend)}"
+        else:
+            box = ("<span style='color:%s'>Sandbox: unavailable</span> (<a href='sandbox-setup'>how to enable</a>)"
+                   % c.warning)
+        known = "on" if knowledge is not None and getattr(knowledge, "enabled", False) else "off"
+        webtext = f"Web: {escape(web.label)}" if web.available else "Web: off"
+        lines.append(f"<span style='color:{muted}'>{webtext} \u00b7 Knowledge: {known} \u00b7 </span>"
+                     f"<span style='color:{muted}'>{box}</span>")
+        self.env.setText(self._link_css() + "<br>".join(lines))
+        self.env.setToolTip(f"{status.detail}\n\nExecution: {sandbox.summary()}")
         self._provider_ready = status.available
+        if status.available:
+            self.compose_error.hide()        # the warning was about a key that now exists
+        became_available = web.available and not self._web_available
+        self._web_available = web.available
+        self.web_check.setEnabled(web.available)
+        if became_available:
+            self.web_check.setChecked(True)   # configuring a provider is the opt-in; untick per mission
+        if web.available:
+            self.web_check.setText(f"Search the web ({web.label})")
+            self.web_check.setToolTip(f"Short search queries (secrets removed) are sent to {web.label}. "
+                                      "Results are labelled as web results, separate from your sources.")
+        else:
+            self.web_check.setChecked(False)
+            self.web_check.setText("Search the web (not set up)")
+            self.web_check.setToolTip(web.detail)
         self._sync_start()
+
+    def _on_env_link(self, link: str) -> None:
+        if link == "test":
+            self._run_connection_test()
+        elif link == "settings":
+            self._open_settings()
+        elif link == "sandbox-setup":
+            sandbox = self._controller.sandbox_status()
+            QMessageBox.information(
+                self, "Code sandbox", (sandbox.reason + "\n\n" if sandbox.reason else "")
+                + (sandbox.setup_hint or "No setup is needed.") +
+                "\n\nGenerated code is only ever run in a verified isolated environment; "
+                "there is no unrestricted fallback.")
+
+    def refresh_environment(self) -> None:
+        """Called after the key dialog closes: re-read the key and, if there
+        is one now, prove it works with a tiny real request."""
+        self._test_note = ""
+        self._refresh_env()
+        if self._controller.provider_status().available:
+            self._run_connection_test()
+
+    def _run_connection_test(self) -> None:
+        self._test_note, self._test_ok = "Testing the connection\u2026", True
+        self._refresh_env()
+
+        def done(ok: bool, message: str) -> None:
+            self._test_note, self._test_ok = message, ok
+            self._refresh_env()
+
+        self._controller.test_provider(done)
 
     # ------------------------------------------------------------- compose
     def _open_settings(self) -> None:
@@ -361,7 +544,7 @@ class TeamPanel(QWidget):
             return
         from app.ui.team_settings import TeamSettingsDialog
 
-        dialog = TeamSettingsDialog(settings, self)
+        dialog = TeamSettingsDialog(settings, self._controller, self)
         if dialog.exec() == QDialog.DialogCode.Accepted:
             self._refresh_env()
 
@@ -507,7 +690,8 @@ class TeamPanel(QWidget):
             self.compose_error.setText(status.detail)
             self.compose_error.show()
             return
-        mission = self._controller.start(goal, list(self._sources), self._workspace_path)
+        mission = self._controller.start(goal, list(self._sources), self._workspace_path,
+                                         web_search=self._web_available and self.web_check.isChecked())
         if mission is None:
             return
         self._sources = []
@@ -546,8 +730,7 @@ class TeamPanel(QWidget):
     def _render_run(self, mission: Mission) -> None:
         c = self._c
         active = mission.status in MissionStatus.ACTIVE
-        self.run_goal.setText(_elide(mission.goal, 220))
-        self.run_goal.setToolTip(mission.goal)
+        self.run_goal.set_full_text(mission.goal)
         colour = {MissionStatus.COMPLETED: c.success, MissionStatus.FAILED: c.danger,
                   MissionStatus.COMPLETED_WITH_ISSUES: c.warning}.get(mission.status, c.accent)
         label = MissionStatus.LABELS.get(mission.status, mission.status)
@@ -560,7 +743,7 @@ class TeamPanel(QWidget):
             text += f"<br><span style='color:{c.danger}'>{escape(mission.error)}</span>"
         elif mission.coordinator_note:
             text += f"<br><span style='color:{c.muted}'>{escape(mission.coordinator_note)}…</span>"
-        self.run_status.setText(text)
+        self.run_status.setText(self._link_css() + text)
         self.cancel_button.setVisible(active)
         self.retry_button.setVisible(mission.status in (
             MissionStatus.FAILED, MissionStatus.CANCELLED, MissionStatus.INTERRUPTED,
@@ -724,10 +907,12 @@ class TeamPanel(QWidget):
             else:
                 self.viewer_choice.setCurrentIndex(0)
             self.viewer_choice.blockSignals(False)
+        if switched:
+            self.saved_note.hide()          # a note about a save in a different mission would mislead
         self._viewer_mission = mission.id
         self._show_selected()
         files = [a for a in mission.artifacts if a.kind == ArtifactKind.FILE]
-        self.save_files_button.setVisible(bool(files))
+        self.save_files_action.setVisible(bool(files))
         pending = [a for a in files if not a.meta.get("applied")]
         self.apply_button.setVisible(bool(mission.workspace_path and pending and self._latest_files(mission)))
         if mission.final_artifact_id and self._announced != (mission.id, mission.final_artifact_id):
@@ -762,11 +947,14 @@ class TeamPanel(QWidget):
                 if diff:
                     body = f"**Proposed change to `{artifact.meta.get('path')}`**\n\n```diff\n{diff}\n```"
                 self.viewer.setMarkdown(f"### {artifact.title}\n\n{body}")
+                _style_markdown(self.viewer.document(), self._m)
             else:
                 self.viewer.setMarkdown(artifact.content)
+                _style_markdown(self.viewer.document(), self._m)
         bar.setValue(position)
         saveable = key != "__sources__"
         self.save_button.setEnabled(saveable)
+        self.save_as_action.setEnabled(saveable)
         self.copy_button.setEnabled(saveable)
 
     def _open_link(self, url) -> None:
@@ -779,17 +967,26 @@ class TeamPanel(QWidget):
         c = self._c
         if not mission.sources:
             return f"<p style='color:{c.muted}'>No pages, text or files were attached to this mission.</p>"
-        rows = []
-        for source in mission.sources:
-            if source.usable:
-                state = f"<span style='color:{c.success}'>included</span>"
-                if source.status == SourceStatus.TRUNCATED:
-                    state += " (truncated)"
-            else:
-                state = f"<span style='color:{c.danger}'>not included</span> — {escape(source.error)}"
-            link = f"<br><a href='{escape(source.url)}'>{escape(source.url)}</a>" if source.url else ""
-            rows.append(f"<p><b>[{source.id}] {escape(source.title)}</b> <i>({source.kind})</i><br>{state}{link}</p>")
-        return "".join(rows)
+        groups = (
+            ("Attached by you", [s for s in mission.sources if s.kind in SourceKind.ATTACHED]),
+            ("Found by web search (snippets, not opened pages)", [s for s in mission.sources if s.kind == SourceKind.WEB]),
+            ("From your local knowledge", [s for s in mission.sources if s.kind == SourceKind.KNOWLEDGE]),
+        )
+        out = []
+        for title, items in groups:
+            if not items:
+                continue
+            out.append(f"<h4 style='margin-bottom:2px'>{escape(title)}</h4>")
+            for source in items:
+                if source.usable:
+                    state = f"<span style='color:{c.success}'>included</span>"
+                    if source.status == SourceStatus.TRUNCATED:
+                        state += " (truncated)"
+                else:
+                    state = f"<span style='color:{c.danger}'>not included</span> \u2014 {escape(source.error)}"
+                link = f"<br><a href='{escape(source.url)}'>{escape(source.url)}</a>" if source.url else ""
+                out.append(f"<p style='margin-top:2px'><b>[{source.id}] {escape(source.title)}</b><br>{state}{link}</p>")
+        return "".join(out)
 
     def _current_artifact(self) -> Artifact | None:
         mission = self._controller.snapshot()
@@ -803,36 +1000,66 @@ class TeamPanel(QWidget):
         if artifact is not None:
             QApplication.clipboard().setText(artifact.content)
 
+    def _suggested_name(self, artifact: Artifact) -> str:
+        if artifact.kind == ArtifactKind.FILE:
+            return Path(artifact.meta.get("path") or artifact.title).name
+        stem = {ArtifactKind.FINAL: "team-result", ArtifactKind.REPORT: "team-draft",
+                ArtifactKind.NOTES: "team-research-notes", ArtifactKind.TEST_REPORT: "team-test-report",
+                ArtifactKind.REVIEW: "team-review", ArtifactKind.PLAN: "team-plan"}.get(artifact.kind, "team-output")
+        return f"{stem}-{artifact.id}.md"
+
+    def _mission_id(self) -> int:
+        mission = self._controller.snapshot()
+        return mission.id if mission else 0
+
+    def _note_saved(self, path: str) -> None:
+        self.saved_note.setText(f"Saved: {path}")
+        self.saved_note.show()
+
     def _save_current(self) -> None:
+        """Default save: into Downloads, through the Downloads manager."""
         artifact = self._current_artifact()
         if artifact is None:
             return
-        suggested = Path(artifact.meta.get("path") or "").name or (
-            "team-result.md" if artifact.kind != ArtifactKind.FILE else artifact.title)
-        path, _filter = QFileDialog.getSaveFileName(self, "Save", suggested)
-        if path:
-            Path(path).write_text(artifact.content, encoding="utf-8")
+        try:
+            self._note_saved(self._controller.save_to_downloads(
+                self._suggested_name(artifact), artifact.content, self._mission_id()))
+        except OSError as exc:
+            QMessageBox.warning(self, "Could not save", str(exc))
+
+    def _save_current_as(self) -> None:
+        artifact = self._current_artifact()
+        if artifact is None:
+            return
+        path, _filter = QFileDialog.getSaveFileName(self, "Save as", self._suggested_name(artifact))
+        if not path:
+            return
+        target = Path(path)
+        try:
+            self._note_saved(self._controller.save_to_downloads(
+                target.name, artifact.content, self._mission_id(), directory=str(target.parent), overwrite=True))
+        except OSError as exc:
+            QMessageBox.warning(self, "Could not save", str(exc))
 
     def _save_all_files(self) -> None:
         mission = self._controller.snapshot()
         if mission is None:
             return
-        files = {}
+        latest: dict[str, Artifact] = {}
         for artifact in mission.artifacts:
             if artifact.kind == ArtifactKind.FILE:
-                files[artifact.meta.get("path") or artifact.title] = artifact
-        if not files:
+                latest[artifact.meta.get("path") or artifact.title] = artifact
+        if not latest:
             return
-        folder = QFileDialog.getExistingDirectory(self, "Save generated files into this folder")
-        if not folder:
-            return
-        root = Path(folder).resolve()
-        for rel, artifact in files.items():
-            target = (root / rel).resolve()
-            if root not in target.parents:
-                continue
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text(artifact.content, encoding="utf-8")
+        slug = "".join(ch if ch.isalnum() or ch in " -_" else "" for ch in mission.goal)[:32].strip() or "mission"
+        folder = f"AI Team - {slug} (#{mission.id})"
+        try:
+            last = ""
+            for rel, artifact in latest.items():
+                last = self._controller.save_to_downloads(rel, artifact.content, mission.id, subfolder=folder)
+            self._note_saved(f"{len(latest)} file(s) in {Path(last).parent}")
+        except OSError as exc:
+            QMessageBox.warning(self, "Could not save", str(exc))
 
     def _apply_to_workspace(self) -> None:
         mission = self._controller.snapshot()

@@ -750,6 +750,9 @@ class AgentPanel(QWidget):
             self._section_tabs.setDrawBase(False)
             self._section_tabs.setAccessibleName("Panel section")
             self._section_tabs.currentChanged.connect(self._sections.setCurrentIndex)
+            # The Team tab has its own status line; the mascot header would only
+            # spend ~90px of a narrow column.
+            self._section_tabs.currentChanged.connect(lambda index: header_card.setVisible(index == 0))
             outer.addWidget(self._section_tabs)
             self.team_panel = TeamPanel(team, browser, self)
             self.team_panel.configure_requested.connect(self._open_configure)
@@ -979,9 +982,13 @@ class AgentPanel(QWidget):
             self._section_tabs.setCurrentIndex(1)
 
     def _open_configure(self) -> None:
+        """Open the existing key dialog on Groq (the Team's default provider);
+        when it closes, re-read the credential and test it."""
         configure = getattr(self.window(), "_configure_agent", None)
         if configure is not None:
-            configure()
+            configure("groq")
+        if self.team_panel is not None:
+            self.team_panel.refresh_environment()
 
     def _resync_model_badge(self) -> None:
         """Show as much of the model name as the panel's real width allows.

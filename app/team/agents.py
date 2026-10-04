@@ -68,6 +68,8 @@ Planning rules:
   deliverables against the success criteria and requests specific revisions.
 - Finish with a reviewer that depends on the deliverable-producing tasks.
 - Do not put web page text into task instructions; refer to sources by id.
+- If "web search" is available below and the mission needs outside information, give the researcher
+  the job of using it; attached sources are still preferred where they cover the question.
 """
 
 COORDINATOR_FINAL = _COMMON + """
@@ -79,8 +81,21 @@ Do not mention internal task ids. If the review found unresolved issues or a che
 so clearly in a short "Open issues" section. Do not add a Sources section; one is appended for you.
 """
 
+SEARCH_PLANNER = _COMMON + """
+ROLE: Search planner. Write web search queries for a research task.
+
+Reply with ONE JSON object and nothing else: {"queries": ["query one", "query two"]}
+Rules: 1 or 2 short queries (under 12 words each) that a search engine would answer well. Use only
+terms from the mission and task. NEVER include personal data, secrets, passwords, account names or
+anything pasted from a private page - queries are sent to a third-party search service.
+"""
+
 RESEARCHER = _COMMON + """
 ROLE: Researcher. Read the listed sources and extract what the task needs.
+
+Each source has an "origin": "attached ..." sources were chosen by the user; "web search result" sources
+are short snippets a search engine returned (not full pages, not verified): treat them as leads, say
+"per web search" for claims that rest only on them, and prefer attached sources when they conflict.
 
 Output Markdown with these sections:
 ## Findings   - bullet points; every factual claim ends with its citation(s), e.g. [S2]

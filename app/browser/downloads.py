@@ -150,6 +150,44 @@ class DownloadManager(QObject):
         self.started.emit(item)
         return item
 
+    def save_generated(self, file_name: str, text: str, directory: str, origin: str,
+                       *, subfolder: str = "", overwrite: bool = False) -> DownloadItem:
+        """Write a file the application itself produced (no network request)
+        into ``directory`` and list it as a completed download, so it shows up
+        in the Downloads window beside everything else with "Show in folder".
+
+        The name is reduced to a safe relative path, an existing file is never
+        overwritten (``name (1).ext``), and the result is confined to
+        ``directory`` - a generated name can never escape it.
+        """
+        import re
+        from pathlib import Path
+
+        base = Path(directory).resolve()
+        parts = [re.sub(r'[<>:"|?*\x00-\x1f]', "_", p).strip(" .") for p in
+                 (subfolder + "/" + file_name).replace("\\", "/").split("/") if p not in ("", ".", "..")]
+        parts = [p for p in parts if p] or ["file.txt"]
+        target = base.joinpath(*parts)
+        if base != target.parent and base not in target.parents:
+            target = base / parts[-1]
+        target.parent.mkdir(parents=True, exist_ok=True)
+        candidate, counter = target, 1
+        # overwrite=True only when the user picked this exact path in a Save dialog
+        # (which already asked "replace?"); everything automatic never overwrites.
+        while candidate.exists() and not overwrite:
+            candidate = target.with_name(f"{target.stem} ({counter}){target.suffix}")
+            counter += 1
+        candidate.write_text(text, encoding="utf-8", newline="")
+        size = candidate.stat().st_size
+        download_id = self._next_id
+        self._next_id += 1
+        item = DownloadItem(id=download_id, file_name=candidate.name, directory=str(candidate.parent),
+                            url=origin, state="completed", received=size, total=size)
+        self._items[download_id] = item
+        self.started.emit(item)
+        self.finished.emit(item)
+        return item
+
     def cancel(self, download_id: int) -> bool:
         request = self._requests.get(download_id)
         if request is None:

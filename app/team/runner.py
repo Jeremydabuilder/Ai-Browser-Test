@@ -10,6 +10,7 @@ Researcher uses is marshalled to the GUI thread with ``run_sync``.
 
 from __future__ import annotations
 
+import os
 import threading
 from typing import Any, Callable
 
@@ -17,6 +18,7 @@ from PySide6.QtCore import QObject, Signal
 
 from app.gui_dispatch import GuiDispatcher, GuiDispatchShutdown
 from app.team import sandbox as sandbox_mod
+from app.team import websearch
 from app.team.engine import Capabilities, TeamEngine
 from app.team.limits import TeamLimits
 from app.team.llm import ProviderStatus, make_client_factory, resolve_provider
@@ -146,13 +148,24 @@ class TeamController(QObject):
 
     changed = Signal()
     history_changed = Signal()
+    #: The sandbox probe finished (or settings changed) - re-read the environment.
+    environment_changed = Signal()
+    #: A generated file was written through the Downloads manager (message for a notice).
+    file_saved = Signal(str)
 
     def __init__(self, store, settings=None, knowledge=None, parent: QObject | None = None,
-                 *, client_factory: Callable[[], Any] | None = None) -> None:
-        """``client_factory`` is a test seam only: when given, it replaces the
-        real provider client (and the credential check). The UI never sets it."""
+                 *, client_factory: Callable[[], Any] | None = None, downloads=None,
+                 downloads_dir: str | None = None, search_transport=None) -> None:
+        """``client_factory`` and ``search_transport`` are test seams only: they
+        replace the real provider client / search HTTP transport. The UI never
+        sets them. ``downloads`` is the profile's DownloadManager."""
         super().__init__(parent)
         self._client_factory = client_factory
+        self._downloads = downloads
+        self._downloads_dir = downloads_dir
+        self._search_transport = search_transport
+        self._sandbox_done = threading.Event()
+        self._sandbox_thread: threading.Thread | None = None
         self._store = store
         self._settings = settings
         self._knowledge = knowledge
@@ -186,16 +199,63 @@ class TeamController(QObject):
             return ProviderStatus("groq", "Test provider", "scripted", True, "injected test client")
         return resolve_provider(self._settings)
 
+    def _sandbox_params(self) -> tuple[str, str]:
+        def get(key: str, default: str) -> str:
+            try:
+                return (self._settings.get(key, "") or default).strip() or default
+            except Exception:  # noqa: BLE001
+                return default
+        return get("team_sandbox_backend", "auto"), get("team_container_image", sandbox_mod.DEFAULT_IMAGE)
+
     def sandbox_status(self) -> sandbox_mod.SandboxStatus:
-        allow = False
+        """Never blocks the GUI: returns the cached, VERIFIED status or a
+        'checking' placeholder while a background probe (which may start a
+        container) runs. ``environment_changed`` fires when it finishes."""
+        key = self._sandbox_params()
+        if self._sandbox is not None and self._sandbox_key == key:
+            return self._sandbox
+        if self._sandbox_thread is None or not self._sandbox_thread.is_alive() or self._sandbox_key != key:
+            self._sandbox_key = key
+            self._sandbox = None
+            self._sandbox_done.clear()
+            thread = threading.Thread(target=self._probe_sandbox, args=(key,), name="team-sandbox-probe")
+            self._sandbox_thread = thread
+            thread.start()
+        return sandbox_mod.checking_status()
+
+    def recheck_sandbox(self) -> None:
+        """Forget the cached probe (after installing Docker, pulling an image...)."""
+        sandbox_mod._cache.clear()
+        self._sandbox = None
+        self._sandbox_key = None
+        self.sandbox_status()
+        self.environment_changed.emit()
+
+    def _probe_sandbox(self, key: tuple[str, str]) -> None:
+        status = sandbox_mod.probe(key[0], key[1], limits=self.limits(), use_cache=False)
+        if self._closed or key != self._sandbox_key:
+            return
+        self._sandbox = status
+        self._sandbox_done.set()
         try:
-            allow = bool(self._settings.get_bool("team_allow_unisolated_execution", False))
-        except Exception:  # noqa: BLE001
-            allow = False
-        if self._sandbox is None or self._sandbox_key != allow:
-            self._sandbox = sandbox_mod.probe(allow_unisolated=allow)
-            self._sandbox_key = allow
-        return self._sandbox
+            self._dispatcher.post(self.environment_changed.emit)
+        except GuiDispatchShutdown:
+            pass
+
+    def await_sandbox(self, timeout: float = 90.0) -> sandbox_mod.SandboxStatus:
+        """For the engine thread: wait for the probe, never the GUI thread."""
+        self.sandbox_status()
+        self._sandbox_done.wait(timeout)
+        return self._sandbox or sandbox_mod.SandboxStatus(False, "the sandbox check did not finish in time")
+
+    def web_status(self) -> websearch.SearchStatus:
+        return websearch.resolve_search(self._settings)
+
+    def web_search_client(self) -> websearch.WebSearch | None:
+        status = self.web_status()
+        if not status.available:
+            return None
+        return websearch.WebSearch(status, transport=self._search_transport)
 
     def workspace_for(self, path: str) -> Workspace | None:
         if not path:
@@ -206,9 +266,12 @@ class TeamController(QObject):
             return None
 
     def capabilities(self, workspace_path: str = "") -> Capabilities:
+        web = self.web_search_client()
         return Capabilities(
-            sandbox=self.sandbox_status(), workspace=self.workspace_for(workspace_path),
-            search=knowledge_search_adapter(self._knowledge, self._dispatcher))
+            sandbox=self._sandbox or sandbox_mod.checking_status(),
+            workspace=self.workspace_for(workspace_path),
+            search=knowledge_search_adapter(self._knowledge, self._dispatcher),
+            web_search=web, web_search_note="" if web else self.web_status().detail)
 
     # -- state ------------------------------------------------------------------
     @property
@@ -224,12 +287,14 @@ class TeamController(QObject):
         return self._store.history() if self._store is not None else []
 
     # -- actions ------------------------------------------------------------------
-    def start(self, goal: str, sources: list[Source], workspace_path: str = "") -> Mission | None:
+    def start(self, goal: str, sources: list[Source], workspace_path: str = "",
+              web_search: bool = False) -> Mission | None:
         if self.is_running or self._closed:
             return None
         status = self.provider_status()
         mission = Mission(goal=goal.strip(), sources=list(sources), status=MissionStatus.PLANNING,
-                          workspace_path=workspace_path, model_label=f"{status.label} · {status.model}".strip(" ·"))
+                          workspace_path=workspace_path, web_search=web_search,
+                          model_label=f"{status.label} · {status.model}".strip(" ·"))
         if self._store is not None:
             self._store.create(mission)
         self._launch(mission, status)
@@ -309,8 +374,12 @@ class TeamController(QObject):
         thread.start()
         self.changed.emit()
 
-    @staticmethod
-    def _run(engine: TeamEngine) -> None:
+    def _run(self, engine: TeamEngine) -> None:
+        # The sandbox may still be proving itself; wait here, off the GUI thread.
+        if self._sandbox is None:
+            engine.capabilities.sandbox = self.await_sandbox()
+        else:
+            engine.capabilities.sandbox = self._sandbox
         engine.run()
 
     def _on_engine_change(self, _kind: str) -> None:
@@ -333,6 +402,89 @@ class TeamController(QObject):
         if self._engine is not None and not self._engine.running:
             self.history_changed.emit()
 
+    # -- connection tests (explicit user actions; run off the GUI thread) -----------
+    def test_provider(self, done: Callable[[bool, str], None]) -> None:
+        """One tiny real request with the configured key. ``done(ok, message)``
+        is called on the GUI thread; the message never contains the key."""
+        status = self.provider_status()
+
+        def work() -> None:
+            if not status.available:
+                result = (False, status.detail)
+            else:
+                from app.agent.openai_compatible import (
+                    GeminiClient, GroqClient, OpenAIClient, OpenRouterClient,
+                )
+                cls = {"groq": GroqClient, "openai": OpenAIClient, "openrouter": OpenRouterClient,
+                       "gemini": GeminiClient}.get(status.provider)
+                if cls is None:
+                    result = (False, f"Cannot test provider '{status.provider}'.")
+                else:
+                    ok, message = cls.test_connection(status.secret, status.model)
+                    result = (ok, websearch_safe(message, status.secret))
+            self._post(lambda: done(*result))
+
+        threading.Thread(target=work, name="team-test-provider", daemon=True).start()
+
+    def test_search(self, done: Callable[[bool, str], None]) -> None:
+        client = self.web_search_client()
+
+        def work() -> None:
+            if client is None:
+                result = (False, self.web_status().detail)
+            else:
+                try:
+                    hits = client.search("PyBrowser connection test", 1)
+                    result = (True, f"{client.label} answered ({len(hits)} result).")
+                except websearch.SearchError as exc:
+                    result = (False, exc.message)
+            self._post(lambda: done(*result))
+
+        threading.Thread(target=work, name="team-test-search", daemon=True).start()
+
+    def pull_sandbox_image(self, done: Callable[[bool, str], None]) -> None:
+        image = self._sandbox_params()[1]
+
+        def work() -> None:
+            ok, message = sandbox_mod.pull_image(image)
+            self._post(lambda: (self.recheck_sandbox(), done(ok, message)))
+
+        threading.Thread(target=work, name="team-pull-image", daemon=True).start()
+
+    def _post(self, fn: Callable[[], None]) -> None:
+        try:
+            self._dispatcher.post(fn)
+        except GuiDispatchShutdown:
+            pass
+
+    # -- generated files -> the existing Downloads system ------------------------------
+    def _download_directory(self) -> str:
+        if self._downloads_dir:
+            return self._downloads_dir
+        from app.config import downloads_path
+
+        return str(downloads_path())
+
+    def save_to_downloads(self, file_name: str, text: str, mission_id: int = 0, *,
+                          subfolder: str = "", directory: str | None = None, overwrite: bool = False) -> str:
+        """Write a generated file via DownloadManager (so it appears in the
+        Downloads window). Returns the full path. Falls back to a plain write
+        only when the window has no download manager (tests, embedding)."""
+        origin = f"pybrowser://ai-team/{mission_id}"
+        target_dir = directory or self._download_directory()
+        if self._downloads is not None:
+            item = self._downloads.save_generated(file_name, text, target_dir, origin, subfolder=subfolder,
+                                                  overwrite=overwrite)
+            path = os.path.join(item.directory, item.file_name)
+        else:
+            from app.browser.downloads import DownloadManager
+
+            item = DownloadManager.save_generated(_Standalone(), file_name, text, target_dir, origin,
+                                                  subfolder=subfolder, overwrite=overwrite)
+            path = os.path.join(item.directory, item.file_name)
+        self.file_saved.emit(f"Saved {item.file_name} to {item.directory} \u2014 see Downloads (Ctrl+J)")
+        return path
+
     def shutdown(self) -> None:
         """Stop the run and the dispatcher. Safe to call twice."""
         if self._closed:
@@ -343,3 +495,23 @@ class TeamController(QObject):
         self._dispatcher.shutdown()
         if self._thread is not None:
             self._thread.join(timeout=8)
+
+
+class _Standalone:
+    """Just enough of DownloadManager for save_generated when no window owns one."""
+
+    def __init__(self) -> None:
+        self._items: dict = {}
+        self._next_id = 1
+
+        class _Sig:
+            def emit(self, *_a) -> None:
+                pass
+        self.started = _Sig()
+        self.finished = _Sig()
+
+
+def websearch_safe(message: str, secret: str) -> str:
+    from app.team.llm import redact
+
+    return redact(message, secret)

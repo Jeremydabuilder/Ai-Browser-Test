@@ -38,6 +38,7 @@ from app.team.model import (
     AgentId, Artifact, ArtifactKind, Event, EventKind, Mission, MissionStatus, Source,
     SourceKind, SourceStatus, Task, TaskStatus,
 )
+from app.team.websearch import SearchError, SearchErrorKind, WebSearch
 from app.team.workspace import Workspace, WorkspaceError
 
 SearchFn = Callable[[str], "list[dict[str, str]]"]
@@ -52,13 +53,24 @@ class Capabilities:
     #: Searches the user's local knowledge index (history, missions, highlights,
     #: PDFs, files). Returns [{"title", "url", "excerpt"}]. None = unavailable.
     search: SearchFn | None = None
+    #: A configured web search API client (Tavily / Brave). None = not set up.
+    web_search: WebSearch | None = None
+    #: Why web search is not available, for the user and the planner.
+    web_search_note: str = ""
 
-    def describe(self) -> list[str]:
+    def describe(self, *, web_enabled: bool = True) -> list[str]:
+        if self.web_search is not None and web_enabled:
+            web = (f"web search: {self.web_search.label} is available (short search queries are sent to "
+                   f"{self.web_search.label}; results are snippets with URLs, kept distinct from attached sources)")
+        elif self.web_search is not None:
+            web = "web search: configured but turned off for this mission"
+        else:
+            web = ("web search: unavailable" + (f" ({self.web_search_note})" if self.web_search_note else "")
+                   + "; the Researcher works only from attached sources")
         lines = [
-            "web search: unavailable (the browser has no search tool the team can call); "
-            "the Researcher works only from the attached sources"
-            if self.search is None else
-            "search: local knowledge index only (your history, missions, highlights, files) - not the open web",
+            web,
+            "local knowledge search: " + ("available (your history, missions, highlights, files)"
+                                          if self.search is not None else "unavailable"),
             f"execution: {self.sandbox.summary()}",
             (f"workspace: authorized folder {self.workspace.root.name!r} (read; edits are proposals the user must apply)"
              if self.workspace else
@@ -268,7 +280,7 @@ class TeamEngine:
         execution = self.capabilities.sandbox.available
         system = agent_defs.COORDINATOR_PLAN.replace("{max_tasks}", str(self.limits.max_tasks))
         user = (f"MISSION (from the user):\n{m.goal}\n\nSOURCES (contents not shown; reference by id):\n"
-                f"{self._manifest()}\n\nCAPABILITIES:\n- " + "\n- ".join(self.capabilities.describe()))
+                f"{self._manifest()}\n\nCAPABILITIES:\n- " + "\n- ".join(self.capabilities.describe(web_enabled=m.web_search)))
         reply = self._llm.complete(system, user, agent=AgentId.COORDINATOR)
         plan = None
         error = ""
@@ -317,17 +329,26 @@ class TeamEngine:
             m.limitations = [x for x in m.limitations if not x.startswith("[capability] ")]
             agents = {t.agent for t in m.tasks}
             if AgentId.RESEARCHER in agents:
-                if caps.search is None:
+                web_on = m.web_search and caps.web_search is not None
+                if web_on:
                     m.limitations.append(
-                        "[capability] Web search is unavailable (the browser has no search tool the team can "
-                        "call); research uses only the attached sources.")
+                        f"[capability] Web results come from {caps.web_search.label} search snippets (title, URL "
+                        "and excerpt); the pages themselves were not opened, so treat them as leads.")
+                elif caps.web_search is not None:
+                    m.limitations.append("[capability] Web search was turned off for this mission; research "
+                                         "uses only the attached sources.")
                 else:
                     m.limitations.append(
-                        "[capability] Web search is unavailable; the Researcher also searched your local "
-                        "knowledge index (history, missions, highlights, files) - not the open web.")
-                if not any(s.usable for s in m.sources) and caps.search is None:
+                        "[capability] Web search is unavailable"
+                        + (f" ({caps.web_search_note})" if caps.web_search_note else "")
+                        + "; research uses only the attached sources.")
+                if caps.search is not None:
                     m.limitations.append(
-                        "[capability] No usable sources were attached and no search is available, so research "
+                        "[capability] The Researcher also searched your local knowledge index (history, "
+                        "missions, highlights, files) - not the open web.")
+                if not any(s.usable for s in m.sources) and caps.search is None and not web_on:
+                    m.limitations.append(
+                        "[capability] No usable sources were attached and no search was used, so research "
                         "is unverified model knowledge.")
             if AgentId.CODER in agents:
                 if caps.workspace is None:
@@ -338,9 +359,6 @@ class TeamEngine:
                     m.limitations.append(
                         "[capability] Tests were not run: no isolated execution environment is available "
                         f"({caps.sandbox.reason}).")
-                elif not caps.sandbox.network_isolated:
-                    m.limitations.append(
-                        "[capability] Checks ran WITHOUT network isolation (you opted in to this).")
 
     @staticmethod
     def _render_plan(plan) -> str:
@@ -653,8 +671,10 @@ class TeamEngine:
             size = source_chars or share
             for source in sources:
                 parts.append(wrap_untrusted(
-                    {"id": source.id, "title": source.title, "url": source.url, "text": _clip(source.text, size)},
-                    provenance=Provenance.WEBPAGE if source.kind == SourceKind.TAB else Provenance.FILE,
+                    {"id": source.id, "origin": source.origin_label, "title": source.title,
+                     "url": source.url, "text": _clip(source.text, size)},
+                    provenance=(Provenance.WEBPAGE if source.kind in (SourceKind.TAB, SourceKind.WEB)
+                                else Provenance.FILE),
                     source=source.url or source.title))
         if extra:
             parts.append(extra)
@@ -703,8 +723,58 @@ class TeamEngine:
                     f"Searched local knowledge for \"{_short(query, 60)}\": {added} new excerpt(s).")
         return new_sources
 
+    def _plan_queries(self, task: Task) -> list[str]:
+        """Ask the model for 1-2 short queries - from the mission and task
+        wording only, never from page contents. Falls back to the task title."""
+        assert self._llm is not None
+        fallback = [f"{task.title} {self.mission.goal}"[:120]]
+        user = (f"MISSION (from the user): {self.mission.goal}\n\nRESEARCH TASK: {task.title}\n"
+                f"{task.instructions}")
+        try:
+            data = agent_defs.extract_json(
+                self._llm.complete(agent_defs.SEARCH_PLANNER, user, agent=AgentId.RESEARCHER).text)
+            queries = [" ".join(str(q).split())[:120] for q in (data.get("queries") or []) if str(q).strip()]
+        except OutputError:
+            return fallback
+        return queries[:2] or fallback
+
+    def _web_search_for(self, task: Task, token: CancelToken) -> list[Source]:
+        web = self.capabilities.web_search
+        if web is None or not self.mission.web_search:
+            return []
+        added: list[Source] = []
+        for query in self._plan_queries(task):
+            token.raise_if_cancelled()
+            try:
+                results = web.search(query)
+            except SearchError as exc:
+                self._event(AgentId.RESEARCHER, EventKind.WARNING, f"Web search failed: {exc.message}")
+                with self._lock:
+                    note = f"[capability] Web search failed ({exc.message}); research may be incomplete."
+                    if note not in self.mission.limitations:
+                        self.mission.limitations.append(note)
+                if exc.kind in (SearchErrorKind.AUTH, SearchErrorKind.QUOTA, SearchErrorKind.NO_CREDENTIAL):
+                    break
+                continue
+            fresh = 0
+            with self._lock:
+                known = {s.url for s in self.mission.sources if s.url}
+                for result in results:
+                    if result.url in known or not result.snippet:
+                        continue
+                    numbers = [int(x.id[1:]) for x in self.mission.sources if x.id[1:].isdigit()]
+                    source = Source(f"S{max(numbers, default=0) + 1}", SourceKind.WEB, result.title,
+                                    result.url, result.snippet, SourceStatus.INCLUDED)
+                    self.mission.sources.append(source)
+                    added.append(source)
+                    known.add(result.url)
+                    fresh += 1
+            self._event(AgentId.RESEARCHER, EventKind.TOOL,
+                        f"Web search ({web.label}): \"{_short(query, 70)}\" -> {fresh} new result(s).")
+        return added
+
     def _do_research(self, task: Task, token: CancelToken, degraded) -> _Outcome:
-        found = self._search_for(task)
+        found = self._search_for(task) + self._web_search_for(task, token)
         sources = self._sources_for(task, default_all=True)
         sources += [s for s in found if s.id not in {x.id for x in sources}]
         extra = "" if sources else (
@@ -1033,14 +1103,25 @@ class TeamEngine:
         for artifact in deliverables:
             cited |= set(artifact.meta.get("cited", []))
         out: list[str] = []
+        def line(s) -> str:
+            return f"- [{s.id}] {s.title}" + (f" - {s.url}" if s.url else "")
+
         used = [s for s in m.sources if s.id in cited]
-        if used:
-            out.append("\n## Sources")
-            out += [f"- [{s.id}] {s.title}" + (f" - {s.url}" if s.url else "") for s in used]
+        groups = (
+            ("Sources", "attached by you", [s for s in used if s.kind in SourceKind.ATTACHED]),
+            ("Web search results", "found by the Researcher via web search - snippets, not opened pages",
+             [s for s in used if s.kind == SourceKind.WEB]),
+            ("Local knowledge", "from your own history, missions and files",
+             [s for s in used if s.kind == SourceKind.KNOWLEDGE]),
+        )
+        for title, note, items in groups:
+            if items:
+                out.append(f"\n## {title}\n_{note}_")
+                out += [line(s) for s in items]
         other = [s for s in m.sources if s.usable and s.id not in cited]
         if other:
             out.append("\n## Included but not cited")
-            out += [f"- [{s.id}] {s.title}" + (f" - {s.url}" if s.url else "") for s in other]
+            out += [line(s) + f" ({s.origin_label})" for s in other]
         blocked = [s for s in m.sources if not s.usable]
         if blocked:
             out.append("\n## Could not be read")

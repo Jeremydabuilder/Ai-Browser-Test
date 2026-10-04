@@ -162,7 +162,10 @@ class MainWindow(QMainWindow):
         from app.storage.team_store import TeamStore
         from app.team.runner import TeamController
 
-        self.team = TeamController(TeamStore(database), self.settings, self.knowledge_index, parent=self)
+        self.team = TeamController(TeamStore(database), self.settings, self.knowledge_index, parent=self,
+                                   downloads=profile.downloads)
+        # Generated files go through the same Downloads system as everything else.
+        self.team.file_saved.connect(lambda message: self.notice.show_message(message))
         #: MCP client core (Phase 1, read-only). Owned here for the same
         #: reason as Missions: it must outlive the agent panel and every
         #: rebuilt AgentSession, and connections should stay live across a
@@ -2824,10 +2827,11 @@ class MainWindow(QMainWindow):
 
         self.controller.open_tab(url, background=True).then(after_open)
 
-    def _configure_agent(self) -> None:
+    def _configure_agent(self, provider: str | None = None) -> None:
         from app.ui.agent_setup import ApiKeyDialog
 
-        ApiKeyDialog(self, self.settings).exec()
+        ApiKeyDialog(self, self.settings, initial_provider=provider
+                     if isinstance(provider, str) else None).exec()
         self._apply_agent_settings()
 
     def _show_diagnostics(self) -> None:
