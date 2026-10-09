@@ -67,6 +67,20 @@ class PureRules(unittest.TestCase):
         same = tr.diff_markdown(m.artifact("A6"), Artifact("A9", ArtifactKind.FINAL, "t", "final v1", "x", ""))
         self.assertIn("No text changes", same)
 
+    def test_diff_html_wraps_and_marks_added_and_removed_lines(self) -> None:
+        from app.ui import theme
+        m = self.mission()
+        page = tr.diff_html(m.artifact("A2"), m.artifact("A3"), theme.LIGHT)
+        self.assertIn("2 line(s) added, 1 removed", page)
+        self.assertIn("pre-wrap", page)
+        self.assertIn("<s>old draft</s>", page)
+        self.assertIn("new draft", page)
+        self.assertIn(theme.LIGHT.danger_soft, page)
+        self.assertIn("No text changes", tr.diff_html(m.artifact("A6"), Artifact("A9", ArtifactKind.FINAL, "t",
+                                                                                "final v1", "x", ""), theme.DARK))
+        self.assertIn("&lt;script&gt;", tr.diff_html(m.artifact("A2"), art(8, ArtifactKind.REPORT, "d", "<script>"),
+                                                     theme.LIGHT))                      # content is escaped
+
     def test_banner_states_only_facts_in_the_mission(self) -> None:
         m = self.mission()
         banner = tr.answer_banner(m)

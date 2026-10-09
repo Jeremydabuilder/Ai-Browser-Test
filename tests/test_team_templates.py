@@ -164,5 +164,55 @@ class PanelTemplates(TeamUITestCase):
         self.assertIn("(edited)", self.panel.template_note.text())
 
 
+class EverydayUsability(TeamUITestCase):
+    def test_progress_text_comes_from_what_is_actually_running(self) -> None:
+        import threading
+        gate = threading.Event()
+        client = happy_client()
+        client.hold = {"writer": gate}
+        self.build(client)
+        try:
+            self.start_mission()
+            self.assertTrue(wait_for(lambda: "writer" in client.entered))
+            pump(15)
+            text = self.panel.run_status.text()
+            self.assertRegex(text, r"Now: Writer on T2 since \d\d:\d\d:\d\d")
+            self.assertNotIn("%", text)                                     # no invented percentages
+            self.assertEqual(self.panel.progress.value(), 1)                # exactly the finished-task count
+            self.assertEqual(self.panel.progress.maximum(), 3)
+        finally:
+            gate.set()
+        self.assertTrue(wait_for(lambda: self.controller.snapshot().status == MissionStatus.COMPLETED))
+        pump(10)
+        self.assertNotIn("Now:", self.panel.run_status.text())
+
+    def test_unfinished_tasks_describe_what_they_will_do_and_finished_ones_what_they_handed_over(self) -> None:
+        self.build()
+        self.start_mission()
+        self.assertTrue(wait_for(lambda: self.controller.snapshot().status == MissionStatus.COMPLETED))
+        pump(10)
+        self.panel.run_tabs.setCurrentIndex(0)
+        cards = " ".join(self.panel._agents_box.itemAt(i).widget().text()
+                         for i in range(self.panel._agents_box.count() - 1))
+        self.assertIn("task(s) finished", cards)
+
+    def test_ctrl_enter_starts_a_mission_from_the_keyboard(self) -> None:
+        from PySide6.QtCore import Qt
+        from PySide6.QtTest import QTest
+        self.build()
+        self.panel.goal.setPlainText("Compare the products")
+        self.panel.goal.setFocus()
+        pump()
+        QTest.keyClick(self.panel.goal, Qt.Key.Key_Return, Qt.KeyboardModifier.ControlModifier)
+        self.assertTrue(wait_for(lambda: self.controller.snapshot() is not None))
+
+    def test_activity_has_an_honest_empty_state(self) -> None:
+        self.build()
+        mission = Mission(goal="g", status=MissionStatus.PLANNING)
+        self.controller._view = mission
+        self.panel.refresh()
+        self.assertIn("Nothing has happened yet", self.panel.activity.placeholderText())
+
+
 if __name__ == "__main__":
     unittest.main()

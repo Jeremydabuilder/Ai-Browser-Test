@@ -163,6 +163,33 @@ def diff_markdown(old: Artifact, new: Artifact) -> str:
             "```diff\n" + "\n".join(lines) + "\n```")
 
 
+def diff_html(old: Artifact, new: Artifact, palette) -> str:
+    """The same line diff as readable HTML that wraps in a narrow panel: removed lines struck on a red
+    tint, added lines on a green/accent tint, unchanged context muted. Themed from ``palette``."""
+    lines = list(difflib.unified_diff(old.content.splitlines(), new.content.splitlines(), lineterm="", n=2))
+    body = []
+    added = removed = 0
+    for line in lines[2:]:                           # skip the ---/+++ file headers
+        text = html.escape(line[1:]) or "&nbsp;"
+        if line.startswith("@@"):
+            body.append(f"<div style='color:{palette.muted};margin-top:6px'>\u2026</div>")
+        elif line.startswith("+"):
+            added += 1
+            body.append(f"<div style='background:{palette.accent_soft};color:{palette.text};white-space:pre-wrap'>"
+                        f"<b style='color:{palette.success}'>+</b> {text}</div>")
+        elif line.startswith("-"):
+            removed += 1
+            body.append(f"<div style='background:{palette.danger_soft};color:{palette.text};white-space:pre-wrap'>"
+                        f"<b style='color:{palette.danger}'>\u2212</b> <s>{text}</s></div>")
+        else:
+            body.append(f"<div style='color:{palette.muted};white-space:pre-wrap'>&nbsp;&nbsp;{text}</div>")
+    if not added and not removed:
+        return f"<p><b>No text changes</b> between {old.id} and {new.id}.</p>"
+    head = (f"<p><b>Changes from {old.id} to {new.id}:</b> {added} line(s) added, {removed} removed. "
+            f"<span style='color:{palette.muted}'>Toggle <i>Show changes</i> to read the full text.</span></p>")
+    return head + "".join(body)
+
+
 _MODE_TAG = {"answer": "Ask", "rewrite": "Rewrite", "research": "New research"}
 
 

@@ -48,6 +48,12 @@ def _fmt_time(ts: float) -> str:
     return time.strftime("%H:%M:%S", time.localtime(ts))
 
 
+def _one_line(note: str) -> str:
+    """A handoff written as bullets, shown as one readable line."""
+    parts = [line.strip().lstrip("-*\u2022 ").strip() for line in note.splitlines()]
+    return "; ".join(p.rstrip(".") for p in parts if p) or note
+
+
 def _elide(text: str, size: int) -> str:
     text = " ".join(text.split())
     return text if len(text) <= size else text[: size - 1] + "…"
@@ -218,11 +224,13 @@ class TeamPanel(QWidget):
 
         self.goal = QPlainTextEdit(page)
         self.goal.setPlaceholderText("What should the team do? e.g. “Compare the products in these tabs "
-                                     "and write a recommendation.”")
+                                     "and write a recommendation.” (Ctrl+Enter to start)")
         self.goal.setAccessibleName("Mission")
         self.goal.setMinimumHeight(84)
         self.goal.setMaximumHeight(140)
         self.goal.textChanged.connect(self._sync_start)
+        QShortcut(QKeySequence("Ctrl+Return"), self.goal, activated=self._start_if_ready)
+        QShortcut(QKeySequence("Ctrl+Enter"), self.goal, activated=self._start_if_ready)
         box.addWidget(self.goal)
 
         # Templates: an editable starting sentence, what it needs, and which agents it will use.
@@ -919,6 +927,10 @@ class TeamPanel(QWidget):
             self._sources = [s for s in self._sources if s.id != source_id]
             self._refresh_included()
 
+    def _start_if_ready(self) -> None:
+        if self.start_button.isEnabled():
+            self._start()
+
     def _start(self) -> None:
         goal = self.goal.toPlainText().strip()
         if not goal:
@@ -1052,6 +1064,10 @@ class TeamPanel(QWidget):
             text += f"<br><span style='color:{c.danger}'>{escape(mission.error)}</span>"
         elif mission.coordinator_note:
             text += f"<br><span style='color:{c.muted}'>{escape(mission.coordinator_note)}…</span>"
+        running = [t for t in mission.tasks if t.status == TaskStatus.RUNNING]
+        if active and running:
+            now = "; ".join(f"{AgentId.LABELS[t.agent]} on {t.id} since {_fmt_time(t.started_at)}" for t in running)
+            text += f"<br><span style='color:{c.muted}'>Now: {escape(now)}</span>"
         if active and mission.throttled:
             text += (f"<br><span style='color:{c.warning}'>The provider is rate-limiting, so the team is "
                      "working one task at a time.</span>")
@@ -1157,7 +1173,11 @@ class TeamPanel(QWidget):
             return c.warning, "skipped", skipped[0].error
         if mine and all(t.status == TaskStatus.CANCELLED for t in mine):
             return c.muted, "cancelled", ""
-        return c.success, "done", f"{len(done)} task(s) finished"
+        latest = max(done, key=lambda t: t.finished_at) if done else None
+        detail = f"{len(done)} task(s) finished"
+        if latest is not None and latest.summary:
+            detail += f" \u2014 {latest.id}: {latest.summary}"
+        return c.success, "done", detail
 
     def _render_agents(self, mission: Mission) -> None:
         box = self._agents_box
@@ -1189,6 +1209,9 @@ class TeamPanel(QWidget):
                     f"{escape(_elide(task.title, 70))}<br>"
                     f"<span style='color:{self._c.muted}'>{AgentId.LABELS[task.agent]} · "
                     f"{_STATUS_TEXT[task.status]}{rev} · {deps}</span>")
+            if task.instructions and task.status != TaskStatus.DONE:
+                html += (f"<br><span style='color:{self._c.muted}'>"
+                         f"{escape(_elide(task.instructions.split('REVISION REQUEST')[0], 150))}</span>")
             if task.outputs:
                 html += f"<br><span style='color:{self._c.muted}'>produced {', '.join(task.outputs)}</span>"
             if task.inputs:
@@ -1204,7 +1227,7 @@ class TeamPanel(QWidget):
                          + ", ".join(f"#{i}" for i in task.steering) + "</span>")
             if task.handoff and task.status == TaskStatus.DONE:
                 html += (f"<br><span style='color:{self._c.muted}'>handoff: "
-                         f"{escape(_elide(task.handoff, 200))}</span>")
+                         f"{escape(_elide(_one_line(task.handoff), 200))}</span>")
             if task.status == TaskStatus.PENDING and task.not_before > time.time():
                 html += (f"<br><span style='color:{self._c.warning}'>waiting for the rate limit "
                          f"(about {int(task.not_before - time.time()) + 1}s)</span>")
@@ -1225,6 +1248,9 @@ class TeamPanel(QWidget):
         if not same:
             self.activity.clear()
             self._last_event_seq = 0
+        if not mission.events:
+            self.activity.setPlaceholderText("Nothing has happened yet. Each step the team takes is listed here "
+                                             "as it happens.")
         bar = self.activity.verticalScrollBar()
         at_bottom = bar.value() >= bar.maximum() - 4
         colours = {EventKind.ERROR: c.danger, EventKind.WARNING: c.warning, EventKind.TOOL: c.accent,
@@ -1344,7 +1370,7 @@ class TeamPanel(QWidget):
             if earlier is not None:
                 self.diff_toggle.show()
             if show_diff:
-                self.viewer.setMarkdown(team_results.diff_markdown(earlier, artifact))
+                self.viewer.setHtml(team_results.diff_html(earlier, artifact, self._c))
             elif artifact.kind == ArtifactKind.FILE:
                 diff = artifact.meta.get("diff")
                 body = f"```\n{artifact.content}\n```"

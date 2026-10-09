@@ -29,7 +29,9 @@ Expect: the browser opens. (Calling `.venv\Scripts\python` directly avoids the P
    and there is a **Notes and limitations** section.
 5. Look at the status line: it shows the model calls used and how many are left (one mission is capped at
    three runs' worth). **Save to Downloads** -> the file appears in your Downloads folder and in Ctrl+J.
-6. Try **Cancel** on a second run: it stops new work at once; calls already made are not refunded.
+6. **Ask** tab: type "Which one is cheaper per year?" -> the answer says it came from existing evidence and the status line
+   shows one more model call used. Try **Rewrite the result** -> "Make it shorter"; the old version stays under **History**.
+7. Try **Cancel** on a second run: it stops new work at once; calls already made are not refunded.
 
 ## 3. Web search (optional)
 1. Team -> **Settings** -> *Web search*: choose Tavily or Brave, paste its key, **Save key**, **Test**.

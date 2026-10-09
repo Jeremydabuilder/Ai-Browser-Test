@@ -170,6 +170,45 @@ their real current assignment, the task board with dependencies, a live activity
 files and final result, plus Cancel / Retry and saved history. The whole panel scrolls, so
 nothing overlaps in a short window or a 300px column.
 
+## Templates
+
+Pick **Compare tabs**, **Research a topic**, **Study guide**, **Review code** or **Draft a report** to fill the mission box
+with an editable starting sentence. The panel then shows what the template needs (tabs, material, web search, a
+workspace, a sandbox - with a tick or cross for what is available *now* and how to fix what is not) and which agents
+it will use. Routing is enforced: a plan that uses any other agent is rejected, repaired once, then replaced by a
+fallback restricted to the allowed agents - so a study guide is just Researcher -> Writer. **Edit this template**
+saves your wording per template (Restore defaults resets it). Text you already typed is never overwritten.
+
+## Results workspace
+
+After a run the **Results** tab has views: **Answer** (the final answer, with a one-line banner stating only facts:
+cited sources, reviewer criteria met, tests, open issues, skipped tasks), **Sources** (retrieved pages vs snippets),
+**Files**, **Review**, **Tests** (or the honest reason none were run), **History** (every artifact, newest first, replaced
+ones marked) and **Ask**. Replaced versions never show as the current answer; *Show changes* compares a version with the
+one it replaced (added/removed lines). Copy, Save to Downloads, Save as, **Export as web page (.html)**. The view buttons are
+keyboard-reachable (Tab, Alt+letter).
+
+## Follow-up chat (Ask)
+
+Ask about a finished mission without starting a new one. You choose what happens - it is never guessed:
+
+* **Ask (existing evidence)** answers only from the mission's current result, review notes and sources, keeping `[S#]`
+  citations. If they do not cover it the reply begins "NOT IN EVIDENCE" and nothing new is researched.
+* **Rewrite the result** ("make it shorter") produces a new current answer from the same evidence; the old one stays in History.
+* **Research more** searches the web and reads pages for *new* information (needs web search; sends short search queries to
+  your provider), adds the new sources, and says so in the answer's label.
+
+Every model call counts toward the same three-run allowance as the mission; the panel shows what one question will use.
+
+## Steering a running mission
+
+While the team works, type an instruction in the bar under the status line. It **never changes a task that is already running**;
+it takes effect when the next task starts (the Activity feed says which one, and task cards show "follows your instruction #1").
+The Reviewer treats it as an extra success criterion and the final answer lists when each instruction applied. Tick *Also redo
+finished work this changes* to mark finished tasks as out of date so they re-run with the new requirement (uses more calls;
+old artifacts are kept as replaced). Steering does not re-plan the mission: it changes how the remaining tasks work, it does not
+add new tasks.
+
 ## Inputs
 
 Open tabs (read through the browser's own page/PDF extraction), pasted text and files

@@ -335,6 +335,9 @@ def stylesheet(palette: Palette, m: Metrics = METRICS) -> str:
         background: {p.surface};
     }}
     QPushButton[kind="chip"]:hover {{ color: {p.accent}; border-color: {p.accent}; }}
+    QPushButton[kind="chip"]:checked {{
+        color: {p.accent}; background: {p.accent_soft}; border-color: {p.accent};
+    }}
     QPushButton[kind="danger"] {{ color: {p.danger}; }}
     QPushButton[kind="danger"]:hover {{ border-color: {p.danger}; background: {p.danger_soft}; }}
 
