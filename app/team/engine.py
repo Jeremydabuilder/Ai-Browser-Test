@@ -210,6 +210,36 @@ class TeamEngine(FollowUpMixin):
             self._on_change("finished")
         return m
 
+    def steer(self, text: str, redo: bool = False) -> dict:
+        """Add an instruction while the mission runs. It is NEVER injected into a task already running:
+        it takes effect when the next task starts (shown in the activity feed). ``redo`` also marks
+        everything finished so far as out of date, so it is redone with the new requirement."""
+        text = " ".join(text.split())[:600]
+        if not text:
+            raise TeamError(ErrorKind.BAD_OUTPUT, "Type an instruction first.")
+        with self._lock:
+            if not self._running:
+                raise TeamError(ErrorKind.PROVIDER, "Instructions can be added while the team is working. "
+                                "For a finished result, use a follow-up (Ask tab) instead.")
+            m = self.mission
+            item = {"id": len(m.steering) + 1, "text": text, "redo": bool(redo), "added_at": time.time(),
+                    "effective_from": ""}
+            m.steering.append(item)
+            running = [t.id for t in m.tasks if t.status == TaskStatus.RUNNING]
+            if redo:
+                m.requirements_version += 1
+        self._event(AgentId.COORDINATOR, EventKind.STATUS,
+                    f"You added instruction #{item['id']}: {_short(text, 100)}. "
+                    + (f"{', '.join(running)} {'is' if len(running) == 1 else 'are'} already running and keep"
+                       f"{'s' if len(running) == 1 else ''} the original instructions; " if running else "")
+                    + "it takes effect when the next task starts.")
+        if redo and self._invalidate_stale():
+            self._event(AgentId.COORDINATOR, EventKind.WARNING,
+                        "Finished work that this changes will be redone (see the Tasks tab).")
+        self._save(force=True)
+        self._on_change("tasks")
+        return item
+
     def apply_files(self, artifact_ids: list[str]) -> list[str]:
         """Write approved FILE artifacts into the authorized workspace. The
         caller (the UI) is responsible for having asked the user first."""
@@ -366,6 +396,8 @@ class TeamEngine(FollowUpMixin):
                 f"{self._manifest()}\n\nCAPABILITIES:\n- " + "\n- ".join(self.capabilities.describe(
                     web_enabled=m.web_search,
                     fetch_pages=self.limits.max_fetch_pages if self.capabilities.fetcher else 0)))
+        if m.steering:
+            user += "\n\nTHE USER'S UPDATED INSTRUCTIONS:\n" + "\n".join(f"- {s['text']}" for s in m.steering)
         allowed = tuple(a for a in m.allowed_agents if a in AgentId.ASSIGNABLE)
         if allowed:
             user += ("\n\nALLOWED AGENTS (this request needs only these; use no others): "
@@ -561,6 +593,15 @@ class TeamEngine(FollowUpMixin):
                         task.started_at = time.time()
                         task.attempts += 1
                         task.upstream = self._snapshot(task)
+                        task.steering = [s["id"] for s in m.steering]
+                        fresh = [s for s in m.steering if not s["effective_from"]]
+                        for s in fresh:
+                            s["effective_from"] = task.id
+                        if fresh:
+                            self._event(AgentId.COORDINATOR, EventKind.HANDOFF,
+                                        "Your instruction" + ("s " if len(fresh) > 1 else " ")
+                                        + ", ".join(f"#{s['id']}" for s in fresh)
+                                        + f" now {'apply' if len(fresh) > 1 else 'applies'} from {task.id} on.")
                         degraded = []
                         for dep_id in task.depends_on:
                             dep = m.task(dep_id)
@@ -776,6 +817,7 @@ class TeamEngine(FollowUpMixin):
                 if effective.agent == AgentId.REVIEWER:
                     continue                    # a review is feedback for revisions, never an input to be stale against
                 snap[root] = f"{effective.id}:{','.join(effective.outputs)}"
+            snap["__req"] = str(self.mission.requirements_version)
             return snap
 
     def _invalidate_stale(self) -> list[str]:
@@ -794,7 +836,7 @@ class TeamEngine(FollowUpMixin):
                         continue
                     now_snap = self._snapshot(task)
                     moved = sorted(k for k in set(now_snap) | set(task.upstream)
-                                   if now_snap.get(k) != task.upstream.get(k))
+                                   if now_snap.get(k) != task.upstream.get(k, "0" if k == "__req" else None))
                     if not moved:
                         continue
                     for aid in task.outputs:
@@ -807,8 +849,10 @@ class TeamEngine(FollowUpMixin):
                     reset.append(task.id)
                     changed = True
                     self._event(task.agent, EventKind.WARNING,
-                                f"{task.id} will be redone: its input from {', '.join(moved)} changed after it ran, "
-                                "so its result would be out of date.")
+                                f"{task.id} will be redone: "
+                                + ("you changed the requirements after it ran" if moved == ["__req"] else
+                                   f"its input from {', '.join(k for k in moved if k != '__req')} changed after it ran")
+                                + ", so its result would be out of date.")
         return reset
 
     def _upstream(self, task: Task, *, transitive: bool) -> list[Artifact]:
@@ -857,6 +901,12 @@ class TeamEngine(FollowUpMixin):
                  f"YOUR TASK {task.id} - {task.title}\n{task.instructions}"]
         if task.acceptance:
             parts.append("ACCEPTANCE CRITERIA:\n" + "\n".join(f"- {c}" for c in task.acceptance))
+        with self._lock:
+            steering = [s for s in m.steering if s["id"] in task.steering]
+        if steering:
+            parts.append("THE USER'S UPDATED INSTRUCTIONS (added by the user while the mission ran; they take "
+                         "precedence over earlier wording where they conflict):\n"
+                         + "\n".join(f"- #{s['id']}: {s['text']}" for s in steering))
         if degraded:
             parts.append("NOTE: these upstream tasks produced no output, so do not assume their work was done: "
                          + "; ".join(degraded))
@@ -1390,6 +1440,9 @@ class TeamEngine(FollowUpMixin):
             parts.append(_fence_artifact(review, "Reviewer", 2000))
         for report in tests:
             parts.append(_fence_artifact(report, "Tester", 2500))
+        if m.steering:
+            parts.append("THE USER'S INSTRUCTIONS DURING THE MISSION (the final answer must respect them):\n"
+                         + "\n".join(f"- #{s['id']}: {s['text']}" for s in m.steering))
         if m.criteria_check:
             parts.append("REVIEWER'S CRITERIA CHECK:\n" + "\n".join(
                 f"- [{'met' if c.get('met') else 'NOT met'}] {c.get('criterion')}" for c in m.criteria_check))
@@ -1483,6 +1536,11 @@ class TeamEngine(FollowUpMixin):
             out.append("\n## Optional improvements (from the Reviewer)")
             out += [f"- {x}" for x in m.suggestions]
         notes = [x.replace("[capability] ", "") for x in m.limitations]
+        for s in m.steering:
+            when = (f"applied from {s['effective_from']}" if s["effective_from"] else "was added too late to apply")
+            redone = ("finished work that depended on the change was redone" if s["redo"]
+                      else "work finished before it was not redone")
+            notes.append(f"Your instruction #{s['id']} (\u201c{s['text'][:80]}\u201d) {when}; {redone}.")
         for t in skipped or ():
             what = ("it was not reviewed" if t.agent == AgentId.REVIEWER
                     else "this result does not include its work")

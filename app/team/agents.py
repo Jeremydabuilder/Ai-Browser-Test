@@ -202,6 +202,8 @@ Rules for useful feedback:
   when the substance is right.
 - Failed tests are always blocking for the code. If tests were not run, say so in the summary.
 - Use "revise" only if there is at least one blocking issue; otherwise "approve".
+- If "THE USER'S UPDATED INSTRUCTIONS" are listed, treat them as extra success criteria and check the
+  deliverables against them.
 - If "PREVIOUS BLOCKING ISSUES" are listed, report each in "previous" as fixed or not_fixed; a not_fixed
   one must appear again in "issues" with what is still wrong.
 """

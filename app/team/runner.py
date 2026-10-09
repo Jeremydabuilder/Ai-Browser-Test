@@ -348,6 +348,17 @@ class TeamController(QObject):
         self.history_changed.emit()
         self.followup_finished.emit(message)
 
+    def steer(self, text: str, redo: bool = False) -> str:
+        """Add an instruction to the running mission. Returns "" on success, else a message to show."""
+        if self._engine is None or not self._engine.running:
+            return "Instructions can be added while the team is working."
+        try:
+            self._engine.steer(text, redo)
+        except TeamError as exc:
+            return exc.message
+        self.changed.emit()
+        return ""
+
     def cancel_followup(self) -> None:
         if self._engine is not None and self._asking:
             self._engine.cancel_followup()

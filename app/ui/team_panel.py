@@ -17,7 +17,7 @@ from PySide6.QtGui import (
 )
 from PySide6.QtWidgets import (
     QApplication, QButtonGroup, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFileDialog, QHBoxLayout, QFrame, QInputDialog, QLabel,
-    QListWidget, QListWidgetItem, QMenu, QMessageBox, QPlainTextEdit, QProgressBar, QPushButton, QScrollArea,
+    QLineEdit, QListWidget, QListWidgetItem, QMenu, QMessageBox, QPlainTextEdit, QProgressBar, QPushButton, QScrollArea,
     QSizePolicy, QStackedWidget, QTabBar, QTabWidget, QTextBrowser, QVBoxLayout, QWidget,
 )
 
@@ -348,6 +348,36 @@ class TeamPanel(QWidget):
         self.run_status.setWordWrap(True)
         self.run_status.setTextFormat(Qt.TextFormat.RichText)
         box.addWidget(self.run_status)
+        # Steer: extra instructions while the team works. They apply at the next task boundary.
+        self.steer_box = QWidget(page)
+        steer = QVBoxLayout(self.steer_box)
+        steer.setContentsMargins(0, 0, 0, 0)
+        steer.setSpacing(m.space_1)
+        row = QHBoxLayout()
+        self.steer_input = QLineEdit(self.steer_box)
+        self.steer_input.setPlaceholderText("Add an instruction for the team\u2026")
+        self.steer_input.setAccessibleName("Instruction for the running team")
+        self.steer_input.returnPressed.connect(self._send_steer)
+        self.steer_input.textChanged.connect(self._sync_steer)
+        row.addWidget(self.steer_input, 1)
+        self.steer_send = QPushButton("Send", self.steer_box)
+        self.steer_send.setProperty("kind", "chip")
+        self.steer_send.setToolTip("Takes effect when the next task starts - a task already running is never changed")
+        self.steer_send.clicked.connect(self._send_steer)
+        row.addWidget(self.steer_send)
+        steer.addLayout(row)
+        self.steer_redo = QCheckBox("Also redo finished work this changes", self.steer_box)
+        self.steer_redo.setToolTip("Marks finished tasks that depend on the change as out of date and re-runs them "
+                                   "(uses more model calls).")
+        steer.addWidget(self.steer_redo)
+        self.steer_note = QLabel("", self.steer_box)
+        self.steer_note.setWordWrap(True)
+        self.steer_note.setProperty("kind", "muted")
+        self.steer_note.setAccessibleName("Your instructions")
+        steer.addWidget(self.steer_note)
+        self.steer_box.hide()
+        box.addWidget(self.steer_box)
+
         self.progress = QProgressBar(page)
         self.progress.setTextVisible(False)
         self.progress.setFixedHeight(6)
@@ -920,6 +950,33 @@ class TeamPanel(QWidget):
         self._shown_mission = None
 
     # ------------------------------------------------------------- run view
+    def _sync_steer(self) -> None:
+        self.steer_send.setEnabled(bool(self.steer_input.text().strip()))
+
+    def _send_steer(self) -> None:
+        text = self.steer_input.text().strip()
+        if not text:
+            return
+        message = self._controller.steer(text, self.steer_redo.isChecked())
+        if message:
+            self.steer_note.setText(message)
+            return
+        self.steer_input.clear()
+        self.steer_redo.setChecked(False)
+
+    def _render_steer(self, mission: Mission, active: bool) -> None:
+        self.steer_box.setVisible(active and mission.status != MissionStatus.PLANNING or
+                                  (active and bool(mission.steering)))
+        self._sync_steer()
+        lines = []
+        for s in mission.steering:
+            state = (f"applies from {s['effective_from']}" if s["effective_from"]
+                     else "waits for the next task to start")
+            redo = " \u00b7 redoing dependent work" if s["redo"] else ""
+            lines.append(f"#{s['id']} {_elide(s['text'], 60)} \u2014 {state}{redo}")
+        self.steer_note.setText("\n".join(lines))
+        self.steer_note.setVisible(bool(lines))
+
     def _retry(self) -> None:
         mission = self._controller.snapshot()
         more = (mission is not None and mission.status == MissionStatus.COMPLETED_WITH_ISSUES
@@ -1019,6 +1076,7 @@ class TeamPanel(QWidget):
         self.progress.setRange(0, max(1, len(mission.tasks)))
         self.progress.setValue(done if mission.tasks else 0)
         self.progress.setVisible(bool(mission.tasks))
+        self._render_steer(mission, active)
         self.cancel_button.setVisible(active)
         actionable = mission.status != MissionStatus.COMPLETED_WITH_ISSUES or bool(
             mission.unresolved_issues or any(t.status in (TaskStatus.FAILED, TaskStatus.BLOCKED)
@@ -1140,6 +1198,10 @@ class TeamPanel(QWidget):
                 html += f"<br><span style='color:{tone}'>{escape(_elide(task.error, 200))}</span>"
             elif task.summary and task.status == TaskStatus.DONE:
                 html += f"<br>{escape(_elide(task.summary, 140))}"
+            if task.steering and task.status in (TaskStatus.RUNNING, TaskStatus.DONE):
+                html += (f"<br><span style='color:{self._c.muted}'>follows your instruction"
+                         f"{'s' if len(task.steering) > 1 else ''} "
+                         + ", ".join(f"#{i}" for i in task.steering) + "</span>")
             if task.handoff and task.status == TaskStatus.DONE:
                 html += (f"<br><span style='color:{self._c.muted}'>handoff: "
                          f"{escape(_elide(task.handoff, 200))}</span>")
