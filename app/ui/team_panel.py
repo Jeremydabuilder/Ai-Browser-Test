@@ -33,15 +33,9 @@ from app.ui import theme
 from app.ui.dialogs import confirm_destructive
 from app.team.followup import MODE_LABELS as FOLLOWUP_MODE_LABELS, MODES as FOLLOWUP_MODES
 from app.ui import team_results
+from app.team import templates as team_templates
 from app.ui.flow_layout import FlowLayout
 from app.ui.team_results import VIEWS
-
-EXAMPLES = (
-    ("Compare tabs", "Compare the products in these tabs and write a recommendation."),
-    ("Research an idea", "Research this idea and produce a plan with sources: "),
-    ("Review code", "Review this code, identify bugs, and propose fixes."),
-    ("Study guide", "Turn these pages into a clear study guide."),
-)
 
 _STATUS_TEXT = {
     TaskStatus.PENDING: "waiting", TaskStatus.RUNNING: "working", TaskStatus.DONE: "done",
@@ -135,6 +129,7 @@ class TeamPanel(QWidget):
         self._web_available = False
         self._viewer_mission = -1
         self._view = "answer"
+        self._template_id = ""
         self._provider_ready = True
         m = theme.METRICS
         self._m = m
@@ -230,14 +225,28 @@ class TeamPanel(QWidget):
         self.goal.textChanged.connect(self._sync_start)
         box.addWidget(self.goal)
 
-        examples = FlowLayout(spacing=m.space_1)
-        for label, text in EXAMPLES:
-            button = QPushButton(label, page)
+        # Templates: an editable starting sentence, what it needs, and which agents it will use.
+        templates = FlowLayout(spacing=m.space_1)
+        self.template_buttons: dict[str, QPushButton] = {}
+        for template in team_templates.TEMPLATES:
+            button = QPushButton(template.label, page)
             button.setProperty("kind", "chip")
-            button.setToolTip(text)
-            button.clicked.connect(lambda _c=False, t=text: self._use_example(t))
-            examples.addWidget(button)
-        box.addLayout(examples)
+            button.setCheckable(True)
+            button.setToolTip(template.summary)
+            button.setAccessibleName(f"Template: {template.label}")
+            button.clicked.connect(lambda _c=False, t=template.id: self._pick_template(t))
+            self.template_buttons[template.id] = button
+            templates.addWidget(button)
+        box.addLayout(templates)
+        self.template_note = QLabel("", page)
+        self.template_note.setWordWrap(True)
+        self.template_note.setTextFormat(Qt.TextFormat.RichText)
+        self.template_note.setAccessibleName("What this template needs")
+        self.template_note.setStyleSheet(f"font-size:{m.text_xs}px;")
+        self.template_note.linkActivated.connect(self._on_template_link)
+        self._theme_links(self.template_note)
+        self.template_note.hide()
+        box.addWidget(self.template_note)
 
         attach = FlowLayout(spacing=m.space_1)
         self.tabs_button = QPushButton("Add tabs…", page)
@@ -605,6 +614,7 @@ class TeamPanel(QWidget):
             self.web_check.setChecked(False)
             self.web_check.setText("Search the web (not set up)")
             self.web_check.setToolTip(web.detail)
+        self._refresh_template_note()
         self._sync_start()
 
     def _on_env_link(self, link: str) -> None:
@@ -649,12 +659,90 @@ class TeamPanel(QWidget):
         if dialog.exec() == QDialog.DialogCode.Accepted:
             self._refresh_env()
 
-    def _use_example(self, text: str) -> None:
-        self.goal.setPlainText(text)
-        self.goal.setFocus()
-        cursor = self.goal.textCursor()
-        cursor.movePosition(cursor.MoveOperation.End)
-        self.goal.setTextCursor(cursor)
+    # -- templates -------------------------------------------------------------------------
+    def _template(self) -> "team_templates.Template | None":
+        return team_templates.BY_ID.get(self._template_id)
+
+    def _pick_template(self, template_id: str) -> None:
+        """Choose (or, clicking the chosen one again, drop) a template. The starting text replaces the
+        mission box only when that box is empty or still holds a template's own text - your wording is never
+        overwritten - but the template's agent routing applies either way."""
+        settings = self._controller.settings
+        previous = self._template()
+        if template_id == self._template_id:
+            self._template_id = ""
+        else:
+            template = team_templates.BY_ID[template_id]
+            current = self.goal.toPlainText().strip()
+            own_text = {team_templates.goal_for(settings, t).strip() for t in team_templates.TEMPLATES}
+            self._template_id = template_id
+            if not current or current in own_text:
+                self.goal.setPlainText(team_templates.goal_for(settings, template))
+                cursor = self.goal.textCursor()
+                cursor.movePosition(cursor.MoveOperation.End)
+                self.goal.setTextCursor(cursor)
+            self.goal.setFocus()
+        for key, button in self.template_buttons.items():
+            button.setChecked(key == self._template_id)
+        self._refresh_template_note()
+        self._sync_start()
+
+    def _refresh_template_note(self) -> None:
+        template = self._template()
+        if template is None:
+            self.template_note.hide()
+            return
+        c = self._c
+        attached = [s for s in self._sources if s.usable]
+        checks = team_templates.check(
+            template, tabs=sum(1 for s in attached if s.kind == SourceKind.TAB), material=len(attached),
+            web=self._web_available, workspace=bool(self._workspace_path),
+            sandbox=self._controller.sandbox_status().available)
+        marks = {"ok": (c.success, "\u2713"), "missing": (c.danger, "\u2717"), "optional-missing": (c.muted, "\u25cb")}
+        lines = [f"<b>{escape(template.label)}</b> \u2014 {escape(template.summary)}",
+                 f"<span style='color:{c.muted}'>Team: {escape(team_templates.route_text(template))} "
+                 "(no other agents will be used)</span>"]
+        for state, text, fix in checks:
+            colour, mark = marks[state]
+            tail = f" \u2014 {escape(fix)}" if fix else ""
+            lines.append(f"<span style='color:{colour}'>{mark}</span> {escape(text)}"
+                         f"<span style='color:{c.muted}'>{tail}</span>")
+        edited = " (edited)" if team_templates.is_edited(self._controller.settings, template) else ""
+        lines.append(f"<a href='edit'>Edit this template{edited}</a>")
+        self.template_note.setText(self._link_css() + "<br>".join(lines))
+        self.template_note.show()
+
+    def _on_template_link(self, link: str) -> None:
+        if link == "edit":
+            self._edit_template()
+
+    def _edit_template(self) -> None:
+        template = self._template()
+        settings = self._controller.settings
+        if template is None or settings is None:
+            return
+        dialog = QDialog(self)
+        dialog.setWindowTitle(f"Edit template: {template.label}")
+        layout = QVBoxLayout(dialog)
+        note = QLabel("This starting text is filled into the mission box when you pick the template. "
+                      "Which agents it uses and what it needs do not change.", dialog)
+        note.setWordWrap(True)
+        layout.addWidget(note)
+        editor = QPlainTextEdit(dialog)
+        editor.setAccessibleName("Template text")
+        editor.setPlainText(team_templates.goal_for(settings, template))
+        layout.addWidget(editor)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel
+                                   | QDialogButtonBox.StandardButton.RestoreDefaults, dialog)
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        buttons.button(QDialogButtonBox.StandardButton.RestoreDefaults).clicked.connect(
+            lambda: editor.setPlainText(template.goal))
+        layout.addWidget(buttons)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            team_templates.save_goal(settings, template, editor.toPlainText())
+            self.goal.setPlainText(team_templates.goal_for(settings, template))
+            self._refresh_template_note()
 
     def _sync_start(self) -> None:
         running = self._controller.is_running
@@ -674,7 +762,7 @@ class TeamPanel(QWidget):
         if not getattr(self, "_provider_ready", True):
             return "Next: add your model key (Set up\u2026 above). It stays in your system keyring."
         if not self.goal.toPlainText().strip():
-            return ("Next: describe the mission, or pick an example. Optional: add open tabs, text or files "
+            return ("Next: describe the mission, or pick a template. Optional: add open tabs, text or files "
                     "for the team to read.")
         extras = []
         if not self._sources:
@@ -764,6 +852,7 @@ class TeamPanel(QWidget):
                 f"Workspace: {path}\nThe Coder can read it and propose changes. Nothing is written "
                 "until you press Apply and confirm.")
             self.workspace_label.show()
+            self._refresh_template_note()
 
     def _refresh_included(self) -> None:
         c = self._c
@@ -782,6 +871,7 @@ class TeamPanel(QWidget):
             item.setData(Qt.ItemDataRole.UserRole, source.id)
             self.included.addItem(item)
         self.included.setVisible(bool(self._sources))
+        self._refresh_template_note()
         bad = [s for s in self._sources if not s.usable]
         self.included_note.setVisible(bool(self._sources))
         self.included_note.setText(
@@ -810,12 +900,19 @@ class TeamPanel(QWidget):
             self.compose_error.setText(status.detail)
             self.compose_error.show()
             return
+        template = self._template()
         mission = self._controller.start(goal, list(self._sources), self._workspace_path,
-                                         web_search=self._web_available and self.web_check.isChecked())
+                                         web_search=self._web_available and self.web_check.isChecked(),
+                                         template_id=template.id if template else "",
+                                         allowed_agents=template.agents if template else ())
         if mission is None:
             return
         self._sources = []
         self._workspace_path = ""
+        self._template_id = ""
+        for button in self.template_buttons.values():
+            button.setChecked(False)
+        self.template_note.hide()
         self.workspace_label.hide()
         self.goal.clear()
         self._refresh_included()
