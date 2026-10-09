@@ -214,6 +214,8 @@ class Task:
     #: "effective task id:artifact ids"}. If an upstream result later changes (a retry, a
     #: revision) a finished task whose snapshot no longer matches is stale and is re-run.
     upstream: dict[str, str] = field(default_factory=dict)
+    #: Steering instruction ids fixed when the task STARTED (a running task is never altered).
+    steering: list[int] = field(default_factory=list)
 
 
 @dataclass
@@ -256,6 +258,17 @@ class Mission:
     #: Set after a rate limit: one agent at a time for the rest of the run.
     throttled: bool = False
     model_calls: int = 0
+    #: Follow-up questions about the finished result: dicts with id, mode, question, answer, basis,
+    #: cites, ts, calls, artifact_id. Every call they make counts toward the mission's allowance.
+    followups: list[dict] = field(default_factory=list)
+    #: Instructions the user added while the mission ran: dicts with id, text, redo, added_at,
+    #: effective_from (task id of the first task that started with it, "" while queued).
+    steering: list[dict] = field(default_factory=list)
+    #: Bumped when a steering instruction changes the requirements (finished work becomes stale).
+    requirements_version: int = 0
+    #: Template this mission started from, and the agents it may use ([] = any).
+    template_id: str = ""
+    allowed_agents: list[str] = field(default_factory=list)
     #: ``model_calls`` when the current run started (to show what is left of this run's budget).
     calls_at_run_start: int = 0
     input_tokens: int = 0

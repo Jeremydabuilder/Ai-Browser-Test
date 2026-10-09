@@ -135,9 +135,12 @@ class FlowThroughTheUITests(TeamUITestCase):
         # Results: the final answer is selected first, with sources and per-agent artifacts to browse.
         self.assertEqual(self.panel.viewer_choice.itemText(0), "Final result")
         self.assertIn("Buy A", self.panel.viewer.toPlainText())
-        keys = [self.panel.viewer_choice.itemData(i) for i in range(self.panel.viewer_choice.count())]
-        self.assertIn("__sources__", keys)
-        self.assertGreaterEqual(len(keys), 6)
+        self.assertIn("cited source", self.panel.answer_banner.text())     # a factual banner, not decoration
+        self.panel._set_view("sources")
+        self.assertEqual(self.panel.viewer_choice.currentData(), "__sources__")
+        self.panel._set_view("history")
+        self.assertGreaterEqual(self.panel.viewer_choice.count(), 5)       # every artifact stays browsable
+        self.panel._set_view("answer")
         self.assertEqual(self.panel.run_tabs.currentIndex(), 3)        # jumped to Results when done
 
         # Saved history.
@@ -459,7 +462,7 @@ class UnexpectedContentTests(TeamUITestCase):
         pump(10)
         self.assertEqual(self.panel.run_goal.textFormat(), Qt.TextFormat.PlainText)
         self.assertEqual(self.panel.run_goal._full, "<b>bold goal</b>")
-        self.panel.viewer_choice.setCurrentIndex(self.panel.viewer_choice.findData("__sources__"))
+        self.panel._set_view("sources")
         pump()
         html = self.panel.viewer.toHtml().lower()
         self.assertNotIn("<img", html)
@@ -945,6 +948,7 @@ class RecoveryAndGuidanceTests(TeamUITestCase):
         self.controller._view = mission
         self.panel.refresh()
         pump()
+        self.panel._set_view("history")
         labels = [self.panel.viewer_choice.itemText(i) for i in range(self.panel.viewer_choice.count())]
         self.assertTrue(any("A1" in t and "replaced" in t for t in labels))
         self.assertFalse(any("A2" in t and "replaced" in t for t in labels))

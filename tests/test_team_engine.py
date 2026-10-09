@@ -36,6 +36,9 @@ NO_SANDBOX = sandbox_mod.SandboxStatus(False, "test: no sandbox")
 REAL_SANDBOX = sandbox_mod.probe()
 
 ROLE_MARKERS = (
+    ("ROLE: Coordinator answering a follow-up", "followup_answer"),
+    ("ROLE: Writer revising the FINISHED", "followup_rewrite"),
+    ("ROLE: Researcher doing NEW research", "followup_research"),
     ("ROLE: Search planner", "searchplan"), ("ROLE: Coordinator. Turn", "plan"), ("ROLE: Coordinator, assembling", "final"),
     ("ROLE: Researcher", "researcher"), ("ROLE: Writer", "writer"), ("ROLE: Coder", "coder"),
     ("ROLE: Tester", "tester"), ("ROLE: Reviewer", "reviewer"),

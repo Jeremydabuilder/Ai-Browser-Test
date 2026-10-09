@@ -81,6 +81,33 @@ Do not mention internal task ids. If the review found unresolved issues or a che
 so clearly in a short "Open issues" section. Do not add a Sources section; one is appended for you.
 """
 
+FOLLOWUP_ANSWER = _COMMON + """
+ROLE: Coordinator answering a follow-up question about a FINISHED mission.
+
+Answer ONLY from the CURRENT RESULT, REVIEW NOTES and SOURCES provided. Keep [S#] citations on factual
+claims, using only the ids given. Be direct and brief; use Markdown.
+If the evidence provided does not answer the question, begin your reply with exactly "NOT IN EVIDENCE:" then say
+what is missing and what new research could find. Do not guess and do not use outside knowledge.
+Earlier follow-ups are context only.
+"""
+
+FOLLOWUP_REWRITE = _COMMON + """
+ROLE: Writer revising the FINISHED result of a mission as the user asks.
+
+Apply the user's instruction (shorter, simpler, different tone or structure...) to the CURRENT RESULT and
+return the complete new result in Markdown, nothing else. Keep the [S#] citations that still apply, add no
+new facts, and do not add a Sources section (one is appended). If the instruction asks for facts the evidence
+does not contain, begin with exactly "NOT IN EVIDENCE:" and explain instead of inventing them.
+"""
+
+FOLLOWUP_RESEARCH = _COMMON + """
+ROLE: Researcher doing NEW research for a follow-up question about a finished mission.
+
+Use the NEW SOURCES (found just now) and, for context, the CURRENT RESULT. Answer the question in Markdown with
+[S#] citations. Sources with origin "web search snippet" are leads only: say "per a search snippet". Say plainly
+what the new sources do not establish. Finish with a short "Gaps" line.
+"""
+
 SEARCH_PLANNER = _COMMON + """
 ROLE: Search planner. Write web search queries for a research task.
 
@@ -265,7 +292,8 @@ def _strings(value: Any, limit: int = 8, size: int = 300) -> list[str]:
     return [str(v).strip()[:size] for v in value if str(v).strip()][:limit]
 
 
-def parse_plan(text: str, *, known_sources: set[str], max_tasks: int, execution_available: bool) -> Plan:
+def parse_plan(text: str, *, known_sources: set[str], max_tasks: int, execution_available: bool,
+               allowed_agents: "tuple[str, ...] | list[str] | None" = None) -> Plan:
     """Validate the Coordinator's plan. Raises PlanError with a message the
     model can act on (it is fed back in a single repair attempt)."""
     try:
@@ -290,6 +318,9 @@ def parse_plan(text: str, *, known_sources: set[str], max_tasks: int, execution_
         if agent not in AgentId.ASSIGNABLE:
             raise PlanError(f"task {task_id} has unknown agent '{agent}'; use one of "
                             f"{', '.join(AgentId.ASSIGNABLE)}")
+        if allowed_agents and agent not in allowed_agents and agent != AgentId.TESTER:
+            raise PlanError(f"task {task_id} uses the {agent}, but this mission may only use: "
+                            f"{', '.join(allowed_agents)}")
         deps = _strings(raw.get("depends_on"), limit=10, size=20)
         for dep in deps:
             if dep not in ids:
@@ -326,7 +357,8 @@ def parse_plan(text: str, *, known_sources: set[str], max_tasks: int, execution_
         raise PlanError("the plan has no runnable tasks")
 
     producers = [t for t in tasks if t.agent in (AgentId.RESEARCHER, AgentId.WRITER, AgentId.CODER, AgentId.TESTER)]
-    if producers and not any(t.agent == AgentId.REVIEWER for t in tasks):
+    if producers and not any(t.agent == AgentId.REVIEWER for t in tasks) \
+            and (not allowed_agents or AgentId.REVIEWER in allowed_agents):
         depended = {d for t in tasks for d in t.depends_on}
         leaves = [t.id for t in producers if t.id not in depended] or [producers[-1].id]
         next_id = f"T{len(tasks) + 1}"
@@ -339,6 +371,25 @@ def parse_plan(text: str, *, known_sources: set[str], max_tasks: int, execution_
 
     criteria = _strings(data.get("success_criteria"), limit=8)
     return Plan(str(data.get("summary") or "").strip()[:300], criteria, tasks, notes)
+
+
+def restrict_plan(plan: "Plan", allowed: "tuple[str, ...] | list[str]") -> "Plan":
+    """Drop tasks whose agent a template does not allow (the fallback plan only), re-linking dependencies."""
+    if not allowed:
+        return plan
+    removed = {t.id: t for t in plan.tasks if t.agent not in allowed}
+    kept: list[PlanTask] = []
+    for task in plan.tasks:
+        if task.id in removed:
+            continue
+        deps: list[str] = []
+        for dep in task.depends_on:
+            for target in (removed[dep].depends_on if dep in removed else [dep]):
+                if target not in deps and target not in removed:
+                    deps.append(target)
+        task.depends_on = deps
+        kept.append(task)
+    return Plan(plan.summary, plan.success_criteria, kept or plan.tasks, plan.notes)
 
 
 def fallback_plan(*, has_code_intent: bool, execution_available: bool) -> Plan:

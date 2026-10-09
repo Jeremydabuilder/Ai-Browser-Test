@@ -12,9 +12,11 @@ from html import escape
 from pathlib import Path
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QColor, QFontMetrics, QPalette, QTextCharFormat, QTextCursor, QTextFormat
+from PySide6.QtGui import (
+    QColor, QFontMetrics, QKeySequence, QPalette, QShortcut, QTextCharFormat, QTextCursor, QTextDocument, QTextFormat,
+)
 from PySide6.QtWidgets import (
-    QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFileDialog, QHBoxLayout, QFrame, QInputDialog, QLabel,
+    QApplication, QButtonGroup, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFileDialog, QHBoxLayout, QFrame, QInputDialog, QLabel,
     QListWidget, QListWidgetItem, QMenu, QMessageBox, QPlainTextEdit, QProgressBar, QPushButton, QScrollArea,
     QSizePolicy, QStackedWidget, QTabBar, QTabWidget, QTextBrowser, QVBoxLayout, QWidget,
 )
@@ -29,7 +31,10 @@ from app.team.runner import (
 from app.team.workspace import WorkspaceError
 from app.ui import theme
 from app.ui.dialogs import confirm_destructive
+from app.team.followup import MODE_LABELS as FOLLOWUP_MODE_LABELS, MODES as FOLLOWUP_MODES
+from app.ui import team_results
 from app.ui.flow_layout import FlowLayout
+from app.ui.team_results import VIEWS
 
 EXAMPLES = (
     ("Compare tabs", "Compare the products in these tabs and write a recommendation."),
@@ -129,6 +134,7 @@ class TeamPanel(QWidget):
         self._test_ok = True
         self._web_available = False
         self._viewer_mission = -1
+        self._view = "answer"
         self._provider_ready = True
         m = theme.METRICS
         self._m = m
@@ -184,6 +190,7 @@ class TeamPanel(QWidget):
         controller.changed.connect(self.refresh)
         controller.history_changed.connect(self._refresh_history)
         controller.environment_changed.connect(self._refresh_env)
+        controller.followup_finished.connect(self._on_followup_finished)
         self._refresh_env()
         self._refresh_history()
         self.refresh()
@@ -380,12 +387,50 @@ class TeamPanel(QWidget):
         box = QVBoxLayout(page)
         box.setContentsMargins(0, m.space_1, 0, 0)
         box.setSpacing(m.space_1)
+
+        # View switcher: wraps instead of overflowing a narrow column; every button is a Tab stop,
+        # has an Alt+letter mnemonic, and the checked one is announced as the current view.
+        switch = FlowLayout(spacing=m.space_1)
+        self._view_group = QButtonGroup(page)
+        self._view_group.setExclusive(True)
+        self.view_buttons: dict[str, QPushButton] = {}
+        for key, label in VIEWS:
+            button = QPushButton(label, page)
+            button.setCheckable(True)
+            button.setProperty("kind", "chip")
+            button.setAccessibleName(label.replace("&", "") + " view")
+            button.clicked.connect(lambda _c=False, k=key: self._set_view(k))
+            self._view_group.addButton(button)
+            self.view_buttons[key] = button
+            switch.addWidget(button)
+        self.view_buttons["answer"].setChecked(True)
+        box.addLayout(switch)
+
+        self.answer_banner = QLabel("", page)
+        self.answer_banner.setWordWrap(True)
+        self.answer_banner.setTextFormat(Qt.TextFormat.RichText)
+        self.answer_banner.setAccessibleName("About this answer")
+        self.answer_banner.setStyleSheet(f"color:{c.muted}; font-size:{m.text_xs}px;")
+        self.answer_banner.linkActivated.connect(lambda link: self._set_view(link))
+        self._theme_links(self.answer_banner)
+        box.addWidget(self.answer_banner)
+
+        picker = QHBoxLayout()
         self.viewer_choice = QComboBox(page)
-        self.viewer_choice.setAccessibleName("Choose what to show")
+        self.viewer_choice.setAccessibleName("Choose which item to show")
         self.viewer_choice.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
         self.viewer_choice.setMinimumContentsLength(12)
         self.viewer_choice.currentIndexChanged.connect(self._show_selected)
-        box.addWidget(self.viewer_choice)
+        picker.addWidget(self.viewer_choice, 1)
+        self.diff_toggle = QPushButton("Show changes", page)
+        self.diff_toggle.setCheckable(True)
+        self.diff_toggle.setChecked(True)
+        self.diff_toggle.setProperty("kind", "chip")
+        self.diff_toggle.setToolTip("Compare this version with the one it replaced")
+        self.diff_toggle.toggled.connect(lambda _on: self._show_selected())
+        picker.addWidget(self.diff_toggle)
+        box.addLayout(picker)
+
         self.saved_note = QLabel("", page)
         self.saved_note.setWordWrap(True)
         self.saved_note.setStyleSheet(f"color:{c.success}; font-size:{m.text_xs}px;")
@@ -406,6 +451,46 @@ class TeamPanel(QWidget):
         self.viewer.anchorClicked.connect(self._open_link)
         box.addWidget(self.viewer, 1)
 
+        # Ask: follow-up questions about this mission (separate from the run controls).
+        self.ask_box = QWidget(page)
+        ask = QVBoxLayout(self.ask_box)
+        ask.setContentsMargins(0, 0, 0, 0)
+        ask.setSpacing(m.space_1)
+        self.ask_mode = QComboBox(self.ask_box)
+        self.ask_mode.setAccessibleName("What to do with the question")
+        for key in FOLLOWUP_MODES:
+            self.ask_mode.addItem(FOLLOWUP_MODE_LABELS[key], key)
+        self.ask_mode.setItemData(0, "Answers only from this mission's results and sources. Nothing new is researched.",
+                                  Qt.ItemDataRole.ToolTipRole)
+        self.ask_mode.setItemData(1, "Rewrites the final answer (shorter, simpler...) from the same evidence. "
+                                     "The old version stays in History.", Qt.ItemDataRole.ToolTipRole)
+        self.ask_mode.setItemData(2, "Searches the web and reads pages for NEW information. Sends short search "
+                                     "queries to your configured search provider.", Qt.ItemDataRole.ToolTipRole)
+        self.ask_mode.currentIndexChanged.connect(self._sync_ask)
+        ask.addWidget(self.ask_mode)
+        self.ask_input = QPlainTextEdit(self.ask_box)
+        self.ask_input.setAccessibleName("Follow-up question")
+        self.ask_input.setPlaceholderText("Ask about this result, e.g. \u201cExplain the price difference\u201d "
+                                          "(Ctrl+Enter to send)")
+        self.ask_input.setMaximumHeight(72)
+        self.ask_input.textChanged.connect(self._sync_ask)
+        QShortcut(QKeySequence("Ctrl+Return"), self.ask_input, activated=self._send_ask)
+        QShortcut(QKeySequence("Ctrl+Enter"), self.ask_input, activated=self._send_ask)
+        ask.addWidget(self.ask_input)
+        row = QHBoxLayout()
+        self.ask_send = QPushButton("Ask", self.ask_box)
+        self.ask_send.setProperty("kind", "primary")
+        self.ask_send.clicked.connect(self._send_ask)
+        row.addWidget(self.ask_send)
+        self.ask_status = QLabel("", self.ask_box)
+        self.ask_status.setWordWrap(True)
+        self.ask_status.setProperty("kind", "muted")
+        self.ask_status.setAccessibleName("Follow-up status")
+        row.addWidget(self.ask_status, 1)
+        ask.addLayout(row)
+        self.ask_box.hide()
+        box.addWidget(self.ask_box)
+
         # Wraps rather than forcing the panel wider than a narrow column.
         actions = FlowLayout(spacing=m.space_1)
         self.save_button = QPushButton("Save to Downloads", page)
@@ -420,13 +505,17 @@ class TeamPanel(QWidget):
         menu = QMenu(self.more_button)
         self.save_as_action = menu.addAction("Save as\u2026")
         self.save_as_action.triggered.connect(self._save_current_as)
+        self.export_html_action = menu.addAction("Export as web page (.html)\u2026")
+        self.export_html_action.triggered.connect(self._export_html)
         self.save_files_action = menu.addAction("Save all files to Downloads")
         self.save_files_action.triggered.connect(self._save_all_files)
         self.more_button.setMenu(menu)
         self._more_menu = menu
         for button in (self.save_button, self.copy_button, self.more_button):
             actions.addWidget(button)
-        box.addLayout(actions)
+        self.actions_box = QWidget(page)
+        self.actions_box.setLayout(actions)
+        box.addWidget(self.actions_box)
         self.apply_button = QPushButton("Apply to workspace\u2026", page)
         self.apply_button.setProperty("kind", "primary")
         self.apply_button.setToolTip("Shows each change first; nothing is written until you confirm")
@@ -994,46 +1083,59 @@ class TeamPanel(QWidget):
             bar.setValue(bar.maximum())
 
     # results
-    def _render_results(self, mission: Mission) -> None:
-        entries: list[tuple[str, str]] = []
-        if mission.final_artifact_id:
-            entries.append(("Final result", mission.final_artifact_id))
-        entries.append(("Sources and pages", "__sources__"))
-        for artifact in mission.artifacts:
-            if artifact.id == mission.final_artifact_id:
-                continue
-            who = AgentId.LABELS.get(artifact.agent, artifact.agent)
-            version = f" v{artifact.version}" if artifact.version > 1 else ""
-            version += " \u00b7 replaced" if artifact.meta.get("replaced") else ""
-            entries.append((f"{artifact.id} · {_elide(artifact.title, 28)}{version} · {who}", artifact.id))
-        ids = [e[1] for e in entries]
-        previous = self.viewer_choice.currentData()
+    # ---------------------------------------------------------------- results workspace
+    def _set_view(self, view: str) -> None:
+        if view not in self.view_buttons:
+            return
+        self._view = view
+        self.view_buttons[view].setChecked(True)
+        mission = self._controller.snapshot()
+        if mission is not None:
+            self._render_results(mission, keep_choice=False)
+
+    def _render_results(self, mission: Mission, *, keep_choice: bool = True) -> None:
+        view = self._view
+        counts = team_results.counts(mission)
+        for key, label in VIEWS:
+            n = counts.get(key, 0) if key != "answer" else 0
+            self.view_buttons[key].setText(label + (f" ({n})" if n and key in ("sources", "files", "review", "tests", "ask") else ""))
         switched = mission.id != self._viewer_mission
         final_arrived = bool(mission.final_artifact_id) and mission.final_artifact_id not in self._viewer_ids
+        if switched:
+            self.saved_note.hide()          # a note about a save in a different mission would mislead
+            self._view = view = "answer"
+            self.view_buttons["answer"].setChecked(True)
+        items = team_results.view_items(mission, view)
+        ids = [view] + [k for _, k in items]
+        previous = self.viewer_choice.currentData()
         if ids != self._viewer_ids:
             self.viewer_choice.blockSignals(True)
             self.viewer_choice.clear()
-            for text, key in entries:
+            for text, key in items:
                 self.viewer_choice.addItem(text, key)
             self._viewer_ids = ids
-            # Keep the user's place while a run adds artifacts - except that a
-            # different mission, or the final result appearing, takes the viewer.
-            if not switched and not final_arrived and previous in ids:
-                self.viewer_choice.setCurrentIndex(ids.index(previous))
-            else:
-                self.viewer_choice.setCurrentIndex(0)
+            keys = [k for _, k in items]
+            self.viewer_choice.setCurrentIndex(
+                keys.index(previous) if keep_choice and not switched and previous in keys and view != "answer" else 0)
             self.viewer_choice.blockSignals(False)
-        if switched:
-            self.saved_note.hide()          # a note about a save in a different mission would mislead
         self._viewer_mission = mission.id
+        self.viewer_choice.setVisible(len(items) > 1)
+        self.ask_box.setVisible(view == "ask")
+        self.actions_box.setVisible(view != "ask")
         self._show_selected()
         files = [a for a in mission.artifacts if a.kind == ArtifactKind.FILE]
         self.save_files_action.setVisible(bool(files))
         pending = [a for a in files if not a.meta.get("applied")]
-        self.apply_button.setVisible(bool(mission.workspace_path and pending and self._latest_files(mission)))
+        self.apply_button.setVisible(bool(mission.workspace_path and pending and self._latest_files(mission))
+                                     and view in ("files", "answer"))
+        self._sync_ask()
         if mission.final_artifact_id and self._announced != (mission.id, mission.final_artifact_id):
+            first = self._announced is None or self._announced[0] != mission.id
             self._announced = (mission.id, mission.final_artifact_id)
-            self.run_tabs.setCurrentIndex(3)
+            if first or view != "ask":
+                self.run_tabs.setCurrentIndex(3)
+                if view != "answer" and view != "ask":
+                    self._set_view("answer")
 
     @staticmethod
     def _latest_files(mission: Mission) -> list[Artifact]:
@@ -1045,33 +1147,135 @@ class TeamPanel(QWidget):
 
     def _show_selected(self) -> None:
         mission = self._controller.snapshot()
+        view = self._view
         key = self.viewer_choice.currentData()
-        if mission is None or key is None:
+        self.diff_toggle.hide()
+        if mission is None:
             self.viewer.clear()
             return
         bar = self.viewer.verticalScrollBar()
         position = bar.value()
-        if key == "__sources__":
+        banner = ""
+        if view == "answer":
+            banner = escape(team_results.answer_banner(mission))
+            if mission.final_artifact_id:
+                banner += (" \u00b7 " if banner else "") + "<a href='ask'>Ask a follow-up</a>"
+        self.answer_banner.setText(self._link_css() + banner if banner else "")
+        self.answer_banner.setVisible(bool(banner))
+        saveable = False
+        if view == "ask":
+            text = team_results.followups_markdown(mission)
+            self.viewer.setMarkdown(text or "*No follow-up questions yet.* Pick what to do below, type a question and "
+                                    "press **Ask**. Answers state whether they come from this mission's existing "
+                                    "evidence or from new research, and every model call counts toward the mission's "
+                                    "allowance.")
+            _style_markdown(self.viewer.document(), self._m)
+        elif key is None:
+            self.viewer.setMarkdown(f"*{team_results.empty_text(mission, view)}*")
+            _style_markdown(self.viewer.document(), self._m)
+        elif key == team_results.SOURCES_KEY:
             self.viewer.setHtml(self._sources_html(mission))
         else:
             artifact = mission.artifact(key)
             if artifact is None:
                 return
-            if artifact.kind == ArtifactKind.FILE:
+            saveable = True
+            earlier = team_results.predecessor(mission, artifact)
+            show_diff = earlier is not None and self.diff_toggle.isChecked()
+            if earlier is not None:
+                self.diff_toggle.show()
+            if show_diff:
+                self.viewer.setMarkdown(team_results.diff_markdown(earlier, artifact))
+            elif artifact.kind == ArtifactKind.FILE:
                 diff = artifact.meta.get("diff")
                 body = f"```\n{artifact.content}\n```"
                 if diff:
                     body = f"**Proposed change to `{artifact.meta.get('path')}`**\n\n```diff\n{diff}\n```"
                 self.viewer.setMarkdown(f"### {artifact.title}\n\n{body}")
-                _style_markdown(self.viewer.document(), self._m)
             else:
                 self.viewer.setMarkdown(artifact.content)
-                _style_markdown(self.viewer.document(), self._m)
+            _style_markdown(self.viewer.document(), self._m)
         bar.setValue(position)
-        saveable = key != "__sources__"
         self.save_button.setEnabled(saveable)
         self.save_as_action.setEnabled(saveable)
+        self.export_html_action.setEnabled(saveable)
         self.copy_button.setEnabled(saveable)
+
+    # -- follow-up questions ------------------------------------------------------------
+    def _ask_ready(self, mission: Mission | None) -> tuple[bool, str]:
+        """(can send, why not / what happens) for the current mode."""
+        mode = self.ask_mode.currentData()
+        if mission is None or not mission.final_artifact_id and mode != "research":
+            return False, "Ask becomes available when the team has a final answer."
+        if self._controller.is_running:
+            return False, "Working on the previous request\u2026" if self._controller.followup_busy else \
+                "The team is still running."
+        limits = self._controller.limits()
+        _run_left, left = limits.allowance(mission.model_calls, 0)
+        if left <= 0:
+            return False, (f"This mission has used its whole model-call allowance ({limits.lifetime_calls}). "
+                           "Start a new mission to ask more.")
+        if mode == "research" and not self._controller.web_status().available:
+            return False, "New research needs web search - set it up in Settings. Ask and Rewrite still work."
+        cost = "1\u20132 model calls" if mode == "research" else "1 model call"
+        return True, f"Uses {cost}; {left} left for this mission."
+
+    def _sync_ask(self) -> None:
+        if not hasattr(self, "ask_send"):
+            return
+        mission = self._controller.snapshot()
+        ready, note = self._ask_ready(mission)
+        has_text = bool(self.ask_input.toPlainText().strip())
+        self.ask_send.setEnabled(ready and has_text)
+        busy = self._controller.followup_busy
+        self.ask_send.setText("Working\u2026" if busy else self.ask_mode.currentText().split(" (")[0])
+        self.ask_input.setEnabled(not busy)
+        self.ask_status.setText(note)
+
+    def _send_ask(self) -> None:
+        text = self.ask_input.toPlainText().strip()
+        mission = self._controller.snapshot()
+        if not text or not self.ask_send.isEnabled() or mission is None:
+            return
+        mode = self.ask_mode.currentData()
+        if self._controller.ask_followup(text, mode):
+            self.ask_input.clear()
+            self._sync_ask()
+
+    def _on_followup_finished(self, message: str) -> None:
+        if message:
+            self.ask_status.setText(message)
+            self.ask_status.setStyleSheet(f"color:{self._c.danger};")
+        else:
+            self.ask_status.setStyleSheet("")
+            mission = self._controller.snapshot()
+            if mission is not None and mission.followups and self._view == "ask":
+                bar = self.viewer.verticalScrollBar()
+                bar.setValue(bar.maximum())
+        self.ask_input.setFocus()
+        self._sync_ask()
+
+    def _export_html(self) -> None:
+        artifact = self._current_artifact()
+        mission = self._controller.snapshot()
+        if artifact is None or mission is None:
+            return
+        document = QTextDocument()
+        document.setMarkdown(artifact.content)
+        body = document.toHtml()
+        inner = body[body.find("<body"):]
+        inner = inner[inner.find(">") + 1:inner.rfind("</body>")]
+        page = team_results.html_document(artifact.title, inner)
+        path, _filter = QFileDialog.getSaveFileName(
+            self, "Export as web page", team_results.export_name(mission, artifact, "html"), "Web page (*.html)")
+        if not path:
+            return
+        target = Path(path)
+        try:
+            self._note_saved(self._controller.save_to_downloads(
+                target.name, page, mission.id, directory=str(target.parent), overwrite=True))
+        except OSError as exc:
+            QMessageBox.warning(self, "Could not export", str(exc))
 
     def _open_link(self, url) -> None:
         """A source link the user clicked: open it in a normal browser tab."""
@@ -1113,7 +1317,7 @@ class TeamPanel(QWidget):
     def _current_artifact(self) -> Artifact | None:
         mission = self._controller.snapshot()
         key = self.viewer_choice.currentData()
-        if mission is None or key in (None, "__sources__"):
+        if mission is None or key in (None, team_results.SOURCES_KEY) or self._view == "ask":
             return None
         return mission.artifact(key)
 

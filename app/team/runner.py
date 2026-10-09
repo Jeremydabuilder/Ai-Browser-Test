@@ -21,7 +21,7 @@ from app.team import sandbox as sandbox_mod
 from app.team import websearch
 from app.team.engine import Capabilities, TeamEngine
 from app.team.limits import TeamLimits
-from app.team.llm import ProviderStatus, make_client_factory, resolve_provider
+from app.team.llm import TeamError, ProviderStatus, make_client_factory, resolve_provider
 from app.team.model import Mission, MissionStatus, Source, SourceKind, SourceStatus
 from app.team.webfetch import PageFetcher
 from app.team.workspace import Workspace, WorkspaceError
@@ -153,6 +153,8 @@ class TeamController(QObject):
     environment_changed = Signal()
     #: A generated file was written through the Downloads manager (message for a notice).
     file_saved = Signal(str)
+    #: A follow-up question failed (message is safe to show) - or finished (empty string).
+    followup_finished = Signal(str)
 
     def __init__(self, store, settings=None, knowledge=None, parent: QObject | None = None,
                  *, client_factory: Callable[[], Any] | None = None, downloads=None,
@@ -181,6 +183,7 @@ class TeamController(QObject):
         self._sandbox: sandbox_mod.SandboxStatus | None = None
         self._sandbox_key: bool | None = None
         self._closed = False
+        self._asking = False
         if store is not None:
             try:
                 if store.recover_after_restart():
@@ -289,7 +292,8 @@ class TeamController(QObject):
     # -- state ------------------------------------------------------------------
     @property
     def is_running(self) -> bool:
-        return self._engine is not None and self._engine.running
+        """A mission run OR a follow-up is in progress (either way nothing else may start)."""
+        return (self._engine is not None and self._engine.running) or self._asking
 
     def snapshot(self) -> Mission | None:
         if self._engine is not None:
@@ -300,13 +304,63 @@ class TeamController(QObject):
         return self._store.history() if self._store is not None else []
 
     # -- actions ------------------------------------------------------------------
+    @property
+    def followup_busy(self) -> bool:
+        return self._asking
+
+    def ask_followup(self, question: str, mode: str = "answer") -> bool:
+        """Ask about the mission on screen (answer from evidence / rewrite / new research). Runs off the
+        GUI thread; ``followup_finished`` fires with "" on success or a safe error message."""
+        if self.is_running or self._asking or self._closed:
+            return False
+        mission = self._engine.mission if self._engine is not None else self._view
+        if mission is None or not question.strip():
+            return False
+        status = self.provider_status()
+        if not status.available:
+            self.followup_finished.emit(status.detail)
+            return False
+        if self._engine is None or self._engine.mission is not mission:
+            self._engine = self._new_engine(mission, status)
+            self._view = None
+        engine = self._engine
+        self._asking = True
+        self.changed.emit()
+
+        def work() -> None:
+            message = ""
+            try:
+                engine.ask(question, mode)
+            except TeamError as exc:
+                message = websearch_safe(exc.message, status.secret)
+            except Exception as exc:  # noqa: BLE001 - never crash the app from a worker
+                message = f"The follow-up failed ({type(exc).__name__})."
+            self._post(lambda: self._followup_done(message))
+
+        threading.Thread(target=work, name="team-followup", daemon=True).start()
+        return True
+
+    def _followup_done(self, message: str) -> None:
+        self._asking = False
+        if self._closed:
+            return
+        self.changed.emit()
+        self.history_changed.emit()
+        self.followup_finished.emit(message)
+
+    def cancel_followup(self) -> None:
+        if self._engine is not None and self._asking:
+            self._engine.cancel_followup()
+
     def start(self, goal: str, sources: list[Source], workspace_path: str = "",
-              web_search: bool = False) -> Mission | None:
-        if self.is_running or self._closed:
+              web_search: bool = False, *, template_id: str = "",
+              allowed_agents: tuple[str, ...] | list[str] = ()) -> Mission | None:
+        if self.is_running or self._asking or self._closed:
             return None
         status = self.provider_status()
         mission = Mission(goal=goal.strip(), sources=list(sources), status=MissionStatus.PLANNING,
                           workspace_path=workspace_path, web_search=web_search,
+                          template_id=template_id, allowed_agents=list(allowed_agents),
                           model_label=f"{status.label} · {status.model}".strip(" ·"))
         if self._store is not None:
             self._store.create(mission)
@@ -375,7 +429,9 @@ class TeamController(QObject):
             self.changed.emit()
 
     def cancel(self) -> None:
-        if self._engine is not None and self.is_running:
+        if self._asking:
+            self.cancel_followup()
+        elif self._engine is not None and self.is_running:
             self._engine.cancel()
 
     def apply_files(self, artifact_ids: list[str]) -> list[str]:
@@ -394,13 +450,18 @@ class TeamController(QObject):
         return written
 
     # -- plumbing ---------------------------------------------------------------------
-    def _launch(self, mission: Mission, status: ProviderStatus, **run_kwargs) -> None:
+    def _new_engine(self, mission: Mission, status: ProviderStatus) -> TeamEngine:
         limits = self.limits()
         factory = self._client_factory or make_client_factory(status, self._settings, limits)
         engine = TeamEngine(
             mission, factory, limits,
             self.capabilities(mission.workspace_path), store=self._store,
             on_change=self._on_engine_change, secret=status.secret, provider_label=status.label)
+        engine.capabilities.sandbox = self._sandbox or engine.capabilities.sandbox
+        return engine
+
+    def _launch(self, mission: Mission, status: ProviderStatus, **run_kwargs) -> None:
+        engine = self._new_engine(mission, status)
         self._engine = engine
         self._view = None
         thread = threading.Thread(target=self._run, args=(engine,), kwargs=run_kwargs, name="team-engine")
