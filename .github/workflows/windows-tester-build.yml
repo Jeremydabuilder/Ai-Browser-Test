@@ -1,0 +1,111 @@
+name: Windows tester build
+
+# Builds a Windows installer + portable folder for testers, from the existing packaging
+# (packaging/windows/pybrowser.spec and installer.iss, unmodified). Manual trigger only.
+#
+# What this is NOT: it does not publish a GitHub Release, does not sign anything (the installer is
+# an unsigned preview - SmartScreen will warn), and does not run the unit test suite (that runs on
+# Linux in development; the Windows full-suite run has a documented Qt WebEngine teardown quirk, see
+# release.yml). It DOES prove the frozen exe starts and stays up for 20s with no traceback.
+# The result is a pair of workflow artifacts (testers need access to this repository to download
+# them) plus a SHA-256 list in the job summary.
+on:
+  workflow_dispatch:
+    inputs:
+      note:
+        description: "Short note for this build (shown in the summary)"
+        type: string
+        default: "tester build"
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install "pyinstaller>=6.0" "pyinstaller-hooks-contrib>=2024.0"
+
+      - name: Read the version
+        id: version
+        shell: pwsh
+        run: |
+          $v = (python -c "from app import __version__; print(__version__)").Trim()
+          $short = "${{ github.sha }}".Substring(0, 7)
+          echo "version=$v" >> $env:GITHUB_OUTPUT
+          echo "short=$short" >> $env:GITHUB_OUTPUT
+
+      - name: Build with PyInstaller
+        env:
+          PYBROWSER_CHANNEL: tester
+          PYBROWSER_BUILD_COMMIT: ${{ github.sha }}
+        run: pyinstaller packaging/windows/pybrowser.spec --noconfirm
+
+      - name: Smoke test - the frozen exe starts and stays up
+        shell: pwsh
+        run: |
+          $env:PYBROWSER_DATA_DIR = "$env:RUNNER_TEMP\pybrowser-smoke"
+          $OUT = "$env:RUNNER_TEMP\pybrowser-smoke-stdout.log"
+          $proc = Start-Process -FilePath "dist\PyBrowser\PyBrowser.exe" -PassThru `
+              -RedirectStandardOutput $OUT -RedirectStandardError "$OUT.err"
+          Start-Sleep -Seconds 20
+          $log = "$env:PYBROWSER_DATA_DIR\logs\pybrowser.log"
+          if ($proc.HasExited) {
+            Write-Host "PyBrowser exited early (code $($proc.ExitCode))."
+            if (Test-Path $log) { Get-Content $log }
+            throw "PyBrowser.exe did not stay running"
+          }
+          Stop-Process -Id $proc.Id -Force
+          foreach ($f in @($OUT, "$OUT.err", $log)) {
+            if (Test-Path $f) {
+              $text = Get-Content $f -Raw
+              if ($text -match "Traceback \(most recent call last\)" -or $text -match "ModuleNotFoundError" -or $text -match "ImportError") {
+                Write-Host "--- $f ---"; Write-Host $text
+                throw "Smoke test output contains a traceback or missing-module error"
+              }
+            }
+          }
+          Write-Host "PyBrowser.exe ran for 20s without exiting or logging an error."
+
+      - name: Build the installer (Inno Setup)
+        shell: pwsh
+        run: |
+          choco install innosetup -y --no-progress
+          & "C:\Program Files (x86)\Inno Setup 6\iscc.exe" "/DMyAppVersion=${{ steps.version.outputs.version }}" packaging\windows\installer.iss
+
+      - name: Zip the portable folder and write checksums
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path tester-out | Out-Null
+          $setup = Get-ChildItem "packaging\windows\output\*.exe" | Select-Object -First 1
+          $setupName = "PyBrowser-Setup-${{ steps.version.outputs.version }}-${{ steps.version.outputs.short }}.exe"
+          Copy-Item $setup.FullName "tester-out\$setupName"
+          $zipName = "PyBrowser-Portable-${{ steps.version.outputs.version }}-${{ steps.version.outputs.short }}.zip"
+          Compress-Archive -Path "dist\PyBrowser\*" -DestinationPath "tester-out\$zipName"
+          Copy-Item "packaging\TESTER_GUIDE.md" "tester-out\TESTER_GUIDE.md"
+          $lines = foreach ($f in Get-ChildItem tester-out -File | Where-Object { $_.Extension -ne ".md" }) {
+            "{0}  {1}  ({2:N1} MB)" -f (Get-FileHash $f.FullName -Algorithm SHA256).Hash, $f.Name, ($f.Length / 1MB)
+          }
+          $summary = @("## Windows tester build", "", "Note: ${{ inputs.note }}", "",
+                       "Commit: ${{ github.sha }}", "", "**Unsigned preview** - Windows SmartScreen will warn; see TESTER_GUIDE.md.", "",
+                       "SHA-256:", '```') + $lines + @('```')
+          $summary | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          $lines | Out-File -FilePath tester-out\SHA256.txt -Encoding utf8
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PyBrowser-Windows-tester-${{ steps.version.outputs.short }}
+          path: tester-out/
+          if-no-files-found: error
+          retention-days: 30
