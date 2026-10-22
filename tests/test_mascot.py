@@ -198,11 +198,11 @@ class ArtworkResolutionTests(unittest.TestCase):
             assets.write(assets.final, "idle.gif", "not really a gif")
             self.assertTrue(asset_for(MascotState.IDLE).endswith(".gif"))
 
-    def test_the_new_tab_page_uses_whatever_is_there(self) -> None:
+    def test_the_new_tab_page_no_longer_carries_the_mascot(self) -> None:
         from app.browser.newtab import NewTabData, render
 
-        # The shipped placeholder is already inlined.
-        self.assertIn("data:image", render(NewTabData()))
+        # The new tab page is a plain search page (clean by design); the mascot lives in the AI panel.
+        self.assertNotIn("data:image", render(NewTabData()))
         with _Assets():
             self.assertNotIn("data:image", render(NewTabData()))
 
@@ -413,21 +413,7 @@ class VariantTests(unittest.TestCase):
         full.set_size(80, 112)
         self.assertEqual((full.width(), full.height()), (80, 112))
 
-    def test_the_new_tab_page_uses_the_full_crop(self) -> None:
-        import base64
-
-        from app.browser.newtab import NewTabData, render
-
-        html = render(NewTabData())
-        payload = html.split("base64,", 1)[1].split('"', 1)[0]
-        drawing = base64.b64decode(payload)
-        # Compared byte for byte against the file itself, not against anything
-        # the artwork happens to look like today: the drop-in contract promises
-        # the final drawing may be any format and any size. Bytes, not text -
-        # the artwork is a PNG.
-        with open(asset_for(MascotState.IDLE, Variant.FULL), "rb") as handle:
-            self.assertEqual(drawing, handle.read(),
-                             "the new tab page is not using the full-body crop")
+    def test_the_full_and_panel_crops_are_different_files(self) -> None:
         self.assertNotEqual(asset_for(MascotState.IDLE, Variant.FULL),
                             asset_for(MascotState.IDLE, Variant.PANEL))
 

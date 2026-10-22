@@ -623,7 +623,7 @@ class SetupFlowTests(TeamUITestCase):
             def exec(self):
                 return 0
 
-        fake_window = SimpleNamespace(settings=object(), _apply_agent_settings=lambda: seen.setdefault("applied", True))
+        fake_window = SimpleNamespace(settings=object(), _ai_enabled=True, _apply_agent_settings=lambda: seen.setdefault("applied", True))
         with patch("app.ui.agent_setup.ApiKeyDialog", FakeDialog):
             mw.MainWindow._configure_agent(fake_window, "groq")
             self.assertEqual(seen, {"provider": "groq", "applied": True})

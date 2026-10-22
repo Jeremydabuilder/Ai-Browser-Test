@@ -1651,7 +1651,8 @@ class OnboardingTests(unittest.TestCase):
             self.window = None  # tearDown must not touch the closed window again
 
     def test_the_new_tab_data_carries_the_flag(self) -> None:
-        self.assertTrue(self.window._new_tab_data().show_onboarding)
+        # The new tab page is a plain search page now; the one-time AI choice is a dialog (AiChoiceDialog).
+        self.assertFalse(self.window._new_tab_data().show_onboarding)
         self.window.missions.start("find shoes")
         self.assertFalse(self.window._new_tab_data().show_onboarding)
 
