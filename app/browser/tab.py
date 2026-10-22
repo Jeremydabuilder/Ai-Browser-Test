@@ -65,6 +65,8 @@ class BrowserTab(QWidget):
     ) -> None:
         super().__init__(parent)
         self._profile = profile
+        #: The AI master switch; the window flips it. Off = no "Ask Py" entries in the right-click menu.
+        self.ai_enabled = True
         self._loading = False
         self._load_ok = True
         self._refused_action = False
@@ -224,6 +226,9 @@ class BrowserTab(QWidget):
         """
         selected = self._page.selectedText().strip()
         menu = self._view.createStandardContextMenu()
+        if not self.ai_enabled:
+            menu.exec(self._view.mapToGlobal(pos))     # a normal browser's menu: nothing AI in it
+            return
         menu.addSeparator()
         ask_menu = self._build_ask_menu(selected)
         ask_menu.setParent(menu)

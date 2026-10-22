@@ -16,12 +16,15 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QApplication,
     QButtonGroup,
+    QCheckBox,
     QDialog,
     QDialogButtonBox,
     QFrame,
     QLabel,
     QLineEdit,
+    QPushButton,
     QRadioButton,
+    QScrollArea,
     QTabWidget,
     QVBoxLayout,
     QWidget,
@@ -52,7 +55,8 @@ class SettingsDialog(QDialog):
     saved = Signal()
 
     def __init__(self, settings: SettingsStore, parent: QWidget | None = None,
-                 *, mcp=None, mcp_server=None, knowledge=None, security=False) -> None:
+                 *, mcp=None, mcp_server=None, knowledge=None, security=False,
+                 on_configure_ai=None) -> None:
         """``mcp`` is an McpConnectionManager (app.mcp.connection_manager), or
         None. When given, a "Connected Tools" tab is added alongside General -
         omitting it (rather than requiring every caller to pass one) keeps
@@ -75,25 +79,33 @@ class SettingsDialog(QDialog):
         c = theme.palette_for(QApplication.instance())
         m = theme.METRICS
         self.setWindowTitle("Settings")
-        self.resize(560, 520)
+        self.resize(560, 640)
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(0)
+
+        def scrolling(page: QWidget) -> QScrollArea:
+            """General has grown (AI switch, menu bar...): scroll it instead of squeezing the controls."""
+            area = QScrollArea(self)
+            area.setWidgetResizable(True)
+            area.setFrameShape(QFrame.Shape.NoFrame)
+            area.setWidget(page)
+            return area
 
         if mcp is None and mcp_server is None and knowledge is None and not security:
             general = QWidget(self)
             layout = QVBoxLayout(general)
             layout.setContentsMargins(m.space_5, m.space_5, m.space_5, m.space_4)
             layout.setSpacing(m.space_2)
-            outer.addWidget(general)
+            outer.addWidget(scrolling(general))
         else:
             tabs = QTabWidget(self)
             general = QWidget(self)
             layout = QVBoxLayout(general)
             layout.setContentsMargins(m.space_5, m.space_5, m.space_5, m.space_4)
             layout.setSpacing(m.space_2)
-            tabs.addTab(general, "General")
+            tabs.addTab(scrolling(general), "General")
 
             if mcp is not None:
                 from app.ui.mcp_settings import ConnectedToolsPanel
@@ -155,6 +167,31 @@ class SettingsDialog(QDialog):
             line.setFrameShape(QFrame.Shape.HLine)
             line.setStyleSheet(f"background:{c.line}; max-height:1px; border:none;")
             return line
+
+        # -- AI: one switch, off by default, like any optional browser feature ---------------
+        layout.addWidget(section_heading("AI features"))
+        self.ai_check = QCheckBox("Turn on AI features", self)
+        self.ai_check.setChecked(settings.ai_enabled)
+        self.ai_check.setAccessibleName("Turn on AI features")
+        layout.addWidget(self.ai_check)
+        self.ai_note = note(
+            "Off: PyBrowser is an ordinary browser. Nothing is sent to any AI service, no AI key is read, "
+            "and no AI menus, buttons or panels are shown.\n"
+            "On: adds AI Mode (ask a question, get a sourced answer), the assistant side panel, the AI Team "
+            "and \u201cAsk\u201d entries in menus. You bring your own provider key (Groq by default); it is "
+            "kept in your system keyring.")
+        layout.addWidget(self.ai_note)
+        self.ai_setup = QPushButton("Set up AI provider\u2026", self)
+        self.ai_setup.setProperty("kind", "chip")
+        self.ai_setup.setVisible(settings.ai_enabled and on_configure_ai is not None)
+        if on_configure_ai is not None:
+            self.ai_setup.clicked.connect(lambda: on_configure_ai())
+        self.ai_check.toggled.connect(lambda on: self.ai_setup.setVisible(on and on_configure_ai is not None))
+        layout.addWidget(self.ai_setup, 0, Qt.AlignmentFlag.AlignLeft)
+
+        layout.addSpacing(m.space_2)
+        layout.addWidget(divider())
+        layout.addSpacing(m.space_2)
 
         heading = section_heading("When I open a new tab or press Home")
         layout.addWidget(heading)
@@ -292,6 +329,7 @@ class SettingsDialog(QDialog):
             self.problem.setText("Enter the address you want new tabs to open.")
             return
 
+        self._settings.ai_enabled = self.ai_check.isChecked()
         self._settings.search_url = template
         self._settings.new_tab_mode = mode
         self._settings.new_tab_custom_url = self.custom.text()

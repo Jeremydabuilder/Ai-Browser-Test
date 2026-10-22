@@ -281,3 +281,51 @@ class FirstRunDialog(QDialog):
     def _request_mission(self, prompt: str) -> None:
         self.try_mission_requested.emit(prompt)
         self.accept()
+
+
+class AiChoiceDialog(QDialog):
+    """The only first-run question: do you want AI features? Default (and Esc): no.
+
+    PyBrowser is an ordinary browser; AI is an option you switch on, like Firefox's. Nothing is
+    configured or sent anywhere by this dialog - choosing "Turn on" only sets the switch and lets
+    the window open the provider setup.
+    """
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.enable_ai = False
+        c = theme.palette_for(QApplication.instance())
+        m = theme.METRICS
+        self.setWindowTitle("Welcome to PyBrowser")
+        self.setModal(True)
+        self.setMinimumWidth(420)
+        box = QVBoxLayout(self)
+        box.setContentsMargins(m.space_5, m.space_5, m.space_5, m.space_4)
+        box.setSpacing(m.space_3)
+        title = QLabel("Welcome to PyBrowser", self)
+        title.setStyleSheet(f"color:{c.text}; font-size:{m.text_lg + 4}px; font-weight:700;")
+        box.addWidget(title)
+        body = QLabel(
+            "A fast, private browser. Everything works as you would expect - tabs, bookmarks, history, "
+            "downloads, find in page.\n\n"
+            "AI features are optional and off. If you want them, AI Mode and an assistant panel can be "
+            "turned on now or later in Settings. They use your own provider key; nothing is sent anywhere "
+            "until you set one up.", self)
+        body.setWordWrap(True)
+        body.setStyleSheet(f"color:{c.muted}; font-size:{m.text}px;")
+        box.addWidget(body)
+        row = QHBoxLayout()
+        row.addStretch(1)
+        keep = QPushButton("Keep AI off", self)
+        keep.setProperty("kind", "primary")
+        keep.setDefault(True)
+        keep.clicked.connect(self.reject)
+        enable = QPushButton("Turn on AI features\u2026", self)
+        enable.clicked.connect(self._enable)
+        row.addWidget(enable)
+        row.addWidget(keep)
+        box.addLayout(row)
+
+    def _enable(self) -> None:
+        self.enable_ai = True
+        self.accept()

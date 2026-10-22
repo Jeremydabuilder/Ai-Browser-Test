@@ -199,30 +199,17 @@ class DataTests(unittest.TestCase):
             self.assertTrue(source.startswith("data:"),
                             f"image is fetched rather than inlined: {source[:40]}")
 
-    def test_py_is_on_the_page(self) -> None:
+    def test_the_page_is_plain_when_ai_is_off(self) -> None:
         html = render(NewTabData())
-        self.assertIn("data:image", html, "Py is missing from the new tab page")
-        self.assertIn("What should Py do?", html)
+        self.assertNotIn("data:image", html)                     # no mascot, nothing inlined
+        for word in ("Py do", "mission", "Ask Py", "Mission", "AI Mode", "id=\"ai\""):
+            self.assertNotIn(word, html)
+        self.assertIn('"aiEnabled": false', html)
 
-    def test_py_is_inlined_exactly_once(self) -> None:
-        """The artwork is large; inlining it twice doubles every new tab.
-
-        It happened: the substitution token was also named in a comment, and a
-        plain string replace does not know the difference.
-        """
-        self.assertEqual(render(NewTabData()).count("data:image"), 1)
-
-    def test_the_offers_say_what_they_are_for(self) -> None:
-        # "Compare" on its own is a word, not an offer.
-        html = render(NewTabData())
-        for label, blurb in (("Research a topic", "Go deep, with sources"),
-                             ("Compare products", "Weigh options side by side"),
-                             ("Summarize my tabs", "Get the key points"),
-                             ("Plan something", "Turn research into a plan"),
-                             ("Find the best option", "Get a recommendation"),
-                             ("Ask about this page", "Anything, right now")):
-            self.assertIn(label, html)
-            self.assertIn(blurb, html)
+    def test_the_ai_button_is_only_offered_when_ai_is_on(self) -> None:
+        self.assertIn('"aiEnabled": true', render(NewTabData(ai_enabled=True)))
+        self.assertEqual(collect(ai_enabled=True).ai_enabled, True)
+        self.assertEqual(collect().ai_enabled, False)
 
 
 class SettingsTests(unittest.TestCase):
@@ -296,11 +283,10 @@ class RenderedPageTests(unittest.TestCase):
     def test_the_tab_is_labelled_new_tab(self) -> None:
         self.assertEqual(self.tabs.tabText(self.tabs.indexOf(self.tab)), "New Tab")
 
-    def test_it_lists_recent_pages_and_bookmarks(self) -> None:
-        self.assertEqual(self.js("document.querySelector('#recent a').textContent"),
-                         "Example Oneexample.com")
-        self.assertEqual(self.js("document.querySelector('#bookmarks a').textContent"),
-                         "Bookmarkedbook.example")
+    def test_it_shows_one_tile_per_site_bookmarks_first(self) -> None:
+        self.assertEqual(self.js("document.querySelectorAll('#sites a').length"), 2)
+        self.assertEqual(self.js("document.querySelector('#sites a .name').textContent"), "book.example")
+        self.assertEqual(self.js("document.querySelectorAll('#sites a .name')[1].textContent"), "example.com")
 
     def test_a_hostile_title_renders_as_text_not_markup(self) -> None:
         _profile.set_new_tab_provider(lambda: collect(
@@ -311,9 +297,9 @@ class RenderedPageTests(unittest.TestCase):
             self.tab.load_finished.connect(finished.append)
             self.tab.reload()
             self.assertTrue(pump(lambda: finished))
-            self.assertEqual(self.js("document.querySelectorAll('#recent img').length"), 0)
+            self.assertEqual(self.js("document.querySelectorAll('#sites img').length"), 0)
             self.assertEqual(self.js("String(window.pwned)"), "undefined")
-            self.assertIn("<img", self.js("document.querySelector('#recent a').textContent"))
+            self.assertIn("<img", self.js("document.querySelector('#sites a').title"))
         finally:
             _profile.set_new_tab_provider(lambda: collect(
                 _History(self.recent), _Bookmarks(self.marks), agent_available=True))
@@ -337,20 +323,31 @@ class RenderedPageTests(unittest.TestCase):
         self.assertTrue(pump(lambda: actions, 6000), "no action was emitted")
         self.assertEqual(actions[0], ("search", {"q": "best gaming laptops"}))
 
-    def test_the_page_is_still_on_screen_after_asking(self) -> None:
-        # The action is intercepted and refused, so the page must not have
-        # navigated itself anywhere.
-        actions = []
-        self.tabs.internal_action.connect(lambda name, params: actions.append(name))
-        self.tab.run_javascript("document.querySelector('.mark').click();")
-        self.assertTrue(pump(lambda: actions, 6000))
-        self.assertEqual(actions[0], "ai")
-        self.assertEqual(self.tab.url().toString(), NEW_TAB_URL)
+    def test_the_ai_mode_button_is_hidden_while_ai_is_off_and_asks_for_ai_mode_when_on(self) -> None:
+        self.assertTrue(self.js("document.getElementById('ai') === null"))        # not hidden: absent
+        _profile.set_new_tab_provider(lambda: collect(
+            _History(self.recent), _Bookmarks(self.marks), ai_enabled=True))
+        try:
+            finished = []
+            self.tab.load_finished.connect(finished.append)
+            self.tab.reload()
+            self.assertTrue(pump(lambda: finished))
+            self.assertEqual(self.js("getComputedStyle(document.getElementById('ai')).display"), "flex")
+            actions = []
+            self.tabs.internal_action.connect(lambda name, params: actions.append((name, dict(params))))
+            self.tab.run_javascript("document.getElementById('q').value='why is the sky blue';"
+                                    "document.getElementById('ai').click();")
+            self.assertTrue(pump(lambda: actions, 6000))
+            self.assertEqual(actions[0], ("aimode", {"q": "why is the sky blue"}))
+            self.assertEqual(self.tab.url().toString(), NEW_TAB_URL)      # the page never navigated itself
+        finally:
+            _profile.set_new_tab_provider(lambda: collect(
+                _History(self.recent), _Bookmarks(self.marks), agent_available=True))
 
-    def test_clicking_a_recent_page_asks_the_browser_to_open_it(self) -> None:
+    def test_clicking_a_site_asks_the_browser_to_open_it(self) -> None:
         actions = []
         self.tabs.internal_action.connect(lambda name, params: actions.append((name, dict(params))))
-        self.tab.run_javascript("document.querySelector('#recent a').click();")
+        self.tab.run_javascript("document.querySelectorAll('#sites a')[1].click();")
         self.assertTrue(pump(lambda: actions, 6000))
         self.assertEqual(actions[0], ("open", {"url": "https://example.com/one"}))
 
@@ -364,103 +361,18 @@ class RenderedPageTests(unittest.TestCase):
         self.assertIn("address", hint("youtube.com"))
         self.assertIn("search", hint("best gaming laptops"))
 
-    def test_empty_states_appear_with_no_data(self) -> None:
+    def test_the_empty_state_is_one_quiet_line(self) -> None:
         _profile.set_new_tab_provider(NewTabData)
         try:
             finished = []
             self.tab.load_finished.connect(finished.append)
             self.tab.reload()
             self.assertTrue(pump(lambda: finished))
-            self.assertEqual(self.js("document.querySelectorAll('.empty').length"), 3)
+            self.assertFalse(self.js("document.getElementById('empty').hidden"))
+            self.assertEqual(self.js("document.querySelectorAll('#sites a').length"), 0)
         finally:
             _profile.set_new_tab_provider(lambda: collect(
                 _History(self.recent), _Bookmarks(self.marks), agent_available=True))
-
-    def test_onboarding_is_hidden_by_default(self) -> None:
-        self.assertTrue(self.js("document.getElementById('onboarding').hidden"))
-
-    def test_onboarding_shows_when_asked(self) -> None:
-        _profile.set_new_tab_provider(lambda: collect(
-            _History(self.recent), _Bookmarks(self.marks),
-            agent_available=True, show_onboarding=True))
-        try:
-            finished = []
-            self.tab.load_finished.connect(finished.append)
-            self.tab.reload()
-            self.assertTrue(pump(lambda: finished))
-            self.assertFalse(self.js("document.getElementById('onboarding').hidden"))
-        finally:
-            _profile.set_new_tab_provider(lambda: collect(
-                _History(self.recent), _Bookmarks(self.marks), agent_available=True))
-
-    def test_dismissing_onboarding_asks_the_browser_to_remember_it(self) -> None:
-        _profile.set_new_tab_provider(lambda: collect(
-            _History(self.recent), _Bookmarks(self.marks),
-            agent_available=True, show_onboarding=True))
-        try:
-            finished = []
-            self.tab.load_finished.connect(finished.append)
-            self.tab.reload()
-            self.assertTrue(pump(lambda: finished))
-            actions = []
-            self.tabs.internal_action.connect(lambda name, params: actions.append(name))
-            self.tab.run_javascript("document.getElementById('onboarding-close').click();")
-            self.assertTrue(pump(lambda: actions, 6000))
-            self.assertEqual(actions[0], "dismiss-onboarding")
-        finally:
-            _profile.set_new_tab_provider(lambda: collect(
-                _History(self.recent), _Bookmarks(self.marks), agent_available=True))
-
-    def test_dismissing_onboarding_hides_it_immediately(self) -> None:
-        # act() navigates to a pybrowser:// URL the browser intercepts and
-        # refuses to render, so the page itself never reloads on its own -
-        # the card has to hide itself on click, not wait for a navigation
-        # that will never actually happen.
-        _profile.set_new_tab_provider(lambda: collect(
-            _History(self.recent), _Bookmarks(self.marks),
-            agent_available=True, show_onboarding=True))
-        try:
-            finished = []
-            self.tab.load_finished.connect(finished.append)
-            self.tab.reload()
-            self.assertTrue(pump(lambda: finished))
-            self.tab.run_javascript("document.getElementById('onboarding-close').click();")
-            self.assertTrue(pump(
-                lambda: self.js("document.getElementById('onboarding').hidden") is True))
-        finally:
-            _profile.set_new_tab_provider(lambda: collect(
-                _History(self.recent), _Bookmarks(self.marks), agent_available=True))
-
-    def test_trying_the_demo_asks_the_browser_to_start_one(self) -> None:
-        _profile.set_new_tab_provider(lambda: collect(
-            _History(self.recent), _Bookmarks(self.marks),
-            agent_available=True, show_onboarding=True))
-        try:
-            finished = []
-            self.tab.load_finished.connect(finished.append)
-            self.tab.reload()
-            self.assertTrue(pump(lambda: finished))
-            actions = []
-            self.tabs.internal_action.connect(lambda name, params: actions.append(name))
-            self.tab.run_javascript("document.getElementById('onboarding-demo').click();")
-            self.assertTrue(pump(lambda: actions, 6000))
-            self.assertEqual(actions[0], "demo-mission")
-        finally:
-            _profile.set_new_tab_provider(lambda: collect(
-                _History(self.recent), _Bookmarks(self.marks), agent_available=True))
-
-
-class OnboardingDataTests(unittest.TestCase):
-    def test_the_flag_round_trips_through_json(self) -> None:
-        data = NewTabData(show_onboarding=True)
-        self.assertTrue(json.loads(data.to_json())["showOnboarding"])
-
-    def test_it_defaults_to_false(self) -> None:
-        self.assertFalse(NewTabData().show_onboarding)
-
-    def test_collect_carries_the_flag_through(self) -> None:
-        data = collect(show_onboarding=True)
-        self.assertTrue(data.show_onboarding)
 
 
 if __name__ == "__main__":

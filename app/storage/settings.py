@@ -32,6 +32,13 @@ KEY_MCP_SERVER_ENABLED = "mcp_server_enabled"
 #: explicitly opting in first.
 KEY_SEMANTIC_HISTORY_ENABLED = "semantic_history_enabled"
 
+#: The master switch for every AI feature (agent panel, Team, missions, AI Mode,
+#: "Ask" menus, scheduled agent tasks). OFF by default: out of the box PyBrowser is an
+#: ordinary browser that never touches an AI key or service, and the user opts in from
+#: Settings (like Firefox). ``PYBROWSER_AI_DEFAULT=1`` flips only the default - used by
+#: the test-suite - never an explicit choice the user has stored.
+KEY_AI_ENABLED = "ai_enabled"
+
 #: Phase 15 - Privacy Firewall + Prompt-Injection Defense. All default ON:
 #: unlike semantic history (opt-in indexing of the user's own data), these
 #: are protective defaults for data already about to leave the browser -
@@ -140,6 +147,26 @@ class SettingsStore:
     @mcp_server_enabled.setter
     def mcp_server_enabled(self, value: bool) -> None:
         self.set_bool(KEY_MCP_SERVER_ENABLED, value)
+
+    @property
+    def show_menu_bar(self) -> bool:
+        """Off by default: every menu lives in the toolbar's main menu (\u22ee), as in Chrome/Firefox."""
+        return self.get_bool("show_menu_bar", False)
+
+    @show_menu_bar.setter
+    def show_menu_bar(self, value: bool) -> None:
+        self.set_bool("show_menu_bar", bool(value))
+
+    @property
+    def ai_enabled(self) -> bool:
+        import os
+
+        fallback = os.environ.get("PYBROWSER_AI_DEFAULT", "") == "1"
+        return self.get_bool(KEY_AI_ENABLED, fallback)
+
+    @ai_enabled.setter
+    def ai_enabled(self, value: bool) -> None:
+        self.set_bool(KEY_AI_ENABLED, bool(value))
 
     @property
     def semantic_history_enabled(self) -> bool:

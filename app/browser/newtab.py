@@ -84,6 +84,8 @@ class NewTabData:
     #: {"id", "title", "status", "progress"}.
     recent_missions: list[dict[str, object]] = field(default_factory=list)
     agent_available: bool = False
+    #: The AI master switch. Off = a plain new tab (search + your sites), no AI wording, no AI Mode.
+    ai_enabled: bool = False
     #: Show the first-launch explainer card. True only before the user has
     #: started a first Mission and before they have dismissed it - see
     #: main_window._new_tab_data. Never shown again once either happens.
@@ -93,9 +95,7 @@ class NewTabData:
         payload = json.dumps({
             "recent": self.recent,
             "bookmarks": self.bookmarks,
-            "recentMissions": self.recent_missions,
-            "agentAvailable": self.agent_available,
-            "showOnboarding": self.show_onboarding,
+            "aiEnabled": self.ai_enabled,
         }, ensure_ascii=False)
         # A page title containing "</script>" would otherwise end the block and
         # let arbitrary markup follow. Escaping "<" makes that impossible while
@@ -105,7 +105,7 @@ class NewTabData:
 
 def collect(history=None, bookmarks=None, missions=None, *,
             agent_available: bool = False, limit: int = 8,
-            show_onboarding: bool = False) -> NewTabData:
+            show_onboarding: bool = False, ai_enabled: bool = False) -> NewTabData:
     """Gather the page's content from the stores, tolerating failure.
 
     A new tab must open even if the database is locked, missing or broken, so
@@ -113,7 +113,7 @@ def collect(history=None, bookmarks=None, missions=None, *,
     failing to appear. ``missions`` is a MissionService (or anything with the
     same ``.recent(limit)``); read-only, the same as history and bookmarks.
     """
-    data = NewTabData(agent_available=agent_available, show_onboarding=show_onboarding)
+    data = NewTabData(agent_available=agent_available, show_onboarding=show_onboarding, ai_enabled=ai_enabled)
     try:
         if history is not None:
             seen: set[str] = set()
@@ -189,7 +189,9 @@ def render(data: NewTabData, dark: bool | None = None) -> str:
         dark = _browser_is_dark()
     return (_TEMPLATE
             .replace("__THEME__", ' data-theme="dark"' if dark else ' data-theme="light"')
-            .replace("__MASCOT__", _mascot_markup())
+            .replace("__FIELD_CLASS__", " with-ai" if data.ai_enabled else "")
+            .replace("__AI_BUTTON__", _AI_BUTTON.strip() if data.ai_enabled else "")
+            .replace("__AI_HINT__", " \\u00b7 Alt+Enter for AI Mode" if data.ai_enabled else "")
             .replace("__DATA__", data.to_json()))
 
 
@@ -254,650 +256,146 @@ _PLACEHOLDER_MARK = (
 )
 
 
+_AI_BUTTON = """
+      <button id="ai" type="button" title="Ask a question and get a sourced answer (Alt+Enter)">
+        <svg viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path d="M10 1.5l1.7 4.6 4.6 1.7-4.6 1.7L10
+          14.1 8.3 9.5 3.7 7.8l4.6-1.7zM16 12.5l.8 2.2 2.2.8-2.2.8-.8 2.2-.8-2.2-2.2-.8 2.2-.8z"/></svg>AI Mode</button>
+"""
+
 _TEMPLATE = """<!doctype html>
 <html lang="en"__THEME__>
 <head>
 <meta charset="utf-8">
 <title>New Tab</title>
 <style>
-  /* Kept in step with app/ui/theme.py: same accent, same radii, same 4px
-     spacing scale. The page inside the browser and the chrome around it are
-     one design, so they use one set of numbers. */
   :root {
-    --bg: #f4f4f7;
-    --surface: #ffffff;
-    --surface-alt: #eaeaf0;
-    --line: #e0e0e8;
-    --text: #17171d;
-    --muted: #65656f;
-    --disabled: #a8a8b4;
-    --accent: #3d5afe;
-    --accent2: #7b3ff2;
-    --accent-soft: #eeedfc;
-    --gradient: linear-gradient(135deg, var(--accent), var(--accent2));
-    --glow: rgba(75, 70, 212, .07);
-    /* A second, more saturated wash for the page background and the stage
-       behind Py - `--glow` stays as it was for the small, close-up uses
-       (button hover, focus rings) that were tuned for that intensity. */
-    --glow-strong: rgba(75, 70, 212, .16);
-    --glow2-strong: rgba(123, 63, 242, .12);
-    --shadow: 0 1px 2px rgba(20, 20, 40, .04), 0 10px 30px rgba(20, 20, 40, .06);
-    --shadow-lift: 0 2px 6px rgba(20, 20, 40, .07), 0 16px 40px rgba(20, 20, 40, .10);
-    --radius-sm: 6px;
-    --radius-md: 9px;
-    --radius-lg: 14px;
+    --bg: #fafafc; --surface: #ffffff; --line: #e4e4ec; --text: #1a1a22; --muted: #6b6b78;
+    --accent: #3d5afe; --accent2: #7b3ff2; --accent-soft: #eef0ff;
+    --shadow: 0 1px 2px rgba(20,20,40,.05), 0 8px 24px rgba(20,20,40,.06);
   }
-  /* Two ways in. The browser tells the page its theme explicitly with
-     data-theme, because Chromium's prefers-color-scheme comes from the
-     platform and the chrome's comes from the Qt palette - and a page that
-     disagrees with the window around it looks broken. prefers-color-scheme is
-     kept as the fallback for when nothing was passed. */
   @media (prefers-color-scheme: dark) {
     :root:not([data-theme="light"]) {
-      --bg: #141419;
-      --surface: #1e1e25;
-      --surface-alt: #262630;
-      --line: #30303b;
-      --text: #eeeef3;
-      --muted: #9797a6;
-      --disabled: #61616e;
-      --accent: #8c9cff;
-      --accent2: #b98cff;
-      --accent-soft: #282740;
-      --glow: rgba(139, 134, 255, .10);
-      --glow-strong: rgba(140, 156, 255, .20);
-      --glow2-strong: rgba(185, 140, 255, .16);
-      --shadow: 0 1px 2px rgba(0, 0, 0, .35), 0 10px 30px rgba(0, 0, 0, .35);
-      --shadow-lift: 0 2px 6px rgba(0, 0, 0, .4), 0 16px 40px rgba(0, 0, 0, .45);
+      --bg: #16161b; --surface: #1f1f27; --line: #30303b; --text: #eeeef3; --muted: #9a9aa8;
+      --accent: #8c9cff; --accent2: #b98cff; --accent-soft: #272a45;
+      --shadow: 0 1px 2px rgba(0,0,0,.4), 0 8px 24px rgba(0,0,0,.35);
     }
   }
   :root[data-theme="dark"] {
-    --bg: #141419;
-    --surface: #1e1e25;
-    --surface-alt: #262630;
-    --line: #30303b;
-    --text: #eeeef3;
-    --muted: #9797a6;
-    --disabled: #61616e;
-    --accent: #8c9cff;
-    --accent2: #b98cff;
-    --accent-soft: #282740;
-    --glow: rgba(139, 134, 255, .10);
-    --glow-strong: rgba(140, 156, 255, .20);
-    --glow2-strong: rgba(185, 140, 255, .16);
-    --shadow: 0 1px 2px rgba(0, 0, 0, .35), 0 10px 30px rgba(0, 0, 0, .35);
-    --shadow-lift: 0 2px 6px rgba(0, 0, 0, .4), 0 16px 40px rgba(0, 0, 0, .45);
+    --bg: #16161b; --surface: #1f1f27; --line: #30303b; --text: #eeeef3; --muted: #9a9aa8;
+    --accent: #8c9cff; --accent2: #b98cff; --accent-soft: #272a45;
+    --shadow: 0 1px 2px rgba(0,0,0,.4), 0 8px 24px rgba(0,0,0,.35);
   }
   * { box-sizing: border-box; }
-  /* min-height, not height: this page is routinely taller than one viewport
-     (mascot, search, six action cards, three columns, footer), and a fixed
-     height locks body's own box - and therefore the gradient background
-     painted on it - to exactly one viewport tall. Content past that still
-     renders, just with no box left under it to paint on, so the page fell
-     back to the browser's own default white canvas for everything below
-     roughly one screen's worth of content: a hard purple-to-white seam right
-     around the action cards on a typical window size, which is exactly the
-     "white band" bug this fixes. min-height still fills the screen when
-     content is shorter, and grows with it otherwise - there is no longer a
-     point where the background box can end before the content does. html
-     gets the same treatment (and its own solid --bg as a plain fallback) so
-     neither element can ever leave a gap. */
   html, body { min-height: 100%; }
   html { background: var(--bg); }
   body {
-    margin: 0;
-    /* Two soft washes, blue and violet - the same pair the wordmark and every
-       primary button already use - so the page reads as a considered brand
-       moment rather than a grey settings screen with a search box on it.
-       Both are large, both are diffuse, and neither ever sits under text: the
-       point is atmosphere, not a poster behind the content. background-attachment:
-       fixed keeps both washes anchored to the viewport (not the page's full
-       scroll height) so they read as one continuous stage lit from a couple
-       of fixed points, rather than stretching - and washing out - over
-       whatever the page's total height happens to be. */
-    background:
-      radial-gradient(ellipse 900px 560px at 28% 8%,
-                      var(--glow-strong) 0%, transparent 62%),
-      radial-gradient(ellipse 820px 620px at 78% 30%,
-                      var(--glow2-strong) 0%, transparent 60%),
-      var(--bg);
-    background-attachment: fixed, fixed, fixed;
-    color: var(--text);
-    font: 14px/1.55 system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
-    display: flex;
-    justify-content: center;
-    -webkit-font-smoothing: antialiased;
+    margin: 0; background: var(--bg); color: var(--text); -webkit-font-smoothing: antialiased;
+    font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+    display: flex; justify-content: center;
   }
-  main {
-    width: 100%;
-    max-width: 640px;
-    padding: 0 24px 72px;
-    display: flex;
-    flex-direction: column;
-    /* Above the true centre - the optical centre of a screen sits higher than
-       its middle, and a search box pinned to the exact middle looks low. */
-    padding-top: clamp(56px, 15vh, 148px);
-    animation: rise .32s cubic-bezier(.22, .8, .3, 1) both;
-  }
-  @keyframes rise {
-    from { opacity: 0; transform: translateY(8px); }
-    to   { opacity: 1; transform: none; }
-  }
-  /* Someone who has asked their system not to animate things means it. */
-  @media (prefers-reduced-motion: reduce) {
-    main { animation: none; }
-    * { transition: none !important; }
-  }
-
-  .brand {
-    display: flex; flex-direction: column; align-items: center;
-    gap: 12px; margin-bottom: 20px; user-select: none;
-  }
-  /* The character's own stage: a soft radial glow behind Py so the artwork
-     reads as part of the page's composition rather than a sticker dropped on
-     top of it, plus generous padding on every side so nothing - hair, hands,
-     shoes - ever sits flush against an edge. A separate element from .mark
-     itself so a future subtle animation (a hover tilt, a floor shadow that
-     breathes with him) has somewhere to live without fighting the image's
-     own sizing. */
-  .mark-wrap {
-    display: flex; align-items: flex-end; justify-content: center;
-    /* Real room on every side, not just the top: the artwork is trimmed
-       tight to the character, so the breathing room a full-body pose needs
-       - space for shoes to plant, arms to swing on hover, hands not to
-       brush the edge - has to come from here rather than from the image. */
-    padding: 28px 48px 20px;
-    cursor: pointer;
-    /* The same two-tone wash the page background uses behind him too, so
-       Py's own stage reads as the same brand rather than a plainer glow -
-       violet offset slightly from blue, the way the AI gradient elsewhere
-       is never just one flat colour. */
-    background:
-      radial-gradient(closest-side at 42% 45%, var(--glow), transparent 70%),
-      radial-gradient(closest-side at 60% 55%, var(--glow2-strong), transparent 65%);
-  }
-  .mark {
-    /* Full-body Py, so the box is taller than it is wide and the width
-       follows the artwork rather than the other way round. Whatever aspect
-       the final drawing has, it keeps it - and nothing here ever clips it:
-       no border-radius, no fixed box the art has to fit inside. */
-    display: block;
-    width: auto; height: 300px; max-width: 100%; max-height: 40vh;
-    color: var(--accent);
-    filter: drop-shadow(0 16px 22px rgba(20, 20, 40, .16));
-    transition: transform .16s ease, filter .16s ease;
-    /* Py breathes here the same way Py breathes in the agent panel. Slow, tiny,
-       and off entirely for anyone who asked for less motion. */
-    animation: breathe 5.5s ease-in-out infinite;
-  }
-  /* Below about 420px the character competes with the search box for the
-     little vertical space there is, so it steps down rather than dominating. */
-  /* Py steps down before crowding the search box, rather than pushing it off
-     the screen: on a short window the box is the thing you came for. */
-  @media (max-height: 760px) {
-    main { padding-top: clamp(24px, 6vh, 72px); }
-    .mark { height: 208px; }
-    .mark-wrap { padding: 20px 40px 14px; }
-    .brand { margin-bottom: 12px; }
-  }
-  @media (max-height: 640px) {
-    .mark { height: 178px; }
-    .mark-wrap { padding: 14px 32px 10px; }
-  }
-  @media (max-height: 520px), (max-width: 420px) {
-    .mark { height: 128px; }
-    .mark-wrap { padding: 8px 22px 6px; }
-    main { padding-top: clamp(20px, 6vh, 60px); }
-    .brand { gap: 8px; margin-bottom: 18px; }
-  }
-  /* Barely there on purpose: enough that the page is not a still image,
-     little enough that it never asks to be watched. */
-  @keyframes breathe {
-    0%, 100% { transform: translateY(0) }
-    50%      { transform: translateY(-3px) }
-  }
-  /* Py, listening: a touch livelier than the idle breath, for as long as the
-     search box actually has focus - see the "listening" class toggled below.
-     Still a rigid transform on the same still frame, same as the idle
-     breath; it never claims to be a different pose. */
-  @keyframes listen {
-    0%, 100% { transform: translateY(0) scale(1); }
-    50%      { transform: translateY(-4px) scale(1.012); }
-  }
-  .mark.listening { animation: listen 2.1s ease-in-out infinite; }
-  .mark:hover {
-    transform: scale(1.045);
-    animation-play-state: paused;
-    filter: drop-shadow(0 16px 26px var(--glow))
-            drop-shadow(0 0 22px var(--glow2-strong));
-  }
-  .mark:focus-visible { outline: 2px solid var(--accent); outline-offset: 6px; border-radius: 12px; }
+  main { width: 100%; max-width: 680px; padding: clamp(48px, 22vh, 190px) 24px 64px; }
   .wordmark {
-    font-size: 23px; font-weight: 600; letter-spacing: -.022em;
+    text-align: center; font-size: 30px; font-weight: 600; letter-spacing: -.03em; margin: 0 0 28px;
+    user-select: none;
   }
-  .wordmark span {
-    background: var(--gradient);
-    -webkit-background-clip: text;
-    background-clip: text;
-    color: transparent;
-  }
-  /* The one-line brand promise, under the wordmark - what PyBrowser is,
-     stated on its own terms rather than against another browser. */
-  .greeting {
-    margin: 2px 0 0; font-size: 13.5px; color: var(--muted); text-align: center;
-  }
-
-  /* The actual question of the page - the thing a visitor reads first and
-     acts on, not the brand line above it. */
-  .prompt-heading {
-    margin: 30px 0 6px; text-align: center;
-    font-size: 27px; font-weight: 700; letter-spacing: -.015em; color: var(--text);
-  }
-  .prompt-sub {
-    margin: 0 0 4px; text-align: center;
-    font-size: 14.5px; color: var(--muted); line-height: 1.5;
-  }
-  @media (max-height: 760px) {
-    .prompt-heading { margin: 16px 0 6px; font-size: 24px; }
-  }
-  @media (max-height: 640px) {
-    .prompt-heading { margin: 12px 0 6px; font-size: 23px; }
-  }
-  @media (max-height: 520px), (max-width: 420px) {
-    .prompt-heading { margin: 12px 0 4px; font-size: 20px; }
-    .prompt-sub { font-size: 13px; }
-  }
-
-  form { position: static; }
+  .wordmark span { color: var(--accent); }
   .field { position: relative; }
   #q {
-    width: 100%;
-    height: 52px;
-    padding: 0 46px 0 46px;
-    font: inherit;
-    font-size: 15px;
-    color: var(--text);
-    background: var(--surface);
-    border: 1px solid var(--line);
-    border-radius: 26px;
-    box-shadow: var(--shadow);
-    outline: none;
-    transition: border-color .16s ease, box-shadow .16s ease;
+    width: 100%; height: 54px; padding: 0 20px 0 50px; font: inherit; font-size: 16px; color: var(--text);
+    background: var(--surface); border: 1px solid var(--line); border-radius: 27px; outline: none;
+    box-shadow: var(--shadow); transition: border-color .12s, box-shadow .12s;
   }
   #q::placeholder { color: var(--muted); }
-  #q:hover { box-shadow: var(--shadow-lift); }
-  #q:focus {
-    border-color: var(--accent);
-    box-shadow: var(--shadow-lift), 0 0 0 4px var(--accent-soft);
+  #q:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft), var(--shadow); }
+  .lead { position: absolute; left: 19px; top: 50%; transform: translateY(-50%); color: var(--muted); display: flex; }
+  .lead svg { width: 19px; height: 19px; }
+  .with-ai #q { padding-right: 124px; }
+  #ai {
+    position: absolute; right: 8px; top: 50%; transform: translateY(-50%); height: 38px; padding: 0 14px;
+    display: none; align-items: center; gap: 6px; cursor: pointer; font: inherit; font-size: 13.5px; font-weight: 600;
+    color: var(--accent); background: var(--accent-soft); border: 1px solid transparent; border-radius: 19px;
   }
-  .search-icon {
-    position: absolute; left: 17px; top: 50%; transform: translateY(-50%);
-    width: 17px; height: 17px; color: var(--muted); pointer-events: none;
-    transition: color .16s ease;
+  .with-ai #ai { display: inline-flex; }
+  #ai:hover { border-color: var(--accent); }
+  #ai:focus-visible, .tile:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  #ai svg { width: 15px; height: 15px; }
+  #hint { height: 22px; margin: 8px 0 0; text-align: center; font-size: 12.5px; color: var(--muted); }
+  .sites { display: grid; grid-template-columns: repeat(auto-fill, minmax(92px, 1fr)); gap: 8px 6px; margin-top: 36px; }
+  .tile {
+    display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 12px 6px 10px; border-radius: 14px;
+    color: var(--text); text-decoration: none; min-width: 0;
   }
-  #q:focus ~ .search-icon { color: var(--accent); }
-  .enter {
-    position: absolute; right: 14px; top: 50%; transform: translateY(-50%);
-    font-size: 11px; color: var(--disabled); pointer-events: none;
-    opacity: 0; transition: opacity .16s ease;
+  .tile:hover { background: var(--accent-soft); }
+  .tile .icon {
+    width: 46px; height: 46px; border-radius: 50%; display: grid; place-items: center; font-weight: 600; font-size: 18px;
+    color: var(--accent); background: var(--surface); border: 1px solid var(--line);
   }
-  .hint {
-    margin: 8px 4px 0; font-size: 12px; color: var(--muted);
-    min-height: 17px;
-  }
-
-  /* The setup notice when no provider is configured yet - only ever shown
-     then, so a working setup never sees an empty reserved line. */
-  .setup-hint {
-    margin: 10px 4px 0; text-align: center;
-    font-size: 12px; color: var(--muted);
-  }
-
-  /* Things Py can do, offered as cards rather than as a toolbar: each says
-     what it is for, because "Compare" on its own is a word, not an offer. */
-  .actions {
-    margin-top: 22px;
-    display: grid; gap: 8px;
-    grid-template-columns: repeat(auto-fit, minmax(132px, 1fr));
-  }
-  .action {
-    font: inherit; text-align: left;
-    background: var(--surface);
-    border: 1px solid var(--line);
-    border-radius: var(--radius-lg);
-    padding: 11px 13px;
-    /* Equal height whether the blurb wraps or not - a row of cards that
-       disagree about their height is the fastest way to look unfinished. */
-    min-height: 62px;
-    /* Titles start at the top, not centred: a blurb that wraps onto a second
-       line would otherwise push its title up out of line with its neighbours,
-       and a row of headings at four different heights reads as broken. */
-    display: flex; flex-direction: column; justify-content: flex-start;
-    cursor: pointer;
-    color: var(--text);
-    transition: border-color .14s ease, box-shadow .14s ease,
-                transform .14s cubic-bezier(.2, .8, .2, 1);
-  }
-  .action:hover {
-    border-color: var(--accent); box-shadow: var(--shadow-lift);
-    transform: translateY(-2px);
-  }
-  .action:active {
-    transform: translateY(0) scale(.98);
-    box-shadow: var(--shadow);
-    transition-duration: .1s;
-  }
-  .action:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-  .action b {
-    display: block; font-size: 13px; font-weight: 600; margin-bottom: 2px;
-  }
-  .action small { color: var(--muted); font-size: 11.5px; line-height: 1.35; }
-
-  .columns {
-    margin-top: 32px;
-    display: grid; gap: 14px 32px;
-    grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
-  }
-  h2 {
-    margin: 0 0 6px; font-size: 11px; font-weight: 600;
-    letter-spacing: .08em; text-transform: uppercase; color: var(--disabled);
-  }
-  ul { list-style: none; margin: 0; padding: 0; }
-  li a {
-    display: flex; align-items: baseline; gap: 8px;
-    padding: 7px 9px; margin: 0 -9px;
-    border-radius: var(--radius-md); text-decoration: none; color: inherit;
-    transition: background .12s ease;
-  }
-  li a:hover { background: var(--surface-alt); }
-  li a:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
-  li a .title {
-    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  }
-  li a .host {
-    color: var(--disabled); font-size: 12px; flex: none;
-    max-width: 42%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  }
-  .empty {
-    color: var(--disabled); font-size: 13px; padding: 7px 0;
-  }
-  /* The first-launch explainer - shown once, never fought for attention with
-     illustrations or a multi-step tour. Sits above the mascot because it is
-     the very first thing a new user should read, then never appears again. */
-  .onboarding {
-    position: relative;
-    background: var(--surface);
-    border: 1px solid var(--line);
-    border-radius: var(--radius-lg);
-    box-shadow: var(--shadow);
-    padding: 16px 40px 16px 18px;
-    margin-bottom: 20px;
-    opacity: 1;
-    transform: none;
-    transition: opacity .18s ease, transform .18s ease;
-  }
-  /* The state right before the card is actually hidden - see dismiss() in
-     the script below. A class rather than the `hidden` attribute itself,
-     because `display:none` cannot be transitioned: this fades and lifts
-     first, then `hidden` lands once it is already invisible. */
-  .onboarding.leaving {
-    opacity: 0; transform: translateY(-6px); pointer-events: none;
-  }
-  /* The moment the card is first allowed to render, before its own entrance
-     transition has had a frame to start from - see show() below. */
-  .onboarding.entering {
-    opacity: 0; transform: translateY(-6px);
-  }
-  .onboarding h2 {
-    margin: 0 0 6px; font-size: 15px; font-weight: 700; letter-spacing: normal;
-    text-transform: none; color: var(--text);
-  }
-  .onboarding p {
-    margin: 0 0 8px; font-size: 12.5px; color: var(--muted); line-height: 1.45;
-  }
-  .onboarding p.reassurance {
-    margin: 0 0 12px; color: var(--text); opacity: .8;
-  }
-  .onboarding .row { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
-  .onboarding .try {
-    height: 34px; padding: 0 16px; border-radius: 8px; cursor: pointer;
-    font: inherit; font-size: 13px; font-weight: 600;
-    background: var(--gradient); color: #fff; border: 1px solid transparent;
-    box-shadow: 0 0 18px -8px var(--accent2);
-    transition: filter .14s ease, box-shadow .14s ease;
-  }
-  .onboarding .try:hover { filter: brightness(1.07); box-shadow: 0 0 22px -6px var(--accent2); }
-  .onboarding .later {
-    background: none; border: none; cursor: pointer; font: inherit;
-    font-size: 13px; color: var(--muted); text-decoration: underline;
-    padding: 0;
-  }
-  .onboarding .close {
-    position: absolute; top: 12px; right: 12px;
-    width: 24px; height: 24px; border-radius: 50%; border: none;
-    background: none; color: var(--disabled); cursor: pointer;
-    font-size: 15px; line-height: 1;
-  }
-  .onboarding .close:hover { background: var(--surface-alt); color: var(--text); }
-  footer {
-    margin-top: 32px; text-align: center;
-    font-size: 12px; color: var(--disabled);
-  }
-  footer a { color: var(--muted); text-decoration: none; }
-  footer a:hover { color: var(--accent); }
-  footer a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .tile .name { width: 100%; text-align: center; font-size: 12.5px; color: var(--muted); white-space: nowrap;
+    overflow: hidden; text-overflow: ellipsis; }
+  .empty { margin-top: 36px; text-align: center; font-size: 13px; color: var(--muted); }
+  @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
 </style>
 </head>
 <body>
 <main>
-  <div class="onboarding" id="onboarding" hidden>
-    <button class="close" id="onboarding-close" type="button" aria-label="Dismiss">✕</button>
-    <h2>Meet Py. Your browser can do the work now.</h2>
-    <p>Ask a question, research a topic, compare options, or give Py a mission.
-       Py can search, read pages, keep track of what it finds, and bring you
-       back a finished result.</p>
-    <p class="reassurance">You stay in control before anything important happens.</p>
-    <div class="row">
-      <button class="try" id="onboarding-demo" type="button">Try a Mission</button>
-      <button class="later" id="onboarding-later" type="button">Explore on my own</button>
-    </div>
-  </div>
-
-  <div class="brand">
-    <!-- The token below is swapped for Py's artwork at render time. Do not
-         mention it by name anywhere else in this file: the substitution is a
-         plain string replace, and a second mention gets substituted too -
-         which inlined the whole drawing a second time, inside a comment. -->
-    <div class="mark-wrap">__MASCOT__</div>
-    <div class="wordmark">Py<span>Browser</span></div>
-    <p class="greeting" id="greeting">The browser that finishes things.</p>
-  </div>
-
-  <h1 class="prompt-heading">What should Py do?</h1>
-  <p class="prompt-sub">Research, compare, summarize, plan, or give Py a mission.</p>
-
+  <h1 class="wordmark">Py<span>Browser</span></h1>
   <form id="f" autocomplete="off">
-    <div class="field">
-    <input id="q" name="q" type="text" autofocus
-           placeholder="Search the web or enter an address"
-           aria-label="Search the web or enter an address">
-    <svg class="search-icon" viewBox="0 0 20 20" fill="none" aria-hidden="true">
-      <circle cx="9" cy="9" r="6" stroke="currentColor" stroke-width="1.7"/>
-      <path d="m13.5 13.5 3.5 3.5" stroke="currentColor" stroke-width="1.7"
-            stroke-linecap="round"/>
-    </svg>
-    <span class="enter" id="enter">Enter</span>
+    <div class="field__FIELD_CLASS__" id="field">
+      <span class="lead" aria-hidden="true"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8"
+        stroke-linecap="round"><circle cx="8.5" cy="8.5" r="5.5"/><path d="M13 13l4 4"/></svg></span>
+      <input id="q" type="text" name="q" placeholder="Search or enter address" aria-label="Search or enter address"
+             autofocus spellcheck="false">
+      __AI_BUTTON__
     </div>
-    <p class="hint" id="hint"></p>
-    <p class="setup-hint" id="ai-sub" hidden></p>
+    <p id="hint" aria-live="polite"></p>
   </form>
-
-  <div class="actions" id="actions"></div>
-
-  <div class="columns">
-    <section>
-      <h2>Recent Missions</h2>
-      <ul id="missions"></ul>
-    </section>
-    <section>
-      <h2>Recent</h2>
-      <ul id="recent"></ul>
-    </section>
-    <section>
-      <h2>Bookmarks</h2>
-      <ul id="bookmarks"></ul>
-    </section>
-  </div>
-
-  <footer>
-    <a href="pybrowser://newtab/action/history">All history</a>
-    &nbsp;·&nbsp;
-    <a href="pybrowser://newtab/action/bookmarks">All bookmarks</a>
-  </footer>
+  <nav class="sites" id="sites" aria-label="Your sites"></nav>
+  <p class="empty" id="empty" hidden>Sites you visit and bookmark will show up here.</p>
 </main>
-
 <script id="data" type="application/json">__DATA__</script>
 <script>
 (function () {
   "use strict";
   var data;
-  try {
-    data = JSON.parse(document.getElementById("data").textContent);
-  } catch (e) {
-    data = { recent: [], bookmarks: [], recentMissions: [], agentAvailable: false };
-  }
+  try { data = JSON.parse(document.getElementById("data").textContent); }
+  catch (e) { data = { recent: [], bookmarks: [], aiEnabled: false }; }
 
   function act(name, params) {
-    var url = "pybrowser://newtab/action/" + name;
-    var parts = [];
-    for (var key in params) {
-      if (params[key]) {
-        parts.push(encodeURIComponent(key) + "=" + encodeURIComponent(params[key]));
-      }
-    }
-    // Navigating is how the page reaches Python: the browser intercepts this
-    // URL, refuses the navigation, and acts on it.
+    var url = "pybrowser://newtab/action/" + name, parts = [];
+    for (var key in params) { if (params[key]) { parts.push(encodeURIComponent(key) + "=" + encodeURIComponent(params[key])); } }
+    // The page only states an intention; the browser intercepts this URL, refuses the navigation and decides.
     window.location.href = parts.length ? url + "?" + parts.join("&") : url;
   }
-
   function host(url) {
-    try {
-      var h = new URL(url).hostname;
-      return h.indexOf("www.") === 0 ? h.slice(4) : h;
-    } catch (e) { return ""; }
+    try { var h = new URL(url).hostname; return h.indexOf("www.") === 0 ? h.slice(4) : h; } catch (e) { return ""; }
   }
 
-  function fill(id, items, emptyText) {
-    var list = document.getElementById(id);
-    if (!items.length) {
-      var note = document.createElement("li");
-      note.className = "empty";
-      note.textContent = emptyText;
-      list.appendChild(note);
-      return;
-    }
-    items.forEach(function (item) {
-      var li = document.createElement("li");
-      var a = document.createElement("a");
-      a.href = "pybrowser://newtab/action/open?url=" + encodeURIComponent(item.url);
-      var title = document.createElement("span");
-      title.className = "title";
-      // textContent, never innerHTML: these titles come from arbitrary
-      // websites and this is a privileged page.
-      title.textContent = item.title;
-      a.appendChild(title);
-      a.title = item.url;
-      var span = document.createElement("span");
-      span.className = "host";
-      span.textContent = host(item.url);
-      a.appendChild(span);
-      li.appendChild(a);
-      list.appendChild(li);
-    });
-  }
+  var box = document.getElementById("q"), hint = document.getElementById("hint");
 
-  function fillMissions(items) {
-    var list = document.getElementById("missions");
-    if (!items.length) {
-      var note = document.createElement("li");
-      note.className = "empty";
-      note.textContent = "Give Py a goal - \\u201cAsk Py something else\\u201d - and it will show up here.";
-      list.appendChild(note);
-      return;
-    }
-    items.forEach(function (item) {
-      var li = document.createElement("li");
-      var a = document.createElement("a");
-      a.href = "pybrowser://newtab/action/mission?id=" + encodeURIComponent(item.id);
-      var title = document.createElement("span");
-      title.className = "title";
-      title.textContent = item.title;
-      a.appendChild(title);
-      var status = document.createElement("span");
-      status.className = "host";
-      status.textContent = item.status === "active" && item.progress
-        ? item.progress : item.status;
-      a.appendChild(status);
-      li.appendChild(a);
-      list.appendChild(li);
-    });
-  }
-
-  fill("recent", data.recent, "Pages you visit will show up here.");
-  fill("bookmarks", data.bookmarks, "Press Ctrl+D on a page to bookmark it.");
-  fillMissions(data.recentMissions || []);
-
-  if (data.showOnboarding) {
-    var onboarding = document.getElementById("onboarding");
-    var reduceMotion = window.matchMedia
-      && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-    // `hidden` flips straight to display:none, which cannot be transitioned,
-    // so the card is shown a frame early in its own zero-opacity "entering"
-    // state and only then let to transition to normal - two rAFs because one
-    // is not reliably enough for the browser to have painted the first
-    // frame before the class driving the transition is removed.
-    onboarding.classList.add("entering");
-    onboarding.hidden = false;
-    requestAnimationFrame(function () {
-      requestAnimationFrame(function () { onboarding.classList.remove("entering"); });
-    });
-
-    // The mirror of the above: fade out first, and only actually hide once
-    // that is done, so dismissing never just snaps away. The underlying
-    // action still fires immediately either way - dismissing is not made to
-    // wait on its own animation.
-    function dismiss(action) {
-      act(action, {});
-      if (reduceMotion) { onboarding.hidden = true; return; }
-      onboarding.classList.add("leaving");
-      setTimeout(function () {
-        onboarding.hidden = true;
-        onboarding.classList.remove("leaving");
-      }, 180);
-    }
-    // act() navigates to a pybrowser:// URL that the browser intercepts and
-    // refuses to render, so the page itself never changes on its own - the
-    // card has to be hidden here, not left to a navigation that never
-    // actually happens.
-    document.getElementById("onboarding-close").addEventListener("click", function () {
-      dismiss("dismiss-onboarding");
-    });
-    document.getElementById("onboarding-later").addEventListener("click", function () {
-      dismiss("dismiss-onboarding");
-    });
-    document.getElementById("onboarding-demo").addEventListener("click", function () {
-      dismiss("demo-mission");
-    });
-  }
-
-  if (!data.agentAvailable) {
-    var setupHint = document.getElementById("ai-sub");
-    setupHint.textContent = "Set Py up first in Tools \\u2192 Configure AI Agent";
-    setupHint.hidden = false;
-  }
-
-  var box = document.getElementById("q");
-  var hint = document.getElementById("hint");
+  // Bookmarks first, then recent pages; one tile per site.
+  var seen = {}, tiles = [];
+  (data.bookmarks || []).concat(data.recent || []).forEach(function (item) {
+    var h = host(item.url);
+    if (!h || seen[h] || tiles.length >= 10) { return; }
+    seen[h] = true;
+    tiles.push({ title: item.title, url: item.url, host: h });
+  });
+  var sites = document.getElementById("sites");
+  tiles.forEach(function (item) {
+    var a = document.createElement("a");
+    a.className = "tile";
+    a.href = "pybrowser://newtab/action/open?url=" + encodeURIComponent(item.url);
+    a.title = item.title + "\\n" + item.url;
+    var icon = document.createElement("span");
+    icon.className = "icon";
+    icon.textContent = (item.host.charAt(0) || "?").toUpperCase();   // textContent: titles come from arbitrary sites
+    var name = document.createElement("span");
+    name.className = "name";
+    name.textContent = item.host;
+    a.appendChild(icon); a.appendChild(name);
+    sites.appendChild(a);
+  });
+  document.getElementById("empty").hidden = tiles.length > 0;
 
   document.getElementById("f").addEventListener("submit", function (event) {
     event.preventDefault();
@@ -905,81 +403,21 @@ _TEMPLATE = """<!doctype html>
     if (text) { act("search", { q: text }); }
   });
 
-  // A hint, not a decision: Python still decides URL vs. search, so this only
-  // has to be roughly right, and being wrong here changes nothing.
-  var enter = document.getElementById("enter");
-  box.addEventListener("input", function () {
-    var text = box.value.trim();
-    enter.style.opacity = text ? "1" : "0";
-    if (!text) { hint.textContent = ""; return; }
-    var looksLikeUrl = /^[a-z][a-z0-9+.-]*:\\/\\//i.test(text) ||
-                       /^[^\\s]+\\.[a-z]{2,}([/:?#]|$)/i.test(text) ||
-                       /^localhost([:/]|$)/i.test(text);
-    hint.textContent = looksLikeUrl ? "Press Enter to go to this address"
-                                    : "Press Enter to search the web";
+  function askAi() { if (data.aiEnabled) { act("aimode", { q: box.value.trim() }); } }
+  var aiButton = document.getElementById("ai");
+  if (aiButton) { aiButton.addEventListener("click", askAi); }
+  box.addEventListener("keydown", function (event) {
+    if (event.altKey && event.key === "Enter") { event.preventDefault(); askAi(); }
   });
 
-  // Py is the companion, so Py is also a button: clicking the character opens
-  // the panel. The card above is what makes that discoverable.
-  var mark = document.querySelector(".mark");
-  if (mark) {
-    mark.setAttribute("role", "button");
-    mark.setAttribute("tabindex", "0");
-    mark.setAttribute("title", "Ask Py");
-    mark.setAttribute("aria-label", "Ask Py");
-    mark.addEventListener("click", function () { act("ai", { q: box.value.trim() }); });
-    mark.addEventListener("keydown", function (event) {
-      if (event.key === "Enter" || event.key === " ") {
-        event.preventDefault();
-        act("ai", { q: box.value.trim() });
-      }
-    });
-    // Py notices when you start typing to him - a real reaction to a real
-    // event (the search box has focus), not motion for its own sake.
-    box.addEventListener("focus", function () { mark.classList.add("listening"); });
-    box.addEventListener("blur", function () { mark.classList.remove("listening"); });
-  }
-
-  // Quick actions open the AI panel with the request already written, so the
-  // user lands one keystroke from an answer rather than at an empty box. They
-  // go through the same action as everything else - there is one AI here.
-  var ACTIONS = [
-    ["Research a topic", "Go deep, with sources",
-     "Research this for me and give me a few good sources: "],
-    ["Compare products", "Weigh options side by side",
-     "Compare products, prices, features, and reviews."],
-    ["Summarize my tabs", "Get the key points",
-     "Summarise my open tabs and tell me what is on each one."],
-    ["Plan something", "Turn research into a plan",
-     "Help me plan: "],
-    ["Find the best option", "Get a recommendation",
-     "Find the best option for: "],
-    ["Ask about this page", "Anything, right now",
-     ""]
-  ];
-  var actions = document.getElementById("actions");
-  ACTIONS.forEach(function (spec) {
-    var button = document.createElement("button");
-    button.type = "button";
-    button.className = "action";
-    var title = document.createElement("b");
-    title.textContent = spec[0];
-    var blurb = document.createElement("small");
-    blurb.textContent = spec[1];
-    button.appendChild(title);
-    button.appendChild(blurb);
-    button.addEventListener("click", function () {
-      var typed = box.value.trim();
-      // "Research" is the one that takes whatever is in the box.
-      var prompt = spec[2].slice(-2) === ": " ? spec[2] + (typed || "this topic")
-                                              : spec[2];
-      // Py acknowledges the click here, before the panel has even opened, so
-      // the two halves of the interaction feel like one thing.
-      var greeting = document.getElementById("greeting");
-      greeting.textContent = "On it \u2014 opening Py\u2026";
-      act("ai", { q: prompt });
-    });
-    actions.appendChild(button);
+  // A hint, not a decision: Python still decides URL vs. search.
+  box.addEventListener("input", function () {
+    var text = box.value.trim();
+    if (!text) { hint.textContent = ""; return; }
+    var looksLikeUrl = /^[a-z][a-z0-9+.-]*:\\/\\//i.test(text) || /^[^\\s]+\\.[a-z]{2,}([/:?#]|$)/i.test(text) ||
+                       /^localhost([:/]|$)/i.test(text);
+    hint.textContent = (looksLikeUrl ? "Press Enter to go to this address" : "Press Enter to search the web")
+                       + (data.aiEnabled && !looksLikeUrl ? "__AI_HINT__" : "");
   });
 })();
 </script>

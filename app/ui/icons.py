@@ -59,7 +59,7 @@ _TEMPLATE = (
 
 
 def _render(shape: str, color: str, size: int, weight: float, fill: bool) -> QPixmap:
-    body = shape
+    body = shape.replace("currentColor", color)       # a shape that asks for the current colour gets the icon's
     if fill and "fill=" not in shape:
         body = shape.replace("<path ", f'<path fill="{color}" ')
     svg = _TEMPLATE.format(color=color, weight=weight, shape=body)

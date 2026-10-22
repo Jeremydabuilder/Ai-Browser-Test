@@ -12,6 +12,9 @@ Qt WebEngine (Chromium) — no Node.js, no Electron, no npm, no mocked pages.
 SQLite, keyboard shortcuts.
 **Phase 2:** a Claude-powered AI agent that operates web pages through the
 browser's structured API — see [`docs/ai_agent.md`](docs/ai_agent.md).
+**AI is optional:** PyBrowser is an ordinary browser until you turn AI on in Settings; AI Mode (ask a
+question, get a sourced answer) is one of the things that switch adds - see [docs/ai_mode.md](docs/ai_mode.md).
+
 **AI Team:** six cooperating agents (Coordinator, Researcher, Writer, Coder, Reviewer,
 Tester) that plan, hand off artifacts, review and test - Tools → AI Team…, see
 [`docs/team.md`](docs/team.md).

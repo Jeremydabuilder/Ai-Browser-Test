@@ -133,6 +133,14 @@ class TabManager(QTabWidget):
         return [w for i in range(self.count()) if isinstance(w := self.widget(i), BrowserTab)]
 
     # -- creation -------------------------------------------------------
+    def set_ai_enabled(self, enabled: bool) -> None:
+        """Tell every tab (and every future one) whether AI entries belong in its context menu."""
+        self._ai_enabled = enabled
+        for tab in self.tabs():
+            tab.ai_enabled = enabled
+
+    _ai_enabled = True
+
     def new_tab(
         self,
         url: QUrl | str | None = None,
@@ -151,6 +159,7 @@ class TabManager(QTabWidget):
         """
         if tab is None:
             tab = BrowserTab(self._profile)
+        tab.ai_enabled = self._ai_enabled
         self._connect_tab(tab)
         index = self.addTab(tab, "New Tab")
         self.setTabIcon(index, self._fallback_icon())

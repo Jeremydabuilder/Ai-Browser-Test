@@ -7,6 +7,8 @@ panel into that slot without touching any of this code's structure.
 
 from __future__ import annotations
 
+import functools
+
 import weakref
 
 from PySide6.QtCore import QTimer, QUrl, Qt, Signal
@@ -29,6 +31,7 @@ from PySide6.QtWidgets import (
 
 from app import APP_NAME
 from app.browser.controller import BrowserController
+from app.browser.newtab import is_new_tab
 from app.missions import MissionService, MissionStore
 from app.mcp.config import McpServerStore
 from app.mcp.connection_manager import McpConnectionManager
@@ -128,12 +131,18 @@ class MainWindow(QMainWindow):
         self.workspace_switcher = WorkspaceSwitcher(
             self, on_select=self.switch_workspace,
             on_new=self._new_workspace, on_manage=self._manage_workspaces)
-        self.nav_bar.addWidget(self.workspace_switcher)
+        self._workspace_switcher_action = self.nav_bar.addWidget(self.workspace_switcher)
+        # Keep the main menu (\u22ee) as the last item on the toolbar.
+        self.nav_bar.removeAction(self.nav_bar.menu_action)
+        self.nav_bar.addAction(self.nav_bar.menu_action)
 
         self.tabs = TabManager(profile, self.settings.new_tab_url(), self)
         # The new-tab page reads history and bookmarks through this callback;
         # the profile itself stays ignorant of SQLite.
         profile.set_new_tab_provider(self._new_tab_data)
+        from app.browser import aimode as _aimode_page
+
+        _aimode_page.set_provider(self._aimode_state)
         # The Mission Library is a real page, not a panel: a Mission needs room
         # and a URL, and everything it will grow into needs somewhere to live.
         profile.set_mission_provider(self._mission_library_data)
@@ -371,7 +380,9 @@ class MainWindow(QMainWindow):
                 f"{len(recovered)} scheduled task(s) were interrupted by a restart and "
                 f"marked failed for review: {names}",
                 level="warning", action_text="Task Center", action=self._show_task_center)
-        self.task_runner.start()
+        if self._ai_enabled:
+            self.task_runner.start()
+        self._apply_ai_enabled_initial()
 
         if self._recovered_graph_nodes:
             needing_review = sum(
@@ -399,6 +410,10 @@ class MainWindow(QMainWindow):
 
     def _build_menus(self) -> None:
         menubar = self.menuBar()
+        #: Every menu entry that belongs to the AI features; hidden and disabled (so their
+        #: shortcuts are dead too) while the master switch in Settings is off.
+        self._ai_actions: list[QAction] = []
+        self._ai_menus: list[QMenu] = []
 
         file_menu: QMenu = menubar.addMenu("&File")
         self._add_action(file_menu, "New &Tab", "Ctrl+T", lambda: self.tabs.new_tab())
@@ -424,7 +439,7 @@ class MainWindow(QMainWindow):
         self._add_action(view_menu, "Find &Previous", "Ctrl+Shift+G", lambda: self._find_step(True))
         view_menu.addSeparator()
         self._add_action(view_menu, "&Search Tabs…", "Ctrl+Shift+K", self._open_tab_search)
-        self._add_action(view_menu, "Suggest Tab &Groups…", None, self._suggest_tab_groups)
+        self._add_action(view_menu, "Suggest Tab &Groups…", None, self._suggest_tab_groups, ai=True)
         self._add_action(view_menu, "Search &History && Knowledge…", "Ctrl+Shift+F",
                          self._open_knowledge_search)
 
@@ -448,49 +463,53 @@ class MainWindow(QMainWindow):
         # 20+ phases of features. Nothing here changes what any action does.
         tools_menu: QMenu = menubar.addMenu("&Tools")
         self._add_action(tools_menu, "&Settings…", "Ctrl+,", self._show_settings)
-        tools_menu.addSeparator()
+        ai_menu: QMenu = tools_menu.addMenu("&AI")
+        self._ai_menus.append(ai_menu)
+        self._add_action(ai_menu, "AI &Mode", "Ctrl+Shift+Space", lambda: self._open_ai_mode(), ai=True)
         self._agent_action = self._add_action(
-            tools_menu, "Show &AI Agent", "Ctrl+Shift+A", self._toggle_agent_panel)
+            ai_menu, "Show &AI Agent", "Ctrl+Shift+A", self._toggle_agent_panel, ai=True)
         self._agent_action.setCheckable(True)
-        self._add_action(tools_menu, "AI &Team…", None, self._open_team)
-        self._add_action(tools_menu, "&Configure AI Agent…", None, self._configure_agent)
-        self._add_action(tools_menu, "Agent &Diagnostics…", None, self._show_diagnostics)
-        tools_menu.addSeparator()
+        self._add_action(ai_menu, "AI &Team…", None, self._open_team, ai=True)
+        self._add_action(ai_menu, "&Configure AI Agent…", None, self._configure_agent, ai=True)
+        self._add_action(ai_menu, "Agent &Diagnostics…", None, self._show_diagnostics, ai=True)
+        ai_menu.addSeparator()
 
-        context_menu: QMenu = tools_menu.addMenu("Add to &Context")
-        self._add_action(context_menu, "&Local File…", None, self._ask_py_about_local_file)
-        self._add_action(context_menu, "&Image…", None, self._ask_py_about_local_image)
-        self._add_action(context_menu, "&Screenshot", None, self._ask_py_about_screenshot)
+        context_menu: QMenu = ai_menu.addMenu("Add to &Context")
+        self._ai_menus.append(context_menu)
+        self._add_action(context_menu, "&Local File…", None, self._ask_py_about_local_file, ai=True)
+        self._add_action(context_menu, "&Image…", None, self._ask_py_about_local_image, ai=True)
+        self._add_action(context_menu, "&Screenshot", None, self._ask_py_about_screenshot, ai=True)
 
         libraries_menu: QMenu = tools_menu.addMenu("&Libraries")
         self._add_action(libraries_menu, "&Mission Library", "Ctrl+Shift+M",
-                         self._show_mission_library)
+                         self._show_mission_library, ai=True)
         self._add_action(libraries_menu, "&Highlights Library", "Ctrl+Shift+H",
                          self._show_highlights_library)
         self._add_action(libraries_menu, "&Skills Library", "Ctrl+Shift+S",
-                         self._show_skills_library)
+                         self._show_skills_library, ai=True)
         self._add_action(libraries_menu, "&Research Graph…", "Ctrl+Shift+G",
-                         self._show_research_graph)
+                         self._show_research_graph, ai=True)
 
         automation_menu: QMenu = tools_menu.addMenu("&Automation")
+        self._ai_menus.append(automation_menu)
         self._add_action(automation_menu, "&Task Center…", "Ctrl+Shift+J",
-                         self._show_task_center)
+                         self._show_task_center, ai=True)
         self._add_action(automation_menu, "&Record Workflow", "Ctrl+Shift+R",
-                         self._toggle_workflow_recording)
+                         self._toggle_workflow_recording, ai=True)
         self._add_action(automation_menu, "&Watches…", "Ctrl+Shift+W",
-                         self._show_watches)
+                         self._show_watches, ai=True)
         self._add_action(automation_menu, "Run as &Multi-Agent Mission…", None,
-                         self._run_multi_agent_mission)
+                         self._run_multi_agent_mission, ai=True)
         automation_menu.addSeparator()
         self._teach_action = self._add_action(
-            automation_menu, "&Teach Py", "Ctrl+Shift+T", self._toggle_teaching)
+            automation_menu, "&Teach Py", "Ctrl+Shift+T", self._toggle_teaching, ai=True)
         self._teach_action.setCheckable(True)
         self._teach_action.setToolTip(
             "Record what Py does next as a reusable Routine on the active mission")
 
         collab_menu: QMenu = tools_menu.addMenu("Co&llaboration")
         self._add_action(collab_menu, "&Sync…", None, self._show_sync_settings)
-        self._add_action(collab_menu, "&Collaboration…", None, self._show_collaboration)
+        self._add_action(collab_menu, "&Collaboration…", None, self._show_collaboration, ai=True)
 
         help_menu: QMenu = menubar.addMenu("&Help")
         self._add_action(help_menu, "&Keyboard Shortcuts", "Ctrl+/", self._show_shortcuts)
@@ -500,9 +519,38 @@ class MainWindow(QMainWindow):
         self._add_action(help_menu, "&Reset PyBrowser…", None, self._reset_pybrowser)
         help_menu.addSeparator()
         self._add_action(help_menu, f"&About {APP_NAME}", None, self._show_about)
+        self._build_app_menu()
 
-    def _add_action(self, menu: QMenu, text: str, shortcut: str | None, slot) -> QAction:
+    def _build_app_menu(self) -> None:
+        """The toolbar's main menu (\u22ee): every top-level menu as a submenu. The menu bar itself is hidden
+        unless the user asks for it, which is what makes the window read as a browser and not a desktop app."""
+        menubar = self.menuBar()
+        menu = QMenu(self)
+        for action in menubar.actions():
+            if action.menu() is not None:
+                menu.addMenu(action.menu())
+        menu.addSeparator()
+        new_workspace = QAction("New &Workspace\u2026", self)
+        new_workspace.triggered.connect(self._new_workspace)
+        menu.addAction(new_workspace)
+        self._menu_bar_action = QAction("Show menu &bar", self, checkable=True)
+        self._menu_bar_action.setShortcut(QKeySequence("F10"))
+        self._menu_bar_action.setChecked(self.settings.show_menu_bar)
+        self._menu_bar_action.toggled.connect(self._set_menu_bar_visible)
+        menu.addAction(self._menu_bar_action)
+        self.addAction(self._menu_bar_action)
+        self.nav_bar.menu_button.setMenu(menu)
+        self._app_menu = menu
+        menubar.setVisible(self.settings.show_menu_bar)
+
+    def _set_menu_bar_visible(self, visible: bool) -> None:
+        self.settings.show_menu_bar = visible
+        self.menuBar().setVisible(visible)
+
+    def _add_action(self, menu: QMenu, text: str, shortcut: str | None, slot, *, ai: bool = False) -> QAction:
         action = QAction(text, self)
+        if ai:
+            self._ai_actions.append(action)
         if shortcut:
             action.setShortcut(QKeySequence(shortcut))
         action.triggered.connect(slot)
@@ -521,6 +569,7 @@ class MainWindow(QMainWindow):
         self.nav_bar.navigate_requested.connect(self._navigate_from_address_bar)
         self.nav_bar.bookmark_toggled.connect(self._toggle_bookmark)
         self.nav_bar.ask_py_requested.connect(self._open_agent_with)
+        self.nav_bar.ai_mode_requested.connect(self._open_ai_mode)
         self.tabs.ask_py_requested.connect(self._open_agent_with)
         self.tabs.save_highlight_requested.connect(self._save_highlight_from_selection)
         self.tabs.add_selection_to_mission_requested.connect(
@@ -633,9 +682,10 @@ class MainWindow(QMainWindow):
         """
         from app.browser.newtab import collect
 
-        return collect(self.history, self.bookmarks, self.missions,
-                       agent_available=self._agent_configured(),
-                       show_onboarding=self._show_onboarding())
+        ai_on = self._ai_enabled
+        return collect(self.history, self.bookmarks, self.missions if ai_on else None,
+                       agent_available=ai_on and self._agent_configured(),
+                       show_onboarding=False, ai_enabled=ai_on)
 
     def _show_onboarding(self) -> bool:
         """Whether the first-launch explainer belongs on this new tab.
@@ -653,28 +703,165 @@ class MainWindow(QMainWindow):
             return False
 
     def show_first_run_if_needed(self) -> None:
-        """The three-screen welcome dialog - shown once, at first launch.
+        """A one-time, two-button welcome: PyBrowser is a normal browser, and AI is opt-in.
 
-        Called explicitly by main.py after the window is shown, rather than
-        from __init__: showing a modal dialog before the window itself has
-        appeared reads as the app hanging on startup.
+        Called explicitly by main.py after the window is shown, rather than from __init__:
+        a modal dialog before the window has appeared reads as the app hanging on startup.
         """
         try:
             if self.settings.get_bool("first_run_dialog_shown", False):
                 return
         except Exception:  # noqa: BLE001 - a broken settings read must not block startup
             return
-        from app.ui.onboarding import FirstRunDialog
+        from app.ui.onboarding import AiChoiceDialog
 
-        dialog = FirstRunDialog(self)
-        dialog.configure_provider_requested.connect(self._configure_agent)
-        dialog.try_mission_requested.connect(self._open_agent_with)
+        dialog = AiChoiceDialog(self)
         dialog.exec()
-        # Also dismisses the new-tab page's own onboarding card: this dialog
-        # already made the same pitch once, and showing it again on the very
-        # next new tab would just be saying it twice.
         self.settings.set_bool("first_run_dialog_shown", True)
         self.settings.set_bool("onboarding_dismissed", True)
+        if dialog.enable_ai:
+            self.settings.ai_enabled = True
+            self._apply_ai_enabled()
+            self._configure_agent()
+
+    # ------------------------------------------------------------------
+    # The AI master switch (Settings -> AI)
+    # ------------------------------------------------------------------
+    @property
+    def _ai_enabled(self) -> bool:
+        try:
+            return self.settings.ai_enabled
+        except Exception:  # noqa: BLE001 - a broken settings read means "off", the safe answer
+            return False
+
+    def _apply_ai_enabled(self) -> None:
+        """Show or hide every AI entry point to match the setting, live (no restart)."""
+        on = self._ai_enabled
+        for action in self._ai_actions:
+            action.setVisible(on)
+            action.setEnabled(on)
+        for menu in self._ai_menus:
+            menu.menuAction().setVisible(on)
+        self.nav_bar.set_ai_enabled(on)
+        self.tabs.set_ai_enabled(on)
+        if not on:
+            if self._side_panel is not None:
+                self.set_side_panel(None)
+            self._agent_action.setChecked(False)
+            try:
+                self.task_runner.stop()
+            except Exception:  # noqa: BLE001 - stopping is best effort
+                pass
+        else:
+            try:
+                self.task_runner.start()
+            except Exception:  # noqa: BLE001
+                pass
+        for tab in self.tabs.tabs():                    # open new-tab pages re-render for the new mode
+            try:
+                if is_new_tab(tab.url()):
+                    tab.reload()
+            except Exception:  # noqa: BLE001
+                pass
+
+    def _apply_ai_enabled_initial(self) -> None:
+        """At startup: the same as a settings change, without re-reloading pages or restarting services."""
+        on = self._ai_enabled
+        for action in self._ai_actions:
+            action.setVisible(on)
+            action.setEnabled(on)
+        for menu in self._ai_menus:
+            menu.menuAction().setVisible(on)
+        self.nav_bar.set_ai_enabled(on)
+        self.tabs.set_ai_enabled(on)
+
+    # ------------------------------------------------------------------
+    # AI Mode (pybrowser://aimode/)
+    # ------------------------------------------------------------------
+    def _ai_mode(self):
+        if getattr(self, "_aimode_controller", None) is None:
+            from app.aimode.controller import AiModeController
+
+            self._aimode_controller = AiModeController(self.settings, self)
+            self._aimode_controller.state_changed.connect(self._push_aimode_state)
+        return self._aimode_controller
+
+    def _aimode_state(self) -> dict:
+        """What the AI Mode page shows when it is served (installed as the page's provider)."""
+        if not self._ai_enabled:
+            return {"turns": [], "busy": False, "status": "", "providerReady": False, "searchReady": False,
+                    "disabled": True}
+        return self._ai_mode().state()
+
+    def _push_aimode_state(self, state_json: str) -> None:
+        from app.browser.aimode import is_ai_mode
+
+        for tab in self.tabs.tabs():
+            try:
+                if is_ai_mode(tab.url()):
+                    tab.run_javascript(f"window.PB && window.PB.setState({state_json})")
+            except Exception:  # noqa: BLE001 - a tab mid-teardown must not break the others
+                pass
+
+    def _open_ai_mode(self, query: str = "") -> None:
+        """Open (or switch to) the AI Mode tab; with ``query`` also ask it straight away."""
+        if not self._ai_enabled:
+            self._explain_ai_off()
+            return
+        from app.browser.aimode import AIMODE_URL, is_ai_mode
+
+        existing = next((i for i in range(self.tabs.count())
+                         if (w := self.tabs.widget(i)) is not None and is_ai_mode(w.url())), None)
+        if existing is not None:
+            self.tabs.setCurrentIndex(existing)
+        else:
+            self.tabs.new_tab(AIMODE_URL)
+        if query.strip():
+            self._ai_mode().ask(query.strip())
+
+    def _on_aimode_action(self, name: str, params: dict) -> None:
+        if not self._ai_enabled:
+            return
+        controller = self._ai_mode()
+        if name == "ask":
+            controller.ask(params.get("q") or "")
+        elif name == "new":
+            controller.new_chat()
+        elif name == "stop":
+            controller.stop()
+        elif name == "setup":
+            self._configure_agent()
+            controller.refresh_environment()
+        elif name == "search-setup":
+            self._open_team_settings()
+            controller.refresh_environment()
+        elif name == "settings":
+            self._show_settings()
+
+    def _open_team_settings(self) -> None:
+        from app.ui.team_settings import TeamSettingsDialog
+
+        TeamSettingsDialog(self.settings, self.team, self).exec()
+
+    def _configure_agent_after_enable(self) -> None:
+        """Settings' "Set up AI provider" button: the switch may not be saved yet, so turn it on first."""
+        self.settings.ai_enabled = True
+        self._apply_ai_enabled()
+        self._configure_agent()
+
+    def _explain_ai_off(self) -> None:
+        """An AI action was reached while AI is off (a stale shortcut, a pasted link): say so, offer the switch."""
+        box = QMessageBox(self)
+        box.setWindowTitle("AI features are off")
+        box.setText("AI features are turned off.")
+        box.setInformativeText("PyBrowser works as a normal browser until you turn them on. "
+                               "You can change this any time in Settings \u2192 AI.")
+        turn_on = box.addButton("Turn on AI features", QMessageBox.ButtonRole.AcceptRole)
+        box.addButton(QMessageBox.StandardButton.Close)
+        box.exec()
+        if box.clickedButton() is turn_on:
+            self.settings.ai_enabled = True
+            self._apply_ai_enabled()
 
     def _agent_configured(self) -> bool:
         """Whether the AI entry point should promise anything.
@@ -703,6 +890,12 @@ class MainWindow(QMainWindow):
         """
         if name.startswith("missions:"):
             self._on_mission_action(name.split(":", 1)[1], params)
+            return
+        if name.startswith("aimode:"):
+            self._on_aimode_action(name.split(":", 1)[1], params)
+            return
+        if name == "aimode":                         # the new-tab page's AI Mode button
+            self._open_ai_mode(params.get("q") or "")
             return
         if name == "search":
             query = (params.get("q") or "").strip()
@@ -1353,11 +1546,12 @@ class MainWindow(QMainWindow):
     def _open_tab_search(self) -> None:
         from app.ui.tab_search import TabSearchDialog
 
+        ai_on = self._ai_enabled
         TabSearchDialog(
             self.tabs, self,
-            on_ask_py=self._ask_py_about_tabs,
+            on_ask_py=self._ask_py_about_tabs if ai_on else None,
             on_close_duplicates=self._close_tabs_at,
-            on_start_mission=self._start_mission_from_tabs,
+            on_start_mission=self._start_mission_from_tabs if ai_on else None,
         ).exec()
 
     def _open_knowledge_search(self) -> None:
@@ -2070,8 +2264,11 @@ class MainWindow(QMainWindow):
     def _show_settings(self) -> None:
         from app.ui.settings_dialog import SettingsDialog
 
-        dialog = SettingsDialog(self.settings, self, mcp=self.mcp, mcp_server=self.mcp_server,
-                                knowledge=self.knowledge_index, security=True)
+        ai_on = self._ai_enabled
+        dialog = SettingsDialog(self.settings, self, mcp=self.mcp if ai_on else None,
+                                mcp_server=self.mcp_server if ai_on else None,
+                                knowledge=self.knowledge_index, security=ai_on,
+                                on_configure_ai=self._configure_agent_after_enable)
         dialog.knowledge_panel.rebuild_callback = self._rebuild_knowledge_index
         dialog.saved.connect(self._apply_settings)
         dialog.exec()
@@ -2108,6 +2305,7 @@ class MainWindow(QMainWindow):
         the whole of it - everything else reads the store when it needs to.
         """
         self.tabs.home_url = self.settings.new_tab_url()
+        self._apply_ai_enabled()
         self._apply_tab_layout()
         self._show_status("Settings saved.")
 
@@ -2219,7 +2417,10 @@ class MainWindow(QMainWindow):
             f"Py is currently using {current_label}.")
 
     def _refresh_workspace_switcher(self) -> None:
-        self.workspace_switcher.refresh(self.workspaces.all(), self._current_workspace_id)
+        everything = self.workspaces.all()
+        self.workspace_switcher.refresh(everything, self._current_workspace_id)
+        # With a single workspace the switcher is just noise; it appears once there are two.
+        self._workspace_switcher_action.setVisible(len(everything) > 1)
 
     def _new_workspace(self) -> None:
         from app.ui.workspace_switcher import NewWorkspaceDialog
@@ -2572,7 +2773,10 @@ class MainWindow(QMainWindow):
                 knowledge=self.knowledge_index, graph=self.knowledge_graph, collab=self.collab_service)
             if self._agent_session is None:
                 self._agent_unavailable = True
-                self._show_status(f"AI agent unavailable: {reason}")
+                # No status-bar message: the scheduler asks for this session in the background, and a
+                # permanent "unavailable" line nobody asked for is noise. Wherever the user actually
+                # tries to use the AI (the panel, AI Mode) the reason is explained in place.
+                self._agent_unavailable_reason = reason
             else:
                 self._agent_unavailable = False
                 self._agent_session.briefing_provider = self.missions.briefing
@@ -3160,3 +3364,26 @@ class NoticeBar(QFrame):
 
 # Extra windows opened with Ctrl+N live here so they are not garbage collected.
 _OPEN_WINDOWS: list[MainWindow] = []
+
+
+def _ai_only(method):
+    """Make an AI entry point inert (and explain why) while the AI master switch is off."""
+    @functools.wraps(method)
+    def wrapper(self, *args, **kwargs):
+        if not self._ai_enabled:
+            self._explain_ai_off()
+            return None
+        return method(self, *args, **kwargs)
+    return wrapper
+
+
+for _name in (
+    "_toggle_agent_panel", "_open_agent_with", "_open_team", "_configure_agent", "_show_diagnostics",
+    "_ask_py_about_local_file", "_ask_py_about_local_image", "_ask_py_about_screenshot",
+    "_show_mission_library", "_show_skills_library", "_show_research_graph", "_show_task_center",
+    "_toggle_workflow_recording", "_show_watches", "_run_multi_agent_mission", "_toggle_teaching",
+    "_show_collaboration", "_suggest_tab_groups", "_ask_py_about_tabs", "_start_mission_from_tabs",
+    "_add_selection_to_mission", "_new_watch_from_selection", "_open_mission",
+):
+    if hasattr(MainWindow, _name):
+        setattr(MainWindow, _name, _ai_only(getattr(MainWindow, _name)))

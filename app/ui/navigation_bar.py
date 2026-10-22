@@ -9,6 +9,7 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QSizePolicy,
     QToolBar,
+    QToolButton,
     QWidget,
 )
 
@@ -35,6 +36,16 @@ class AddressBar(QLineEdit):
     #: rather than search for. Never emitted on its own; only a click on the
     #: "Ask Py" icon fires this - Enter is untouched.
     ask_py_requested = Signal(str)
+
+    #: Alt+Enter: send what is typed to AI Mode instead of searching (only while AI is on).
+    ai_mode_requested = Signal(str)
+
+    def keyPressEvent(self, event) -> None:  # noqa: N802 - Qt's name
+        if (self._ai_on and event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter)
+                and event.modifiers() & Qt.KeyboardModifier.AltModifier and self.text().strip()):
+            self.ai_mode_requested.emit(self.text().strip())
+            return
+        super().keyPressEvent(event)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -68,6 +79,12 @@ class AddressBar(QLineEdit):
         self.textChanged.connect(self._update_mode_icon)
         self._update_mode_icon("")
 
+    def set_ai_enabled(self, enabled: bool) -> None:
+        self._ai_on = enabled
+        self._update_mode_icon(self.text())
+
+    _ai_on = True
+
     def _update_mode_icon(self, text: str) -> None:
         from app.utils import urls as url_utils
 
@@ -76,7 +93,7 @@ class AddressBar(QLineEdit):
         self._mode_action.setToolTip(
             "Press Enter to search the web" if searching
             else "Press Enter to go to this address")
-        self._ask_py_action.setVisible(url_utils.looks_like_a_task(text))
+        self._ask_py_action.setVisible(self._ai_on and url_utils.looks_like_a_task(text))
 
     def focusInEvent(self, event) -> None:  # noqa: N802
         super().focusInEvent(event)
@@ -109,6 +126,8 @@ class NavigationBar(QToolBar):
     navigate_requested = Signal(str)
     bookmark_toggled = Signal()
     ask_py_requested = Signal(str)
+    #: The AI Mode button (or Alt+Enter in the address bar, with the typed text).
+    ai_mode_requested = Signal(str)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__("Navigation", parent)
@@ -160,12 +179,35 @@ class NavigationBar(QToolBar):
         self.bookmark_action.setCheckable(True)
         self.bookmark_action.triggered.connect(lambda _checked: self.bookmark_toggled.emit())
 
+        self.ai_mode_action = QAction(icons.icon("sparkle", colours.accent), "AI Mode", self)
+        self.ai_mode_action.setToolTip("AI Mode - ask a question, get a sourced answer (Ctrl+Shift+Space)")
+        self.ai_mode_action.triggered.connect(lambda: self.ai_mode_requested.emit(""))
+
         for action in (self.back_action, self.forward_action, self.reload_action, self.home_action):
             self.addAction(action)
         self.addWidget(self.address_bar)
         self.addAction(self.bookmark_action)
+        self.addAction(self.ai_mode_action)
+        self.address_bar.ai_mode_requested.connect(self.ai_mode_requested)
+        # One main menu instead of a row of menu names above the toolbar (the window fills it in).
+        self.menu_button = QToolButton(self)
+        self.menu_button.setText("\u22ee")
+        self.menu_button.setToolTip("Menu")
+        self.menu_button.setAccessibleName("Main menu")
+        self.menu_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        self.menu_button.setStyleSheet(
+            f"QToolButton {{ font-size: 20px; font-weight: 700; padding: 0 8px; border: none; "
+            f"color: {colours.text}; background: transparent; }} QToolButton::menu-indicator {{ image: none; }}")
+        self.menu_action = self.addWidget(self.menu_button)
 
         self._loading = False
+        self._ai_enabled = True
+
+    def set_ai_enabled(self, enabled: bool) -> None:
+        """The task-shaped-text "Ask Py" hint on the address bar only exists while AI is on."""
+        self._ai_enabled = enabled
+        self.ai_mode_action.setVisible(enabled)
+        self.address_bar.set_ai_enabled(enabled)
 
     def _on_reload_clicked(self) -> None:
         if self._loading:
