@@ -7,8 +7,10 @@ name: Windows tester build
 # an unsigned preview - SmartScreen will warn), and does not run the unit test suite (that runs on
 # Linux in development; the Windows full-suite run has a documented Qt WebEngine teardown quirk, see
 # release.yml). It DOES prove the frozen exe starts and stays up for 20s with no traceback.
-# The result is a pair of workflow artifacts (testers need access to this repository to download
-# them) plus a SHA-256 list in the job summary.
+# The result is a workflow artifact plus a SHA-256 list in the job summary. With "publish" ticked it
+# also creates a GitHub PRE-release (never a "latest" stable release) with the installer, the portable
+# zip and the checksums attached, so testers can download from the repo's Releases page without a
+# GitHub login or a terminal.
 on:
   workflow_dispatch:
     inputs:
@@ -16,9 +18,13 @@ on:
         description: "Short note for this build (shown in the summary)"
         type: string
         default: "tester build"
+      publish:
+        description: "Also publish it as a GitHub pre-release (public download page)"
+        type: boolean
+        default: false
 
 permissions:
-  contents: read
+  contents: write      # only used by the optional publish step
 
 jobs:
   windows:
@@ -109,3 +115,28 @@ jobs:
           path: tester-out/
           if-no-files-found: error
           retention-days: 30
+
+      - name: Publish as a GitHub pre-release
+        if: ${{ inputs.publish }}
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = "tester-${{ steps.version.outputs.version }}-${{ steps.version.outputs.short }}"
+          $notes = @"
+          **Unsigned tester preview** of PyBrowser for Windows (commit ${{ github.sha }}).
+
+          ${{ inputs.note }}
+
+          ### Install
+          Download **PyBrowser-Setup-*.exe** and double-click it (no admin rights needed), or download the **Portable** zip, unzip it and run ``PyBrowser.exe``.
+          Windows will say "Windows protected your PC" because the build is not code-signed yet: click **More info -> Run anyway**.
+
+          PyBrowser starts as an ordinary browser; AI features are off until you turn them on in Settings. Read **TESTER_GUIDE.md** for what to try and how to report problems. ``SHA256.txt`` lists checksums.
+          "@
+          $notes | Out-File -FilePath release-notes.md -Encoding utf8
+          $files = Get-ChildItem tester-out -File | ForEach-Object { $_.FullName }
+          gh release create $tag @files --repo "${{ github.repository }}" --target "${{ github.sha }}" `
+              --title "PyBrowser tester preview ${{ steps.version.outputs.version }} (${{ steps.version.outputs.short }})" `
+              --notes-file release-notes.md --prerelease
+          echo "Published: https://github.com/${{ github.repository }}/releases/tag/$tag" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8

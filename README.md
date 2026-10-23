@@ -5,6 +5,13 @@ goal and let it research, compare, and act across the web - as a Mission it
 keeps track of, checks with you before anything real, and picks back up
 whenever you return.
 
+## Download (Windows)
+
+No terminal needed: open the [**Releases**](https://github.com/Jeremydabuilder/Ai-Browser-Test/releases) page, download
+`PyBrowser-Setup-*.exe` from the newest entry and run it. It is an unsigned preview, so Windows shows "Windows protected your
+PC" - click **More info -> Run anyway**. PyBrowser starts as an ordinary browser; AI features are optional and off until you turn
+them on in Settings. See [packaging/TESTER_GUIDE.md](packaging/TESTER_GUIDE.md).
+
 A real desktop web browser written in Python. It renders actual websites with
 Qt WebEngine (Chromium) — no Node.js, no Electron, no npm, no mocked pages.
 
