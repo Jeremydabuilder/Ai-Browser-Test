@@ -49,7 +49,8 @@ USER_AGENT = "PyBrowser-Team/1.0 (+reads one public page for a research task you
 ALLOWED_PORTS = (80, 443)
 MAX_URL = 2000
 _BLOCKED_SUFFIXES = (".localhost", ".local", ".internal", ".lan", ".home.arpa", ".intranet", ".corp", ".private")
-_TEXT_TYPES = ("text/html", "application/xhtml+xml", "text/plain", "text/markdown")
+_TEXT_TYPES = ("text/html", "application/xhtml+xml", "text/plain", "text/markdown", "application/pdf")
+MAX_PDF_PAGES = 40
 _DNS_POOL = ThreadPoolExecutor(max_workers=4, thread_name_prefix="team-dns")
 
 
@@ -425,7 +426,7 @@ class PageFetcher:
         host_header = host if port == default_port else f"{host}:{port}"
         pinned = f"{scheme}://{netloc}{target}"
         headers = {"Host": host_header, "User-Agent": USER_AGENT, "Accept-Language": "en;q=0.9, *;q=0.5",
-                   "Accept": "text/html,application/xhtml+xml,text/plain;q=0.9,*/*;q=0.1",
+                   "Accept": "text/html,application/xhtml+xml,text/plain;q=0.9,application/pdf;q=0.8,*/*;q=0.1",
                    "Accept-Encoding": "gzip, deflate", "DNT": "1"}
         extensions = {"sni_hostname": host} if scheme == "https" else {}
         timeout = httpx.Timeout(connect=min(5.0, self.timeout), read=self.timeout, write=5.0, pool=5.0)
@@ -444,7 +445,7 @@ class PageFetcher:
                     content_type = response.headers.get("content-type", "").split(";")[0].strip().lower()
                     if content_type and content_type not in _TEXT_TYPES:
                         raise FetchError(FetchErrorKind.UNSUPPORTED,
-                                         f"Not a text page ({content_type}); only HTML and plain text are read.")
+                                         f"Not a readable page ({content_type}); only HTML, plain text and PDF are read.")
                     charset = ""
                     header_type = response.headers.get("content-type", "").lower()
                     if "charset=" in header_type:
@@ -487,10 +488,57 @@ class PageFetcher:
         except (OSError, ValueError, UnicodeError):
             raise FetchError(FetchErrorKind.NETWORK, "Could not connect to the site.") from None
 
+    def _pdf_page(self, url: str, body: bytes, clipped: bool, redirects: list[str]) -> Page:
+        """Text of a PDF, bounded in pages and characters. Only the text layer
+        is read: a scanned PDF has none (no OCR is attempted) and says so."""
+        import io
+
+        try:
+            from pypdf import PdfReader
+            from pypdf.errors import PyPdfError
+        except ImportError:  # pragma: no cover - pypdf is a hard dependency
+            raise FetchError(FetchErrorKind.UNSUPPORTED, "PDF reading is not available in this build.") from None
+        try:
+            reader = PdfReader(io.BytesIO(body), strict=False)
+            if reader.is_encrypted:
+                raise FetchError(FetchErrorKind.UNSUPPORTED, "The PDF is password-protected, so it was not read.")
+            total_pages = len(reader.pages)
+            parts: list[str] = []
+            size = 0
+            truncated = clipped or total_pages > MAX_PDF_PAGES
+            for index, page in enumerate(reader.pages):
+                if index >= MAX_PDF_PAGES or size >= self.max_chars:
+                    truncated = True
+                    break
+                text = (page.extract_text() or "").strip()
+                if text:
+                    parts.append(f"[page {index + 1}]\n{text}")
+                    size += len(text)
+            title = ""
+            try:
+                title = str((reader.metadata.title if reader.metadata else "") or "").strip()
+            except Exception:  # noqa: BLE001 - metadata is optional decoration
+                pass
+        except FetchError:
+            raise
+        except (PyPdfError, ValueError, KeyError, TypeError, AttributeError, RecursionError, OSError):
+            raise FetchError(FetchErrorKind.UNSUPPORTED,
+                             "The PDF could not be read" + (" (it is larger than the size limit)" if clipped else "")
+                             + ".") from None
+        text = "\n\n".join(parts).strip()
+        if len(text) > self.max_chars:
+            text, truncated = text[: self.max_chars], True
+        if len(text) < 40:
+            raise FetchError(FetchErrorKind.EMPTY,
+                             "The PDF has no extractable text (it may be a scan; no OCR is done).")
+        return Page(url, title, text, truncated, "application/pdf", len(body), redirects)
+
     def _page(self, url: str, body: bytes, content_type: str, charset: str, clipped: bool,
               redirects: list[str]) -> Page:
         if not body.strip():
             raise FetchError(FetchErrorKind.EMPTY, "The page was empty.")
+        if content_type == "application/pdf":
+            return self._pdf_page(url, body, clipped, redirects)
         text_source = ""
         for encoding in filter(None, (charset, "utf-8")):
             try:

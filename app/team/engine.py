@@ -30,6 +30,7 @@ from typing import Any, Callable
 from app.agent.tools import wrap_untrusted
 from app.security.provenance import Provenance
 from app.team import agents as agent_defs
+from app.team import claimcheck
 from app.team import sandbox as sandbox_mod
 from app.team.agents import OutputError, PlanError
 from app.team.followup import FollowUpMixin
@@ -955,7 +956,14 @@ class TeamEngine(FollowUpMixin):
         if invalid:
             self._event(task.agent, EventKind.WARNING,
                         f"{task.id}: removed citation(s) to non-existent source(s) {', '.join(invalid)}.")
-        return text, {"cited": [c for c in cited if c in known], "invalid_citations": invalid}
+        results = claimcheck.check_claims(text, {s.id: s for s in self.mission.sources})
+        weak = [r for r in results if r.verdict in (claimcheck.Verdict.NOT_FOUND, claimcheck.Verdict.PARTIAL)]
+        if weak:
+            self._event(task.agent, EventKind.WARNING,
+                        f"{task.id}: {len(weak)} cited sentence(s) could not be found in their cited text "
+                        "(listed in the result's citation check).")
+        return text, {"cited": [c for c in cited if c in known], "invalid_citations": invalid,
+                      "claim_check": [r.to_dict() for r in results]}
 
     def _search_for(self, task: Task) -> list[Source]:
         search = self.capabilities.search
@@ -1481,7 +1489,10 @@ class TeamEngine(FollowUpMixin):
         cited = agent_defs.citations(text)
         for bad in [c for c in cited if c not in known]:
             text = text.replace(f"[{bad}]", "[unverified citation removed]")
-        return text, {"cited": [c for c in cited if c in known]}
+        results = claimcheck.check_claims(text, {s.id: s for s in self.mission.sources})
+        return text, {"cited": [c for c in cited if c in known],
+                      "claim_check": [r.to_dict() for r in results],
+                      "uncited_figures": claimcheck.uncited_figure_sentences(text) if self.mission.sources else []}
 
     def _appendix(self, deliverables: list[Artifact], cite_meta: dict, degraded_note: str,
                   skipped: list[Task] | None = None) -> str:
@@ -1510,6 +1521,12 @@ class TeamEngine(FollowUpMixin):
             if items:
                 out.append(f"\n## {title}\n_{note}_")
                 out += [line(s) for s in items]
+        check = claimcheck.appendix(
+            [claimcheck.ClaimResult(d["claim"], d["sources"], d["verdict"], d["missing_numbers"], d["overlap"], d["note"])
+             for d in cite_meta.get("claim_check", [])],
+            uncited_figures=cite_meta.get("uncited_figures"))
+        if check:
+            out.append(check)
         other = [s for s in m.sources if s.usable and s.id not in cited]
         if other:
             out.append("\n## Included but not cited")
