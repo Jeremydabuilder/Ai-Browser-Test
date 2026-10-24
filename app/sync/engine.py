@@ -119,6 +119,12 @@ class SyncResult:
     deleted_remote: int = 0
     deleted_local: int = 0
     conflicts: int = 0
+    #: Remote records that could not be read or applied this pass (a
+    #: truncated/corrupt file, one encrypted under another key, an adapter
+    #: failure). They are never applied half-way and the sync token is held
+    #: back so the next pass looks at them again - a file that is merely
+    #: still being written by the cloud-drive client is picked up then.
+    failed: int = 0
     error: str = ""
 
 
@@ -161,6 +167,7 @@ class SyncEngine:
         downloaded = 0
         deleted_local = 0
         conflicts = 0
+        failed = 0
 
         by_record_type: dict[str, list] = {}
         for entry in entries:
@@ -169,8 +176,17 @@ class SyncEngine:
 
         for record_type, adapter in self._adapters.items():
             for entry, global_id in by_record_type.get(record_type, []):
-                outcome = self._pull_one(adapter, record_type, global_id, entry.key)
-                if outcome == "downloaded":
+                try:
+                    outcome = self._pull_one(adapter, record_type, global_id, entry.key)
+                except SyncProviderUnavailable as exc:
+                    return SyncResult(status=SyncStatus.OFFLINE, error=str(exc),
+                                      downloaded=downloaded, deleted_local=deleted_local,
+                                      conflicts=conflicts, failed=failed)
+                except Exception:  # noqa: BLE001 - one bad record must not stop the others
+                    outcome = "failed"
+                if outcome == "failed":
+                    failed += 1
+                elif outcome == "downloaded":
                     downloaded += 1
                 elif outcome == "deleted":
                     deleted_local += 1
@@ -180,18 +196,32 @@ class SyncEngine:
         uploaded = 0
         deleted_remote = 0
         for record_type, adapter in self._adapters.items():
-            up, dele = self._push_one_type(adapter, record_type)
+            try:
+                up, dele = self._push_one_type(adapter, record_type)
+            except SyncProviderUnavailable as exc:
+                # Local state only records an upload as done after it
+                # succeeded, so the rest is simply retried next pass.
+                return SyncResult(status=SyncStatus.OFFLINE, error=str(exc),
+                                  uploaded=uploaded, downloaded=downloaded,
+                                  deleted_remote=deleted_remote, deleted_local=deleted_local,
+                                  conflicts=conflicts, failed=failed)
             uploaded += up
             deleted_remote += dele
 
-        self._since_token = new_token
-        if self._on_since_token is not None:
-            self._on_since_token(new_token)
-
-        status = SyncStatus.CONFLICT if conflicts else SyncStatus.UP_TO_DATE
+        error = ""
+        if failed:
+            # Hold the token: those records are looked at again next time.
+            error = (f"{failed} remote record(s) could not be read (damaged, still "
+                     f"uploading, or encrypted with a different key) and will be retried.")
+            status = SyncStatus.ERROR
+        else:
+            self._since_token = new_token
+            if self._on_since_token is not None:
+                self._on_since_token(new_token)
+            status = SyncStatus.CONFLICT if conflicts else SyncStatus.UP_TO_DATE
         return SyncResult(status=status, uploaded=uploaded, downloaded=downloaded,
                           deleted_remote=deleted_remote, deleted_local=deleted_local,
-                          conflicts=conflicts)
+                          conflicts=conflicts, failed=failed, error=error)
 
     def _resolve_global_id(self, adapter: SyncAdapter, record_type: str, local_id: str) -> str:
         if adapter.deterministic_ids:
@@ -205,15 +235,14 @@ class SyncEngine:
         raw = self._provider.download(storage_key)
         if raw is None:
             return "noop"
-        package = crypto.EncryptedPackage.from_bytes(raw)
         try:
+            package = crypto.EncryptedPackage.from_bytes(raw)
             remote = crypto.decrypt_record(self._key, package, expected_key=storage_key)
-        except crypto.CryptoError:
-            # Part 22: tampered or wrong-key ciphertext - never applied,
-            # never crashes the sync; the record is simply left alone
-            # until an operator investigates. Surfaced as an error status
-            # by the caller if it becomes the dominant outcome.
-            return "noop"
+        except (crypto.CryptoError, ValueError):
+            # Part 22: truncated, tampered or wrong-key data is never
+            # applied and never crashes the pass; it is reported as failed
+            # (see SyncResult.failed) and re-examined on the next pass.
+            return "failed"
 
         last_remote_version = self._versions.get_last_remote_version(record_type, global_id)
         if remote.version <= last_remote_version and last_remote_version > 0:
@@ -375,11 +404,14 @@ class SyncEngine:
         return uploaded, deleted_remote
 
     def _upload_tombstone(self, record_type: str, global_id: str) -> None:
-        self._tombstones.mark_deleted(record_type, global_id, self._device_id)
         version = self._versions.bump_local_version(record_type, global_id)
         record = SyncRecord(record_type=record_type, global_id=global_id, payload={},
                             modified_at=_now(), device_id=self._device_id, deleted=True,
                             version=version)
         package = crypto.encrypt_record(self._key, record)
         self._provider.upload(crypto.storage_key(record_type, global_id), package.to_bytes())
+        # Only once the tombstone is really out: marking it first meant an
+        # upload failure left the deletion recorded locally but never sent,
+        # and the "already tombstoned" skip then stopped it being retried.
+        self._tombstones.mark_deleted(record_type, global_id, self._device_id)
         self._versions.clear(record_type, global_id)
