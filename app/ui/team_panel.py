@@ -229,8 +229,8 @@ class TeamPanel(QWidget):
         self.goal.setMinimumHeight(84)
         self.goal.setMaximumHeight(140)
         self.goal.textChanged.connect(self._sync_start)
-        QShortcut(QKeySequence("Ctrl+Return"), self.goal, activated=self._start_if_ready)
-        QShortcut(QKeySequence("Ctrl+Enter"), self.goal, activated=self._start_if_ready)
+        QShortcut(QKeySequence("Ctrl+Return"), self.goal, activated=self._start_if_ready, context=Qt.ShortcutContext.WidgetShortcut)
+        QShortcut(QKeySequence("Ctrl+Enter"), self.goal, activated=self._start_if_ready, context=Qt.ShortcutContext.WidgetShortcut)
         box.addWidget(self.goal)
 
         # Templates: an editable starting sentence, what it needs, and which agents it will use.
@@ -521,8 +521,8 @@ class TeamPanel(QWidget):
                                           "(Ctrl+Enter to send)")
         self.ask_input.setMaximumHeight(72)
         self.ask_input.textChanged.connect(self._sync_ask)
-        QShortcut(QKeySequence("Ctrl+Return"), self.ask_input, activated=self._send_ask)
-        QShortcut(QKeySequence("Ctrl+Enter"), self.ask_input, activated=self._send_ask)
+        QShortcut(QKeySequence("Ctrl+Return"), self.ask_input, activated=self._send_ask, context=Qt.ShortcutContext.WidgetShortcut)
+        QShortcut(QKeySequence("Ctrl+Enter"), self.ask_input, activated=self._send_ask, context=Qt.ShortcutContext.WidgetShortcut)
         ask.addWidget(self.ask_input)
         row = QHBoxLayout()
         self.ask_send = QPushButton("Ask", self.ask_box)
