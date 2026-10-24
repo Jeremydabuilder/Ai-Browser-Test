@@ -8,10 +8,10 @@ step that has no shortcut.
 ## Before building
 
 - [ ] Bump the version in `app/__init__.py` (`__version__`)
-- [ ] Bump the version in `packaging/windows/installer.iss`
-      (`MyAppVersion`) and `packaging/macos/pybrowser.spec`
-      (`CFBundleShortVersionString`/`CFBundleVersion`) to match
-- [ ] Full test suite green (`python -m pytest tests/ -q`) - both release
+- [ ] The installer version needs no edit: CI passes `app/__init__.py`'s
+      `__version__` to Inno Setup (`/DMyAppVersion=`), and the macOS spec
+      reads it from there too. Check the built artifact's version anyway.
+- [ ] Full test suite green (`python tests/run.py` - the project is unittest-based, not pytest) - both release
       workflows already gate the build on this; don't release a build the
       suite didn't pass on
 - [ ] Write real release notes: what changed, any known issues, minimum OS
@@ -20,10 +20,10 @@ step that has no shortcut.
 ## Building
 
 - [ ] Windows: run `packaging/windows/build.ps1` on Windows (or trigger
-      `release-windows.yml`), then work through
+      `release.yml` (Windows job)), then work through
       `packaging/windows/README.md`'s first-run checklist on a clean machine
 - [ ] macOS: run `packaging/macos/build.sh` on macOS (or trigger
-      `release-macos.yml`), then work through `packaging/macos/README.md`'s
+      `release.yml` (macOS job)), then work through `packaging/macos/README.md`'s
       first-run checklist on a clean machine
 - [ ] Confirm both builds actually ran the checklist against the packaged
       artifact, not a dev checkout - a dev environment having Python/keyring

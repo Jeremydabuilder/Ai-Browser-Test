@@ -30,10 +30,12 @@ packaging/
   RELEASE_CHECKLIST.md    the steps for cutting an actual release
 ```
 
-`.github/workflows/release-windows.yml` and `release-macos.yml` run these
+`.github/workflows/release.yml` (Windows and macOS jobs) runs these
 same scripts on GitHub's native `windows-latest`/`macos-latest` runners, on
 a manual trigger or a `v*` tag - never automatically on every push, and
-never publishing anywhere on their own. See `packaging/SIGNING.md` for why
+never publishing anywhere on their own. `.github/workflows/windows-tester-build.yml`
+is the separate, optional route that publishes a clearly-marked *pre-release*
+`.exe` for testers (see `TESTER_GUIDE.md`). See `packaging/SIGNING.md` for why
 neither workflow signs its output yet.
 
 ## Why PyInstaller

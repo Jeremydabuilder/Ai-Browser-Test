@@ -56,8 +56,8 @@ as it's assumed to work.
 - [ ] Version number agrees everywhere it appears: `app/__init__.py`,
       the installer, the `.exe`'s own file properties, the `.app`'s
       `Info.plist`, and the artifact filenames themselves
-- [ ] CI workflow runs are green (`release-windows.yml`,
-      `release-macos.yml`), including their smoke-test steps
+- [ ] CI workflow runs are green (`release.yml` (Windows job)
+      and (macOS job)), including their smoke-test steps
 
 Do not mark this RC stable until every box above is checked against a real
 run on a clean machine - not inferred from the packaging configuration

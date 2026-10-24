@@ -1,3 +1,5 @@
+> **Historical document.** Written at an earlier point; some statements are stale (for example, a command palette, pinned tabs and tab groups now exist or were already present, and "production-ready" labels here are not evidence-based). The current status is in [CAPABILITY_MATRIX.md](CAPABILITY_MATRIX.md).
+
 # Phase 24 — Final UX, Performance, Reliability & Launch Audit
 
 This is a consolidation audit across all 23 prior phases, not a new

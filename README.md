@@ -29,6 +29,8 @@ Tester) that plan, hand off artifacts, review and test - Tools → AI Team…, s
 pages, findings, decisions and progress kept together and resumable - see
 the Mission Library sections of [`ARCHITECTURE.md`](ARCHITECTURE.md).
 
+> ⚠️ **Status: pre-beta.** What works, what is only tested with fakes, and what is unverified (clean-machine installs, signing, live providers, screen readers) is listed honestly in [docs/CAPABILITY_MATRIX.md](docs/CAPABILITY_MATRIX.md).
+>
 > ⚠️ **This is an experimental AI browser, not a production one.** The agent
 > mitigates prompt injection but does not solve it, and its sensitivity
 > detection is heuristic. Read [`docs/ai_agent.md`](docs/ai_agent.md) §9 before
