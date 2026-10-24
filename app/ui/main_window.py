@@ -438,6 +438,7 @@ class MainWindow(QMainWindow):
         self._add_action(view_menu, "Find &Next", "Ctrl+G", lambda: self._find_step(False))
         self._add_action(view_menu, "Find &Previous", "Ctrl+Shift+G", lambda: self._find_step(True))
         view_menu.addSeparator()
+        self._add_action(view_menu, "&Command Palette…", "Ctrl+Shift+P", self._open_command_palette)
         self._add_action(view_menu, "&Search Tabs…", "Ctrl+Shift+K", self._open_tab_search)
         self._add_action(view_menu, "Suggest Tab &Groups…", None, self._suggest_tab_groups, ai=True)
         self._add_action(view_menu, "Search &History && Knowledge…", "Ctrl+Shift+F",
@@ -1542,6 +1543,78 @@ class MainWindow(QMainWindow):
     # -- find in page ----------------------------------------------------
     def _open_find(self) -> None:
         self.find_bar.open_bar()
+
+    # ------------------------------------------------------------------
+    # Command palette (Ctrl+Shift+P): a launcher over what already exists - no second execution path
+    # ------------------------------------------------------------------
+    _PALETTE_KEYWORDS = {
+        "AI Mode": "ask question answer search ai", "Show AI Agent": "py assistant panel chat mission",
+        "AI Team…": "team agents research report", "Settings…": "preferences options config ai on off",
+        "Skills Library": "skill run", "Mission Library": "missions history results",
+        "Search History & Knowledge…": "knowledge find memory", "Search Tabs…": "find switch tab",
+        "Show History": "visited pages", "Show Bookmarks": "favorites saved",
+    }
+
+    def _palette_commands(self, query: str = "") -> list:
+        """What the palette can do right now. Menu actions come straight from the menus (hidden/disabled ones - AI
+        entries while AI is off - are skipped), so availability is decided in exactly one place."""
+        from app.ui.command_palette import Command
+
+        commands: list = []
+
+        def walk(menu, path):
+            for action in menu.actions():
+                if action.menu() is not None:
+                    yield from walk(action.menu(), path + [action.text().replace("&", "")])
+                elif action.text() and action.isVisible() and action.isEnabled():
+                    yield action, path
+
+        for top in self.menuBar().actions():
+            if top.menu() is None:
+                continue
+            for action, path in walk(top.menu(), [top.text().replace("&", "")]):
+                title = action.text().replace("&&", "\0").replace("&", "").replace("\0", "&")
+                if "Command Palette" in title:
+                    continue
+                commands.append(Command(
+                    title, action.trigger, " \u203a ".join(path), action.shortcut().toString(),
+                    self._PALETTE_KEYWORDS.get(title, "")))
+        for index in range(self.tabs.count()):
+            title = self.tabs.tabText(index) or "New Tab"
+            commands.append(Command(f"Switch to tab: {title}", lambda i=index: self.tabs.setCurrentIndex(i), "Tabs",
+                                    keywords="go open"))
+        for workspace in self.workspaces.all():
+            if workspace.id != self._current_workspace_id:
+                commands.append(Command(f"Switch workspace: {workspace.icon} {workspace.name}".replace("  ", " "),
+                                        lambda wid=workspace.id: self.switch_workspace(wid), "Workspaces"))
+        if self._ai_enabled:
+            try:
+                for skill in self.skills.all():
+                    commands.append(Command(f"Run Skill: {skill.name}", lambda s=skill: self._run_skill(s), "Skills",
+                                            keywords="skill"))
+            except Exception:  # noqa: BLE001 - a broken skills store must not break the palette
+                pass
+            try:
+                for mission in self.missions.recent(8):
+                    commands.append(Command(f"Open Mission: {mission.title or mission.goal[:50]}",
+                                            lambda mid=mission.id: self._open_mission(mid), "Missions"))
+            except Exception:  # noqa: BLE001
+                pass
+        text = query.strip()
+        if text:
+            commands.insert(0, Command(f"Search the web or go to: {text}",
+                                       lambda t=text: self._navigate_from_address_bar(t), "Typed text"))
+            if self._ai_enabled:
+                commands.insert(1, Command(f"AI Mode: ask \u201c{text}\u201d", lambda t=text: self._open_ai_mode(t),
+                                           "Typed text", keywords="ai answer question"))
+                commands.insert(2, Command(f"Start a Mission: {text}", lambda t=text: self._open_agent_with(t),
+                                           "Typed text", keywords="mission goal agent task"))
+        return commands
+
+    def _open_command_palette(self) -> None:
+        from app.ui.command_palette import open_palette
+
+        open_palette(self, self._palette_commands)
 
     def _open_tab_search(self) -> None:
         from app.ui.tab_search import TabSearchDialog
@@ -3386,7 +3459,7 @@ for _name in (
     "_show_mission_library", "_show_skills_library", "_show_research_graph", "_show_task_center",
     "_toggle_workflow_recording", "_show_watches", "_run_multi_agent_mission", "_toggle_teaching",
     "_show_collaboration", "_suggest_tab_groups", "_ask_py_about_tabs", "_start_mission_from_tabs",
-    "_add_selection_to_mission", "_new_watch_from_selection", "_open_mission",
+    "_add_selection_to_mission", "_new_watch_from_selection", "_open_mission", "_run_skill",
 ):
     if hasattr(MainWindow, _name):
         setattr(MainWindow, _name, _ai_only(getattr(MainWindow, _name)))
