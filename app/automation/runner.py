@@ -25,7 +25,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Callable
 
-from PySide6.QtCore import QObject, Signal
+from PySide6.QtCore import QObject, QTimer, Signal
 
 from app.automation.model import RecordedStep, RecordedWorkflow, render_args
 
@@ -40,6 +40,7 @@ class PauseReason:
     VISUAL_FALLBACK = "visual_fallback"
     BUSY = "busy"
     DECLINED = "declined"
+    TIMED_OUT = "timed_out"
 
 
 _HUMAN_REASON = {
@@ -52,7 +53,13 @@ _HUMAN_REASON = {
     PauseReason.VISUAL_FALLBACK: "PyBrowser needs your help: this step relies on visual matching and needs you to confirm it.",
     PauseReason.BUSY: "PyBrowser is busy with another task right now.",
     PauseReason.DECLINED: "This step was not approved, so the workflow stopped.",
+    PauseReason.TIMED_OUT: "PyBrowser needs your help: the page did not answer in time, so the workflow stopped.",
 }
+
+#: How long finding an element or checking a step's expectation may take.
+#: Deliberately not applied to the step itself: a step waiting for the
+#: person's approval can take as long as the person takes.
+RESOLVE_TIMEOUT_MS = 20_000
 
 #: Visual tools carry no ``ref`` and can never be re-resolved structurally -
 #: see recorder.py. Replaying one unattended would mean either doing
@@ -77,6 +84,7 @@ class WorkflowRunner(QObject):
     step_started = Signal(object)     # ReplayProgress
     step_completed = Signal(object)   # ReplayProgress
     paused = Signal(str, str)         # reason code, human message
+    step_skipped = Signal(object)     # ReplayProgress - an *optional* step failed and was skipped
     completed = Signal()
     failed = Signal(str)
 
@@ -90,6 +98,15 @@ class WorkflowRunner(QObject):
         self._index = 0
         self._tab_id: int | None = None
         self._connected = False
+        #: Bumped at every start/stop/pause. A late answer from the page for
+        #: a replay that has since stopped (or been replaced by a new one)
+        #: carries the old number and is dropped - it must never advance or
+        #: act on a different run.
+        self._generation = 0
+        self._dispatched = False
+        self._watchdog = QTimer(self)
+        self._watchdog.setSingleShot(True)
+        self._watchdog.timeout.connect(self._on_timeout)
 
     @property
     def is_running(self) -> bool:
@@ -104,6 +121,7 @@ class WorkflowRunner(QObject):
         if not self._connected:
             self._session.routine_finished.connect(self._on_step_finished)
             self._connected = True
+        self._generation += 1
         self._workflow = workflow
         self._values = dict(parameter_values or {})
         for parameter in workflow.parameters:
@@ -114,11 +132,30 @@ class WorkflowRunner(QObject):
         return True
 
     def cancel(self) -> None:
-        self._workflow = None
+        self._stop()
 
     # -- internals -------------------------------------------------------
-    def _pause(self, reason: str) -> None:
+    def _stop(self) -> None:
+        self._dispatched = False
+        self._generation += 1
+        self._watchdog.stop()
         self._workflow = None
+
+    def _arm(self) -> int:
+        """Start the resolve/verify timeout; returns the token the answer
+        must present to still count."""
+        self._watchdog.start(RESOLVE_TIMEOUT_MS)
+        return self._generation
+
+    def _live(self, token: int) -> bool:
+        return self._workflow is not None and token == self._generation
+
+    def _on_timeout(self) -> None:
+        if self._workflow is not None:
+            self._pause(PauseReason.TIMED_OUT)
+
+    def _pause(self, reason: str) -> None:
+        self._stop()
         self.paused.emit(reason, _HUMAN_REASON.get(reason, reason))
 
     def _advance(self) -> None:
@@ -151,18 +188,20 @@ class WorkflowRunner(QObject):
             return
 
         if step.target is not None and not step.target.is_empty():
+            token = self._arm()
             future = self._browser.find_elements(
                 step.target.queries(), role=(step.target.role or None), tab_id=self._tab_id)
-            future.then(lambda result: self._on_target_resolved(step, result))
+            future.then(lambda result: self._on_target_resolved(step, result, token))
             return
 
         # No target to resolve at all (browser_navigate, mission_save_finding,
         # a step whose recorded element could not be described) - run as-is.
         self._dispatch(step.tool_name, render_args(step.args, self._values))
 
-    def _on_target_resolved(self, step: RecordedStep, result: Any) -> None:
-        if self._workflow is None:
+    def _on_target_resolved(self, step: RecordedStep, result: Any, token: int) -> None:
+        if not self._live(token):
             return
+        self._watchdog.stop()
         if not getattr(result, "ok", False):
             self._pause(PauseReason.TARGET_MISSING)
             return
@@ -178,31 +217,42 @@ class WorkflowRunner(QObject):
         self._dispatch(step.tool_name, args)
 
     def _dispatch(self, tool_name: str, args: dict[str, Any]) -> None:
+        self._dispatched = True
         if not self._session.run_routine([(tool_name, args)]):
             self._pause(PauseReason.BUSY)
 
     def _on_step_finished(self, results: list) -> None:
         workflow = self._workflow
-        if workflow is None:
-            return  # not this runner's replay, or already stopped
+        if workflow is None or not self._dispatched:
+            return  # not this runner's replay, or no step of ours is in flight
+        self._dispatched = False
         step = workflow.steps[self._index]
-        ok = bool(results) and not any(block.get("is_error") for block in results)
+        if not results:
+            # No result at all means the person declined the approval. That
+            # is an answer, never something an "optional" flag may skip past.
+            self._pause(PauseReason.DECLINED)
+            return
+        ok = not any(block.get("is_error") for block in results)
         if not ok:
             if step.optional:
-                self._finish_step(step)
+                # Optional is the author's explicit choice, but it is still
+                # reported, not silent.
+                self.step_skipped.emit(ReplayProgress(self._index, len(workflow.steps), step.label))
+                self._finish_step(step, completed=False)
                 return
-            self._pause(PauseReason.STEP_FAILED if results else PauseReason.DECLINED)
+            self._pause(PauseReason.STEP_FAILED)
             return
         if step.expect:
             self._verify(step)
             return
         self._finish_step(step)
 
-    def _finish_step(self, step: RecordedStep) -> None:
+    def _finish_step(self, step: RecordedStep, *, completed: bool = True) -> None:
         workflow = self._workflow
         if workflow is None:
             return
-        self.step_completed.emit(ReplayProgress(self._index, len(workflow.steps), step.label))
+        if completed:
+            self.step_completed.emit(ReplayProgress(self._index, len(workflow.steps), step.label))
         self._index += 1
         self._advance()
 
@@ -214,27 +264,30 @@ class WorkflowRunner(QObject):
             tabs = self._browser.list_tabs()
             active = next((t for t in tabs if t.get("active")), None)
             url = (active or {}).get("url", "")
-            self._on_verified(step, needle in url)
+            self._on_verified(step, needle in url, self._generation)
             return
         if "element_text_query" in expect or "element_gone_query" in expect:
             query = str(expect.get("element_text_query") or expect.get("element_gone_query"))
             expect_present = "element_text_query" in expect
+            token = self._arm()
             future = self._browser.find_elements([query], tab_id=self._tab_id)
             future.then(lambda result: self._on_verified(
                 step, getattr(result, "ok", False)
-                and bool(result.data.get("matches")) == expect_present))
+                and bool(result.data.get("matches")) == expect_present, token))
             return
         if "heading_contains" in expect:
             needle = str(expect["heading_contains"])
+            token = self._arm()
             future = self._browser.get_page_text(tab_id=self._tab_id)
             future.then(lambda result: self._on_verified(
-                step, getattr(result, "ok", False) and needle in result.data.get("text", "")))
+                step, getattr(result, "ok", False) and needle in result.data.get("text", ""), token))
             return
-        self._on_verified(step, True)
+        self._on_verified(step, True, self._generation)
 
-    def _on_verified(self, step: RecordedStep, ok: bool) -> None:
-        if self._workflow is None:
+    def _on_verified(self, step: RecordedStep, ok: bool, token: int) -> None:
+        if not self._live(token):
             return
+        self._watchdog.stop()
         if not ok:
             self._pause(PauseReason.VERIFICATION_FAILED)
             return
