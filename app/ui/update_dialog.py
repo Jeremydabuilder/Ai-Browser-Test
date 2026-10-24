@@ -11,10 +11,10 @@ bundle is not a safe thing to do from inside the app itself.
 
 from __future__ import annotations
 
+import html
 import os
 import subprocess
 import sys
-import tempfile
 
 from PySide6.QtWidgets import (
     QApplication,
@@ -30,6 +30,7 @@ from PySide6.QtWidgets import (
 
 from app import APP_NAME
 from app.updater.checker import UpdateCheckError, UpdateResult, check_for_updates
+from app.updater.download import DownloadCancelled, download_artifact
 from app.updater.verify import verify_artifact
 from app.updater.manifest import Artifact
 from app.version import current_version
@@ -87,27 +88,41 @@ class UpdateCheckDialog(QDialog):
             f"A new version is available: {result.latest_version} "
             f"(you have {result.current_version}).")
         if result.notes_url:
-            self._notes_label.setText(f'<a href="{result.notes_url}">Release notes</a>')
+            self._notes_label.setText(
+                f'<a href="{html.escape(result.notes_url, quote=True)}">Release notes</a>')
         self._download_button.setVisible(True)
 
     def _download_and_verify(self) -> None:
         result = self._result
         if result is None or not result.available:
             return
-        progress = QProgressDialog("Downloading update…", "Cancel", 0, 0, self)
+        artifact = Artifact(url=result.download_url, sha256=result.sha256, size=result.size)
+        progress = QProgressDialog("Downloading update…", "Cancel", 0, 100, self)
         progress.setWindowTitle("Downloading")
         progress.setMinimumDuration(0)
+        progress.setAutoClose(False)
         progress.show()
         QApplication.processEvents()
+
+        def on_progress(done: int, total: int) -> bool:
+            progress.setValue(min(99, int(done * 100 / total)) if total else 0)
+            QApplication.processEvents()
+            return not progress.wasCanceled()
+
         try:
-            path = _download(result.download_url)
+            path = download_artifact(artifact, progress=on_progress)
+        except DownloadCancelled:
+            progress.close()
+            return
         except Exception as exc:  # noqa: BLE001 - any download failure becomes one clean message
             progress.close()
-            QMessageBox.warning(self, "Download failed", str(exc))
+            QMessageBox.warning(
+                self, "Download failed",
+                f"The update could not be downloaded: {exc}\n\n"
+                f"Nothing was installed and the current version is unchanged.")
             return
         progress.close()
 
-        artifact = Artifact(url=result.download_url, sha256=result.sha256, size=result.size)
         verification = verify_artifact(path, artifact)
         if not verification.ok:
             QMessageBox.critical(
@@ -145,19 +160,6 @@ class UpdateCheckDialog(QDialog):
         QMessageBox.information(
             self, "Update verified",
             f"The update has been downloaded and verified:\n\n{path}")
-
-
-def _download(url: str) -> str:
-    import httpx2 as httpx
-
-    fd, path = tempfile.mkstemp(prefix="pybrowser-update-")
-    os.close(fd)
-    with httpx.stream("GET", url, follow_redirects=True, timeout=60.0) as response:
-        response.raise_for_status()
-        with open(path, "wb") as fh:
-            for chunk in response.iter_bytes():
-                fh.write(chunk)
-    return path
 
 
 def _launch_installer_and_quit(path: str) -> None:

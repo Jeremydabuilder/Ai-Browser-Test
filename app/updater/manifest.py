@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from urllib.parse import urlsplit
 
 from app.version import CHANNELS, InvalidVersion, parse_version
 
@@ -77,6 +78,21 @@ def _require_str(obj: dict, key: str, *, context: str) -> str:
     return value
 
 
+def _require_secure_url(value: str, *, context: str, field: str) -> str:
+    """A manifest URL must be https (plain http only to loopback, which is
+    how the tests and a local feed work). A downloaded installer is
+    additionally hash-checked, but the checksum comes from the manifest, so
+    the manifest itself must not travel - or point - over a downgradeable
+    channel, and ``notes_url`` ends up in a clickable link."""
+    parts = urlsplit(value.strip())
+    host = (parts.hostname or "").lower()
+    if parts.scheme == "https" and host:
+        return value.strip()
+    if parts.scheme == "http" and host in ("localhost", "127.0.0.1", "::1"):
+        return value.strip()
+    raise ManifestError(f"{context}: {field} must be an https URL, got {value!r}")
+
+
 def parse_manifest(raw: str | bytes | dict) -> ReleaseManifest:
     """Parse and validate a release manifest. Raises ManifestError for
     anything malformed - bad JSON, a missing/invalid version, an unknown
@@ -105,6 +121,8 @@ def parse_manifest(raw: str | bytes | dict) -> ReleaseManifest:
     notes_url = data.get("notes_url", "")
     if notes_url and not isinstance(notes_url, str):
         raise ManifestError("manifest notes_url must be a string")
+    if notes_url:
+        notes_url = _require_secure_url(notes_url, context="manifest", field="notes_url")
 
     raw_artifacts = data.get("artifacts", {})
     if not isinstance(raw_artifacts, dict):
@@ -115,7 +133,8 @@ def parse_manifest(raw: str | bytes | dict) -> ReleaseManifest:
         if not isinstance(entry, dict):
             raise ManifestError(f"artifact {platform_key!r} must be an object")
         context = f"artifact {platform_key!r}"
-        url = _require_str(entry, "url", context=context)
+        url = _require_secure_url(
+            _require_str(entry, "url", context=context), context=context, field="url")
         sha256 = _require_str(entry, "sha256", context=context)
         if len(sha256) != 64 or not all(c in "0123456789abcdefABCDEF" for c in sha256):
             raise ManifestError(f"{context}: sha256 must be a 64-character hex digest")

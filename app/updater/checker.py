@@ -74,6 +74,11 @@ def evaluate_manifest(manifest: ReleaseManifest, *, current: str | None = None,
     be tested without any HTTP involved (see tests/test_updater.py)."""
     current = current or current_version()
     this_platform = this_platform or platform_key()
+    if manifest.channel != current_channel():
+        # A preview build is never offered a stable build (or the reverse)
+        # because a feed was mis-pointed; channel changes are a deliberate
+        # reinstall, not something an update prompt does.
+        return UpdateResult(available=False, current_version=current)
     if not is_newer(manifest.version, current):
         return UpdateResult(available=False, current_version=current)
 
