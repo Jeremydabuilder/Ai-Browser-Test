@@ -1927,6 +1927,7 @@ class MainWindow(QMainWindow):
         tab = self._current()
         if tab is not None:
             tab.find_text("")
+            tab.view.setFocus()         # closing the bar must hand the keyboard back to the page
 
     def _zoom(self, delta: float | None) -> None:
         tab = self._current()
@@ -2698,6 +2699,7 @@ class MainWindow(QMainWindow):
         dialog.resize(480, 560)
         layout = QVBoxLayout(dialog)
         view = QTextBrowser(dialog)
+        view.setAccessibleName("Keyboard shortcuts")
         view.setOpenExternalLinks(False)
         view.setHtml(self._shortcuts_html())
         layout.addWidget(view)
@@ -3288,6 +3290,7 @@ class NoticeBar(QFrame):
         close_button.setFlat(True)
         close_button.setFixedWidth(24)
         close_button.setToolTip("Dismiss")
+        close_button.setAccessibleName("Dismiss notice")
         close_button.clicked.connect(self.hide)
         layout.addWidget(close_button)
 

@@ -7,6 +7,8 @@ through them.
 
 from __future__ import annotations
 
+from app.ui import a11y
+
 from PySide6.QtCore import QEasingCurve, QPropertyAnimation, Qt, Signal
 from PySide6.QtGui import QKeyEvent
 from PySide6.QtWidgets import (
@@ -41,13 +43,15 @@ class FindBar(QFrame):
 
         self.field = QLineEdit(self)
         self.field.setPlaceholderText("Find in page")
-        self.field.setClearButtonEnabled(True)
+        self.field.setAccessibleName("Find in page")
+        a11y.enable_clear(self.field, "search")
         # Search as you type, like every other browser.
         self.field.textChanged.connect(lambda text: self.search_requested.emit(text, False))
         self.field.returnPressed.connect(self._next)
         layout.addWidget(self.field, 1)
 
         self.status = QLabel("", self)
+        self.status.setAccessibleName("Find results")
         self.status.setMinimumWidth(90)
         self.status.setStyleSheet(f"color:{c.muted};")
         layout.addWidget(self.status)
@@ -69,6 +73,8 @@ class FindBar(QFrame):
             button.setFlat(True)
             button.setFixedWidth(30)
             button.setToolTip(tip)
+            button.setAccessibleName(tip.split(" (")[0])      # "Previous match", "Next match", "Close"
+            button.setAccessibleDescription(tip)
             if backward is None:
                 button.clicked.connect(self.close_bar)
             else:

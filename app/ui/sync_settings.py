@@ -81,6 +81,7 @@ class SyncSettingsDialog(QDialog):
 
         layout.addWidget(QLabel("Conflicts:", self))
         self._conflicts_list = QListWidget(self)
+        self._conflicts_list.setAccessibleName("Sync conflicts")
         layout.addWidget(self._conflicts_list, 1)
         resolve_row = QHBoxLayout()
         for label, resolution in (

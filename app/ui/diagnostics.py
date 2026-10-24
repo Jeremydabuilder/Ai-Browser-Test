@@ -55,6 +55,7 @@ class DiagnosticsDialog(QDialog):
         layout.addWidget(self._summary)
 
         self._text = QPlainTextEdit(self)
+        self._text.setAccessibleName("Agent diagnostics report")
         self._text.setReadOnly(True)
         self._text.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
         font = self._text.font()

@@ -35,6 +35,7 @@ from PySide6.QtWidgets import (
 from app.browser.internal import is_internal
 from app.browser.tab_manager import TabManager
 from app.ui import theme
+from app.ui import a11y
 from app.utils.urls import short_host
 
 _INDEX_ROLE = Qt.ItemDataRole.UserRole
@@ -75,7 +76,8 @@ class TabSearchDialog(QDialog):
 
         self.field = QLineEdit(self)
         self.field.setPlaceholderText("Search open tabs by title or domain…")
-        self.field.setClearButtonEnabled(True)
+        self.field.setAccessibleName("Search open tabs")
+        a11y.enable_clear(self.field, "search")
         self.field.textChanged.connect(self._refresh)
         layout.addWidget(self.field)
 
@@ -92,6 +94,8 @@ class TabSearchDialog(QDialog):
         layout.addLayout(dupe_row)
 
         self.list = QListWidget(self)
+        self.list.setAccessibleName("Matching open tabs")
+        self.list.setAccessibleDescription("Press Enter to switch to the highlighted tab")
         self.list.itemActivated.connect(self._activate)
         self.list.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.list.itemSelectionChanged.connect(self._sync_multi_actions)

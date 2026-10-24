@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.ui import icons, theme
+from app.ui import a11y
 
 
 class AddressBar(QLineEdit):
@@ -50,7 +51,7 @@ class AddressBar(QLineEdit):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setPlaceholderText("Search or enter address")
-        self.setClearButtonEnabled(True)
+        a11y.enable_clear(self, "address")
         self.setAccessibleName("Address and search bar")
         self._select_on_next_focus = False
         completer = QCompleter(self)
@@ -67,11 +68,13 @@ class AddressBar(QLineEdit):
         self._mode_action = self.addAction(
             self._search_icon, QLineEdit.ActionPosition.LeadingPosition)
         self._mode_action.setToolTip("")
+        self._mode_action.setText("Search or address")
 
         self._ask_py_icon = icons.icon("sparkle", colours.accent, size=32, weight=1.8)
         self._ask_py_action = self.addAction(
             self._ask_py_icon, QLineEdit.ActionPosition.TrailingPosition)
         self._ask_py_action.setToolTip("This reads like a task - ask Py to do it")
+        self._ask_py_action.setText("Ask Py to do this")
         self._ask_py_action.setVisible(False)
         self._ask_py_action.triggered.connect(
             lambda: self.ask_py_requested.emit(self.text().strip()))
@@ -93,6 +96,7 @@ class AddressBar(QLineEdit):
         self._mode_action.setToolTip(
             "Press Enter to search the web" if searching
             else "Press Enter to go to this address")
+        self._mode_action.setText("Search the web" if searching else "Go to address")
         self._ask_py_action.setVisible(self._ai_on and url_utils.looks_like_a_task(text))
 
     def focusInEvent(self, event) -> None:  # noqa: N802

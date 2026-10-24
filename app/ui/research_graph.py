@@ -62,6 +62,7 @@ class ResearchGraphDialog(QDialog):
         self._search_field.returnPressed.connect(self._run_search)
         top.addWidget(self._search_field, 1)
         self._filter_box = QComboBox(self)
+        self._filter_box.setAccessibleName("Filter findings")
         for label, _types in _FILTERS:
             self._filter_box.addItem(label)
         self._filter_box.currentIndexChanged.connect(self._run_search)
@@ -73,6 +74,7 @@ class ResearchGraphDialog(QDialog):
 
         splitter = QSplitter(Qt.Orientation.Horizontal, self)
         self._results_list = QListWidget(self)
+        self._results_list.setAccessibleName("Matching findings and sources")
         self._results_list.currentItemChanged.connect(self._on_result_selected)
         splitter.addWidget(self._results_list)
 
@@ -82,6 +84,7 @@ class ResearchGraphDialog(QDialog):
         self._title_label.setWordWrap(True)
         detail_layout.addWidget(self._title_label)
         self._details_text = QTextEdit(self)
+        self._details_text.setAccessibleName("Details of the selected item")
         self._details_text.setReadOnly(True)
         detail_layout.addWidget(self._details_text, 1)
 
@@ -98,6 +101,7 @@ class ResearchGraphDialog(QDialog):
 
         detail_layout.addWidget(QLabel("Related:", self))
         self._neighbors_list = QListWidget(self)
+        self._neighbors_list.setAccessibleName("Related items")
         self._neighbors_list.itemDoubleClicked.connect(self._navigate_to_neighbor)
         detail_layout.addWidget(self._neighbors_list, 1)
         unlink_button = QPushButton("Unlink Selected Relationship", self)

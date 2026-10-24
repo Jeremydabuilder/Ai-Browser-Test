@@ -540,9 +540,12 @@ class TabManager(QTabWidget):
             button.setAutoRaise(True)
             button.setCursor(Qt.CursorShape.ArrowCursor)
             button.setToolTip("Close tab")
+            button.setAccessibleName("Close tab")
+            button.setAccessibleDescription("Closes this tab")
             button.setStyleSheet(
-                "QToolButton { border: none; border-radius: 5px; padding: 2px; }"
-                f"QToolButton:hover {{ background: {colours.line}; }}")
+                "QToolButton { border: 1px solid transparent; border-radius: 5px; padding: 1px; }"
+                f"QToolButton:hover {{ background: {colours.line}; }}"
+                f"QToolButton:focus {{ border-color: {colours.accent}; }}")
             # Look the tab up when clicked: indexes shift as tabs come and go,
             # so capturing the index here would close the wrong tab later.
             button.clicked.connect(lambda _=False, t=tab: self._close_widget(t))

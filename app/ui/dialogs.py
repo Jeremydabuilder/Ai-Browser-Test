@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
 
 from app.storage import BookmarkStore, HistoryStore
 from app.ui import icons, theme
+from app.ui import a11y
 from app.utils.urls import short_host
 
 _URL_ROLE = Qt.ItemDataRole.UserRole
@@ -100,11 +101,13 @@ class _ListDialog(QDialog):
 
         self.filter_box = QLineEdit(self)
         self.filter_box.setPlaceholderText("Filter…")
-        self.filter_box.setClearButtonEnabled(True)
+        self.filter_box.setAccessibleName(f"Filter {title.lower()}")
+        a11y.enable_clear(self.filter_box, "filter")
         self.filter_box.textChanged.connect(self.refresh)
 
         self.tree = QTreeWidget(self)
         self.tree.setHeaderLabels(headers)
+        self.tree.setAccessibleName(title)
         self.tree.setRootIsDecorated(False)
         self.tree.setAlternatingRowColors(True)
         # The alternate row colour comes from the OS palette, not this

@@ -310,6 +310,15 @@ def stylesheet(palette: Palette, m: Metrics = METRICS) -> str:
     QPushButton:pressed {{ background: {p.surface_alt}; }}
     QPushButton:disabled {{ color: {p.disabled}; border-color: {p.line}; background: {p.bg}; }}
     QPushButton:focus {{ border-color: {p.accent}; }}
+    /* Visible keyboard focus on everything else a Tab press can land on. A stylesheet replaces the native
+       focus rectangle, so each control type needs its own indicator or keyboard users lose their place. */
+    QToolButton:focus {{ border: 1px solid {p.accent}; border-radius: {m.radius_sm}px; }}
+    QCheckBox:focus, QRadioButton:focus {{ background: {p.accent_soft}; border-radius: {m.radius_sm}px; }}
+    QListWidget:focus, QTreeWidget:focus, QTextBrowser:focus, QPlainTextEdit:focus, QTextEdit:focus {{
+        border: 1px solid {p.accent};
+    }}
+    QTabBar::tab:focus {{ border: 1px solid {p.accent}; }}
+    QSlider:focus, QAbstractSpinBox:focus {{ border: 1px solid {p.accent}; }}
     /* The one gradient control in the chrome: the primary action, which is
        almost always "go ahead with the AI/mission thing this dialog is
        about" (Allow, Start, Save). Ordinary buttons stay flat - the gradient
@@ -465,5 +474,11 @@ def apply(app) -> Palette:
     try:
         app.setStyleSheet(stylesheet(palette))
     except Exception:  # noqa: BLE001
+        pass
+    try:
+        from app.ui import a11y
+
+        a11y.install_fallback(app)            # names any still-unnamed control from its own tooltip/placeholder
+    except Exception:  # noqa: BLE001 - accessibility helpers must never stop the app starting
         pass
     return palette

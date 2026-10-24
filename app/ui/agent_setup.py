@@ -166,6 +166,7 @@ class ApiKeyDialog(QDialog):
         column.addWidget(QLabel("<b>Provider</b>", box))
 
         self.provider_box = QComboBox(box)
+        self.provider_box.setAccessibleName("AI provider")
         for info in PROVIDERS:
             self.provider_box.addItem(info.label, info.id)
         index = self.provider_box.findData(self._initial_provider or current.provider)
@@ -344,6 +345,7 @@ class ApiKeyDialog(QDialog):
         # below - but as an explicit, opt-in fallback, not the default way
         # to interact with what is supposed to read as a dropdown.
         self._other_model_box = QComboBox(box)
+        self._other_model_box.setAccessibleName("Model")
         self._other_model_box.setEditable(False)
         layout.addWidget(self._other_model_box)
 
@@ -416,6 +418,7 @@ class ApiKeyDialog(QDialog):
 
         layout.addWidget(QLabel("<hr><b>Model</b>", box))
         self._local_model_box = QComboBox(box)
+        self._local_model_box.setAccessibleName("Local model")
         self._local_model_box.setEditable(False)
         layout.addWidget(self._local_model_box)
 
@@ -1133,6 +1136,7 @@ class ApiKeyDialog(QDialog):
         # hand is exactly how this box ends up back on "Custom".
         column.addWidget(QLabel("<b>Preset</b>", box))
         self.preset_box = QComboBox(box)
+        self.preset_box.setAccessibleName("Preset")
         self.preset_box.addItem("Custom (choose model and effort below)", "")
         for preset_id, label, _model_id, _effort in PRESETS:
             self.preset_box.addItem(label, preset_id)
@@ -1140,6 +1144,7 @@ class ApiKeyDialog(QDialog):
 
         column.addWidget(QLabel("<b>Model</b>", box))
         self.model_box = QComboBox(box)
+        self.model_box.setAccessibleName("Anthropic model")
         for choice in MODELS:
             self.model_box.addItem(choice.label, choice.model_id)
         if self.model_box.findData(current.model) < 0:
@@ -1156,6 +1161,7 @@ class ApiKeyDialog(QDialog):
 
         column.addWidget(QLabel("<b>Effort</b>", box))
         self.effort_box = QComboBox(box)
+        self.effort_box.setAccessibleName("Reasoning effort")
         # Each item's label is a full explanatory sentence, not a word - and a
         # QComboBox sizes its closed box to its widest item by default, which
         # pushed the whole dialog wider than its own window and clipped
@@ -1216,6 +1222,7 @@ class ApiKeyDialog(QDialog):
         column.addWidget(heading)
 
         self.autonomy_box = QComboBox(box)
+        self.autonomy_box.setAccessibleName("How much Py may do without asking")
         for level, label, description in AUTONOMY_LEVELS:
             self.autonomy_box.addItem(label, level)
             self.autonomy_box.setItemData(

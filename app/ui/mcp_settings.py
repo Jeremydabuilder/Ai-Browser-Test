@@ -121,6 +121,7 @@ class ConnectedToolsPanel(QWidget):
         layout.addWidget(intro)
 
         self.tree = QTreeWidget(self)
+        self.tree.setAccessibleName("Connected tool servers")
         self.tree.setHeaderLabels(["Server", "Status", "Tools"])
         self.tree.setRootIsDecorated(False)
         self.tree.setUniformRowHeights(True)

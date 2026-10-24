@@ -30,6 +30,7 @@ from PySide6.QtWidgets import (
 
 from app.storage.highlights import Highlight, HighlightStore
 from app.ui import theme
+from app.ui import a11y
 from app.ui.dialogs import confirm_destructive
 
 _ID_ROLE = Qt.ItemDataRole.UserRole
@@ -86,7 +87,7 @@ class HighlightsLibraryDialog(QDialog):
 
         self.filter_box = QLineEdit(self)
         self.filter_box.setPlaceholderText("Search highlights…")
-        self.filter_box.setClearButtonEnabled(True)
+        a11y.enable_clear(self.filter_box, "filter")
         self.filter_box.textChanged.connect(self.refresh)
 
         self.tree = QTreeWidget(self)
