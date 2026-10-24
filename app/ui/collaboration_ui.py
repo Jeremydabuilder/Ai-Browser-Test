@@ -47,6 +47,17 @@ class CollaborationDialog(QDialog):
         self._status_label = QLabel(self)
         layout.addWidget(self._status_label)
 
+        notice = QLabel(
+            "Roles are advisory. Everyone you invite holds the same encryption key, and "
+            "there are no accounts or signatures, so a role stops mistakes, not a "
+            "determined participant. Removing someone does not recall what they already "
+            "downloaded. Content from collaborators is treated as untrusted: it never "
+            "approves an action or instructs the assistant. Transport is your shared "
+            "folder service (Dropbox, iCloud, a network drive…).", self)
+        notice.setWordWrap(True)
+        notice.setProperty("kind", "muted")
+        layout.addWidget(notice)
+
         share_row = QHBoxLayout()
         self._share_button = QPushButton("Share…", self)
         self._share_button.clicked.connect(self._share)

@@ -22,7 +22,7 @@ from typing import TYPE_CHECKING
 
 from app.agent.keys import ApiKeyStore, KeyringUnavailable
 from app.collaboration.adapters import ActivityAdapter, CommentAdapter, ParticipantAdapter
-from app.collaboration.types import ActivityKind, Role, TargetType, can_comment
+from app.collaboration.types import ActivityKind, Role, TargetType, can_add_finding, can_comment
 from app.sync import crypto
 from app.sync.adapters import MissionAdapter, MissionFindingAdapter
 from app.sync.device import ensure_local_device
@@ -125,6 +125,28 @@ class CollaborationService:
         if participant is None or not participant.is_active:
             return Role.OWNER if sharing.owner_device_id == self.device.id else Role.VIEWER
         return participant.role
+
+    def write_refusal(self, mission_id: int) -> str | None:
+        """Why this device may not add findings or edit results on
+        ``mission_id`` right now, or None. Roles are advisory between
+        people who already hold the key (see collaboration.types.Role); this
+        is the local half of enforcing them."""
+        role = self.role_for(mission_id)
+        if can_add_finding(role):
+            return None
+        return (f"This Mission is shared with you as a {role}. "
+                f"Ask the owner for the editor role to add findings.")
+
+    def _sender_may_edit(self, mission_id: int, device_id: str) -> bool:
+        """Receiving side of the same rule: a change claiming to come from a
+        known viewer, or from a removed participant, is not applied. A device
+        not (yet) in the participant list is accepted - the list itself
+        arrives through the same sync, so rejecting unknowns would deadlock a
+        first join."""
+        participant = self.participants.get(mission_id, device_id)
+        if participant is None:
+            return True
+        return participant.is_active and can_add_finding(participant.role)
 
     def is_shared(self, mission_id: int) -> bool:
         sharing = self.sharing.get(mission_id)
@@ -326,6 +348,10 @@ class CollaborationService:
             RecordType.MISSION_ACTIVITY: ActivityAdapter(self.activity, mission_id),
             RecordType.MISSION_PARTICIPANT: ParticipantAdapter(self.participants, mission_id),
         }
+
+        allowed = lambda device_id: self._sender_may_edit(mission_id, device_id)  # noqa: E731
+        adapters[RecordType.MISSION].sender_allowed = allowed
+        adapters[RecordType.MISSION_FINDING].sender_allowed = allowed
 
         def _persist_token(token: str) -> None:
             self.sharing.set_since_token(mission_id, token)

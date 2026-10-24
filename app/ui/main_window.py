@@ -247,7 +247,8 @@ class MainWindow(QMainWindow):
         from app.collaboration.service import CollaborationService
 
         self.collab_service = CollaborationService(
-            database, self.settings, self.missions, graph=self.knowledge_graph)
+            database, self.settings, self.mission_store, graph=self.knowledge_graph)
+        self.missions.write_guard = self.collab_service.write_refusal
 
         #: Mission Execution Graph (Phase 10) - the persisted, restart-safe
         #: shape of the plan MissionCoordinator builds. Recovered once at

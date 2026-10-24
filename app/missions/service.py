@@ -83,6 +83,14 @@ class MissionService(QObject):
     #: moved. Carries the Mission that changed, or None for a bulk change.
     missions_changed = Signal(object)
 
+    #: Set by the window once collaboration exists: ``mission_id -> reason or
+    #: None``. A shared Mission where this device is only a viewer refuses
+    #: new findings here, so the agent and the UI share one rule.
+    write_guard = None
+
+    def write_refusal(self, mission_id: int) -> str | None:
+        return self.write_guard(mission_id) if self.write_guard is not None else None
+
     def __init__(self, store: MissionStore, controller=None, tabs=None,
                  parent: QObject | None = None, *, knowledge=None, graph=None) -> None:
         """``controller`` is observed, never driven.
@@ -691,6 +699,9 @@ class MissionService(QObject):
                                         outcome=PageOutcome.USEFUL)
             page_id = page.id if page is not None else None
 
+        refusal = self.write_refusal(mission.id)
+        if refusal:
+            return {"status": "read_only", "message": refusal}
         outcome, finding = self._store.add_finding(mission.id, text, page_id)
         self._refresh()
         self._announce(mission.id)
@@ -737,6 +748,9 @@ class MissionService(QObject):
                                         outcome=PageOutcome.USEFUL)
             page_id = page.id if page is not None else None
 
+        refusal = self.write_refusal(mission.id)
+        if refusal:
+            return {"status": "read_only", "message": refusal}
         outcome, finding = self._store.add_finding(mission.id, text, page_id)
         self._refresh()
         self._announce(mission.id)

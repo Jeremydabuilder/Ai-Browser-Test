@@ -95,6 +95,13 @@ class SyncAdapter(ABC):
     def apply_delete(self, local_id: str) -> None:
         """Remove the local row entirely - a remote tombstone applied."""
 
+    #: Optional ``device_id -> bool``: may a record authored by that device
+    #: be applied here? Used by shared Missions to refuse edits from a
+    #: participant whose role is read-only or who was removed. It is a check
+    #: on what the sender *claims* to be (there is no signature scheme), so
+    #: it stops honest-but-misconfigured peers, not a malicious key holder.
+    sender_allowed = None
+
     def in_scope(self, local_id: str, global_id: str) -> bool:
         """Does this (local id, global id) pair belong to what this
         adapter instance is responsible for? True for every Phase 20
@@ -125,6 +132,8 @@ class SyncResult:
     #: back so the next pass looks at them again - a file that is merely
     #: still being written by the cloud-drive client is picked up then.
     failed: int = 0
+    #: Remote changes refused because the sender's role does not allow them.
+    rejected: int = 0
     error: str = ""
 
 
@@ -168,6 +177,7 @@ class SyncEngine:
         deleted_local = 0
         conflicts = 0
         failed = 0
+        rejected = 0
 
         by_record_type: dict[str, list] = {}
         for entry in entries:
@@ -184,7 +194,9 @@ class SyncEngine:
                                       conflicts=conflicts, failed=failed)
                 except Exception:  # noqa: BLE001 - one bad record must not stop the others
                     outcome = "failed"
-                if outcome == "failed":
+                if outcome == "rejected":
+                    rejected += 1
+                elif outcome == "failed":
                     failed += 1
                 elif outcome == "downloaded":
                     downloaded += 1
@@ -221,7 +233,7 @@ class SyncEngine:
             status = SyncStatus.CONFLICT if conflicts else SyncStatus.UP_TO_DATE
         return SyncResult(status=status, uploaded=uploaded, downloaded=downloaded,
                           deleted_remote=deleted_remote, deleted_local=deleted_local,
-                          conflicts=conflicts, failed=failed, error=error)
+                          conflicts=conflicts, failed=failed, rejected=rejected, error=error)
 
     def _resolve_global_id(self, adapter: SyncAdapter, record_type: str, local_id: str) -> str:
         if adapter.deterministic_ids:
@@ -243,6 +255,9 @@ class SyncEngine:
             # applied and never crashes the pass; it is reported as failed
             # (see SyncResult.failed) and re-examined on the next pass.
             return "failed"
+
+        if adapter.sender_allowed is not None and not adapter.sender_allowed(remote.device_id):
+            return "rejected"
 
         last_remote_version = self._versions.get_last_remote_version(record_type, global_id)
         if remote.version <= last_remote_version and last_remote_version > 0:
