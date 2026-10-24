@@ -319,3 +319,67 @@ class FirstRunChoice(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class McpServerFollowsTheAiSwitch(unittest.TestCase):
+    """An external AI driving the browser is an AI feature: with the master
+    switch off it must not run, and the person's own choice must survive."""
+
+    def _window(self, ai_default: str, stored_on: bool):
+        from app.mcp_server.server import PyBrowserMcpServer
+        from app.storage.settings import SettingsStore
+
+        env = mock.patch.dict(os.environ, {"PYBROWSER_AI_DEFAULT": ai_default})
+        env.start()
+        self.addCleanup(env.stop)
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        db = Database(os.path.join(tmp.name, "t.sqlite3"))
+        self.addCleanup(db.close)
+        SettingsStore(db).mcp_server_enabled = stored_on
+        self.started, self.stopped = [], []
+
+        def fake_start(server):
+            self.started.append(1)
+            server._httpd = object()
+            server.status_changed.emit(True)
+            return True
+
+        def fake_stop(server):
+            if server._httpd is None:
+                return
+            self.stopped.append(1)
+            server._httpd = None
+            server.status_changed.emit(False)
+
+        for name, fn in (("start", fake_start), ("stop", fake_stop)):
+            p = mock.patch.object(PyBrowserMcpServer, name, fn)
+            p.start()
+            self.addCleanup(p.stop)
+        window = MainWindow(_profile, db, start_urls=["about:blank"])
+        self.addCleanup(window.close)
+        pump(6)
+        return window
+
+    def test_a_stored_preference_does_not_start_the_server_while_ai_is_off(self) -> None:
+        window = self._window("0", True)
+        self.assertEqual(self.started, [])
+        self.assertTrue(window.settings.mcp_server_enabled)
+
+    def test_switching_ai_off_stops_it_but_keeps_the_preference_and_on_restores_it(self) -> None:
+        window = self._window("1", True)
+        self.assertEqual(len(self.started), 1)
+        window.settings.ai_enabled = False
+        window._apply_ai_enabled()
+        self.assertEqual(len(self.stopped), 1)
+        self.assertFalse(window.mcp_server.running)
+        self.assertTrue(window.settings.mcp_server_enabled, "the person's choice was erased")
+        window.settings.ai_enabled = True
+        window._apply_ai_enabled()
+        self.assertTrue(window.mcp_server.running)
+
+    def test_a_server_the_person_never_enabled_stays_off_when_ai_is_switched_on(self) -> None:
+        window = self._window("0", False)
+        window.settings.ai_enabled = True
+        window._apply_ai_enabled()
+        self.assertEqual(self.started, [])

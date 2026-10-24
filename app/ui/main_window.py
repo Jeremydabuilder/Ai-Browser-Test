@@ -270,7 +270,13 @@ class MainWindow(QMainWindow):
         self.mcp_server = PyBrowserMcpServer(
             store=McpServerAccessStore(database), browser=self.controller,
             missions=self.missions, graph_store=self.mission_graph, parent=self)
-        if self.settings.mcp_server_enabled:
+        #: True only while AI is being switched off: the server stops, but the
+        #: person's own "run the MCP server" choice must survive for when AI
+        #: comes back (the status handler below would otherwise erase it).
+        self._mcp_paused_for_ai_off = False
+        # With AI off this is a plain browser: nothing external may drive it,
+        # whatever the stored preference says.
+        if self.settings.mcp_server_enabled and self._ai_enabled:
             self.mcp_server.start()
         # A lambda capturing self here would hold a strong reference back
         # to this MainWindow from Qt's own connection bookkeeping - this
@@ -287,7 +293,7 @@ class MainWindow(QMainWindow):
 
         def _on_mcp_status_changed(running: bool) -> None:
             window = window_ref()
-            if window is not None:
+            if window is not None and not window._mcp_paused_for_ai_off:
                 window.settings.mcp_server_enabled = running
 
         self.mcp_server.status_changed.connect(_on_mcp_status_changed)
@@ -754,11 +760,18 @@ class MainWindow(QMainWindow):
                 self.task_runner.stop()
             except Exception:  # noqa: BLE001 - stopping is best effort
                 pass
+            self._mcp_paused_for_ai_off = True
+            try:
+                self.mcp_server.stop()
+            finally:
+                self._mcp_paused_for_ai_off = False
         else:
             try:
                 self.task_runner.start()
             except Exception:  # noqa: BLE001
                 pass
+            if self.settings.mcp_server_enabled:
+                self.mcp_server.start()
         for tab in self.tabs.tabs():                    # open new-tab pages re-render for the new mode
             try:
                 if is_new_tab(tab.url()):
