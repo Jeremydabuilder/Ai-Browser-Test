@@ -25,12 +25,12 @@ A shorter step-by-step first-run list with expected results: [team_windows_check
    Calling `.venv\Scripts\python` directly avoids PowerShell's *"running scripts is disabled"*
    error that `Activate.ps1` triggers under the default execution policy (or run
    `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned` once, or use `cmd`).
-2. **Add your Groq key** (once). Open **Tools -> AI Team...**, press **Set up Groq...**
-   - this opens the existing *Configure AI Agent* dialog already on Groq. Paste the
-   key, **Save**. It goes to the Windows Credential Manager (the same entry the AI
-   panel uses, so if Groq already works in the AI panel there is nothing to do).
-   Back in the Team tab press **Test** - one tiny real request proves the key.
-   Alternative: `setx GROQ_API_KEY "gsk_..."` and restart the browser.
+2. **Set up one AI provider** (once): **Tools -> AI -> Configure AI Agent...** (the dialog starts on
+   Gemini, which has a free tier; Groq and OpenRouter do too; Ollama / LM Studio run a model on your own PC with
+   no key). Paste the key, **Save**, press **Test Connection**. The key goes to the Windows Credential Manager. The
+   Team, AI Mode and the assistant all use this one provider unless you pick another for the Team in
+   **Limits and model...** (default: *Same as the assistant*). Alternative: set the provider's environment variable
+   (e.g. `setx GEMINI_API_KEY "..."`) and restart the browser. Team tab -> **Test** sends one tiny real request.
 3. **(Optional) Web search.** Team tab -> **Settings** -> *Web search*: pick Tavily or
    Brave Search, paste its key, **Save key**, **Test**. See "Web search" below.
 4. **(Optional) Run tests safely.** Windows can only run generated code in a container:
@@ -40,8 +40,9 @@ A shorter step-by-step first-run list with expected results: [team_windows_check
    the result says tests were not run.
    If Windows reports a path error from Docker, check that your `%TEMP%` is on a local drive
    that Docker Desktop shares; folders containing commas are handled.
-5. **Try it.** Open two product pages in tabs, Team tab -> **Compare tabs** example ->
-   **Add tabs...** (tick both) -> **Start team**. Watch Agents / Tasks / Activity; the
+5. **Try it.** Open two or three product pages in tabs, Team tab -> **Compare products** ->
+   **Add tabs...** (tick them) -> type your **requirements**, one per line (e.g. `Under $200`) -> **Start team**.
+   Each requirement is checked against the evidence and reported as met, not met or not found in the sources. Watch Agents / Tasks / Activity; the
    **Results** tab opens when it finishes. **Save to Downloads** puts the result in your
    Downloads folder and in the browser's Downloads window (Ctrl+J).
 6. **Live check from a terminal** (no UI; proves Coordinator -> Researcher -> Writer ->
@@ -57,12 +58,15 @@ Linux / macOS: the same `pip install` / `python main.py`; the built-in sandbox n
 
 ## Credentials
 
-* **Model (Groq by default):** the browser's existing lookup - OS keyring entry saved by
-  *Configure AI Agent*, else `GROQ_API_KEY`. Nothing is bundled or shared. The key lives
+* **Model:** the provider chosen in *Configure AI Agent* (any of Anthropic, OpenAI, Gemini, Groq, OpenRouter, or a
+  local Ollama / LM Studio / OpenAI-compatible server), found through the browser's existing lookup - OS keyring
+  entry, else the provider's environment variable. With nothing chosen, the first provider that has a key is used
+  (Groq, Gemini, OpenRouter, OpenAI, Anthropic). Nothing is bundled or shared. The key lives
   only inside the provider client; it is scrubbed from every event, error, stored mission
-  and `repr`. Other providers: `PYBROWSER_TEAM_PROVIDER` / Settings (`openai`,
-  `openrouter`, `gemini`); model: `PYBROWSER_TEAM_MODEL` / Settings (default
-  `llama-3.3-70b-versatile`, or the AI agent's remembered Groq model).
+  and `repr`. Override for the Team only: `PYBROWSER_TEAM_PROVIDER` / Settings; model: `PYBROWSER_TEAM_MODEL`
+  / Settings (default: the model remembered for that provider in *Configure AI Agent*; Groq falls back to
+  `llama-3.3-70b-versatile`). A local model's quality varies a lot; team runs need one that follows formatting
+  instructions well.
 * **Web search (separate service, separate key):** see below.
 * **Container runtime:** no credential; only Docker running.
 
@@ -172,7 +176,7 @@ nothing overlaps in a short window or a 300px column.
 
 ## Templates
 
-Pick **Compare tabs**, **Research a topic**, **Study guide**, **Review code** or **Draft a report** to fill the mission box
+Pick **Compare products**, **Research a topic**, **Study guide**, **Review code** or **Draft a report** to fill the mission box
 with an editable starting sentence. The panel then shows what the template needs (tabs, material, web search, a
 workspace, a sandbox - with a tick or cross for what is available *now* and how to fix what is not) and which agents
 it will use. Routing is enforced: a plan that uses any other agent is rejected, repaired once, then replaced by a
@@ -292,3 +296,25 @@ a live Groq call, live Tavily/Brave calls, a real Docker/Windows run, macOS `san
   to remove it.
 * Citation checking verifies that a cited source *exists*, not that it supports the claim -
   that is the Reviewer's job, and models can miss things.
+
+
+## Requirements, the browsing Mission, and what a result promises (added)
+
+* **Requirements.** The optional *Your requirements* box (one per line) is stored verbatim with the run and placed at the
+  head of the success criteria whatever the Coordinator's plan says, so they reach the writers, the Reviewer's checklist and
+  the result's *Success criteria check* ("Your requirement - ..."). The final answer is asked to separate a recommendation
+  (labelled as the team's judgement), your requirements (met / not met / not found), a comparison table using only figures
+  present in the sources ("not stated" otherwise), and conflicts and uncertainties.
+* **From a browsing Mission.** **AI -> Continue Mission in AI Team...** pre-fills the goal, the Mission's constraints (as
+  requirements), its saved findings (as a notes source, labelled *not independently verified*) and any saved pages that are
+  currently open in a tab. Saved pages that are not open are listed, never fetched or dropped silently; nothing starts until
+  you press **Start team**. A finished run that was started this way offers **Save summary to Mission**: a bounded summary
+  (the recommendation and requirement check, at most ~3,800 characters) replaces that Mission's result **only when you press
+  it**. The Team keeps its own evidence; the link is by id only. The two systems are connected at that hand-off, not unified:
+  a Mission's browsing agent and the Team do not share a live state.
+* **Evidence.** Sources record URL, whether the text came from an opened page or only a search snippet, and a retrieval date.
+  The *Citation check (automatic)* compares each cited sentence's wording and figures with the saved source text. It is a
+  limited check: it cannot tell whether a source is right, and a faithful paraphrase can fail it.
+* **Honest completion.** A run that produced no deliverable fails; a blank final answer falls back to the team's deliverables as
+  written and finishes *with issues*; a run with failed or skipped steps finishes *with issues* and says so, and the summary
+  saved to a Mission carries that note.

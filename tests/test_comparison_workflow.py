@@ -175,5 +175,50 @@ class HandBack(unittest.TestCase):
         self.assertIn("A is cheap", h.notes)
 
 
+class NoEmptySuccess(unittest.TestCase):
+    def test_a_blank_final_answer_is_shown_as_the_deliverables_with_issues_not_as_success(self):
+        m = run(script(final=["   "]), [A, B, C])
+        self.assertEqual(m.status, MissionStatus.COMPLETED_WITH_ISSUES)
+        final = m.artifact(m.final_artifact_id).content
+        self.assertIn("Widget A costs $120 and ships to Canada", final)     # the writer's real draft is shown
+        self.assertIn("summary step failed", final)                           # and the failure is stated
+
+    def test_a_run_with_nothing_produced_fails_instead_of_completing(self):
+        client = script(researcher=[""], writer=[""])
+        m = run(client, [A, B])
+        self.assertNotEqual(m.status, MissionStatus.COMPLETED)
+
+
+class InterruptedAndResumed(unittest.TestCase):
+    def test_a_failed_step_resumes_from_the_saved_run_without_redoing_finished_work(self):
+        from app.agent.claude_client import ClaudeError
+        from app.storage.database import Database
+        from app.storage.team_store import TeamStore
+
+        with tempfile.TemporaryDirectory() as directory:
+            db = Database(os.path.join(directory, "t.sqlite3"))
+            store = TeamStore(db)
+            first = script(writer=[ClaudeError("provider rejected the request", retryable=False)])
+            mission = Mission(goal="Which widget?", sources=[A, B, C], requirements=list(REQS), linked_mission_id=9)
+            store.create(mission)
+            TeamEngine(mission, lambda: first, TeamLimits(max_backoff_s=1.0), Capabilities(NO_SANDBOX),
+                       store=store).run()
+            self.assertEqual(mission.status, MissionStatus.COMPLETED_WITH_ISSUES)   # the failure is not hidden
+            self.assertIn("open issues", handback.summary_for_mission(mission))      # ...and travels with the summary
+
+            # "Restart": everything comes back from disk, then the person presses Resume.
+            reloaded = store.load(mission.id)
+            self.assertEqual((reloaded.requirements, reloaded.linked_mission_id), (REQS, 9))
+            second = script()
+            TeamEngine(reloaded, lambda: second, TeamLimits(max_backoff_s=1.0), Capabilities(NO_SANDBOX),
+                       store=store).run(retry_only={"T2"})
+            self.assertEqual(reloaded.status, MissionStatus.COMPLETED)
+            self.assertNotIn("researcher", second.roles())                # finished research was kept
+            self.assertEqual(reloaded.success_criteria[:2], REQS)         # not re-merged or duplicated
+            self.assertEqual(len(reloaded.success_criteria), len(set(reloaded.success_criteria)))
+            self.assertNotIn("open issues", handback.summary_for_mission(reloaded))
+            db.close()
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -15,3 +15,6 @@ validation-report.json
 packaging/windows/output/
 packaging/macos/output/
 packaging/macos/pybrowser.icns
+evals/results/*.json
+!evals/results/.gitkeep
+evals/results/competitors/*.json

@@ -22,7 +22,7 @@ Expect: the browser opens. (Calling `.venv\Scripts\python` directly avoids the P
 
 ## 2. One attached-tab mission (required)
 1. Open two product or article pages in tabs.
-2. Team tab -> **Compare tabs** example -> **Add tabs...** -> tick both -> **Start team**.
+2. Team tab -> **Compare products** example -> **Add tabs...** -> tick both -> **Start team**.
 3. Watch **Agents / Tasks / Activity**. Expect: Coordinator plans, Researcher/Writer/Reviewer work, a progress
    bar fills, the **Results** tab opens by itself.
 4. Check the **Final result**: every claim has an `[S1]`-style citation, the **Sources** list names your two tabs,

@@ -20,8 +20,8 @@ AI-only tabs (Connected Tools, External AI Access, Privacy & Security) appear on
 
 ## AI Mode (`pybrowser://aimode/`, Ctrl+Shift+Space)
 
-Ask a question, get a short answer with the sources next to it, follow up. It reuses what already exists - your Groq key
-(Tools -> AI -> Configure AI Agent), the Team's web search (Tavily or Brave, bring your own key) and its SSRF-safe page
+Ask a question, get a short answer with the sources next to it, follow up. It reuses what already exists - your configured provider
+(Tools -> AI -> Configure AI Agent; any assistant provider, local models included), the Team's web search (Tavily or Brave, bring your own key) and its SSRF-safe page
 reader - and adds no key storage of its own.
 
 Per question: (1) follow-ups are first rewritten into a standalone search query (one model call; the first question is
@@ -51,4 +51,4 @@ one row of sites.
 
 Verified (tests, offscreen Qt/WebEngine): the switch hides and disables every AI entry and is live-reversible; the page,
 its actions and state restore; the pipeline with a scripted model and fake search/fetch; the renderer against hostile output.
-**Not verified:** a live Groq answer, live search, real-model answer quality, Windows/macOS rendering.
+**Not verified:** a live provider answer (cloud or local), live search, real-model answer quality, Windows/macOS rendering.

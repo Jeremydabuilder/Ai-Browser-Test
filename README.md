@@ -12,6 +12,21 @@ No terminal needed: open the [**Releases**](https://github.com/Jeremydabuilder/A
 PC" - click **More info -> Run anyway**. PyBrowser starts as an ordinary browser; AI features are optional and off until you turn
 them on in Settings. See [packaging/TESTER_GUIDE.md](packaging/TESTER_GUIDE.md).
 
+## The workflow it is built around
+
+*"Compare several products against my requirements, verify the important claims, save the evidence and the
+recommendation, and let me come back to it."* In practice: open the product pages in tabs, **AI → AI Team…** →
+**Compare products**, add your requirements (one per line), **Start team**. You get a recommendation labelled as
+judgement, each requirement marked met / not met / not found, figures tied to sources (opened page vs search snippet,
+with a retrieval date), conflicts and unreadable pages left visible, and an automatic citation check that says plainly it
+is *not* a fact check. Close the app mid-run and **Resume** later; finished work is not repeated. From a browsing Mission,
+**AI → Continue Mission in AI Team…** carries the goal and constraints over. No provider yet? **AI Mode** offers an
+offline, clearly-labelled sample result. Setup takes one provider: Gemini, Groq and OpenRouter have free tiers, and Ollama /
+LM Studio run a model on your own PC. See [docs/team.md](docs/team.md), the honest status in
+[docs/CAPABILITY_MATRIX.md](docs/CAPABILITY_MATRIX.md), and the optional [evaluation pack](evals/README.md).
+Windows is the priority platform ([clean-machine checklist](docs/WINDOWS_CLEAN_MACHINE_CHECKLIST.md)); macOS is
+[unverified](docs/MACOS_TESTING.md).
+
 A real desktop web browser written in Python. It renders actual websites with
 Qt WebEngine (Chromium) — no Node.js, no Electron, no npm, no mocked pages.
 

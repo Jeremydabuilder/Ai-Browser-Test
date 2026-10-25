@@ -27,3 +27,16 @@ Branch: `claude/python-desktop-browser-n20ht5`. Tests: `python tests/run.py [mod
 
 - Real two-machine sync trial; real NVDA pass; tester feedback from the pre-release build.
 - Optional: OCR for scanned PDFs (would be a new dependency).
+
+## Focused-workflow pass (comparison -> evidence -> resume)
+
+Added after the list above; same branch.
+10. Team/AI Mode follow the provider set up for the assistant (all providers, local included); Configure AI Agent starts on a free-tier option.
+11. Requirements are a first-class, verbatim, persisted part of a Team run; final-answer prompt separates requirement / sourced fact / judgement and demands "not stated" over invented figures.
+12. Mission -> Team hand-off (AI > Continue Mission in AI Team...) and explicit Save summary to Mission (`app/team/handback.py`).
+13. Offline sample result at `pybrowser://demo/` (labelled; reachable from AI Mode's no-provider state and the AI menu).
+14. `evals/`: 24 tasks, fixtures, rubric, opt-in runner, record/score/report, competitor sheets. **No live run made.**
+15. `docs/WINDOWS_CLEAN_MACHINE_CHECKLIST.md`, `docs/MACOS_TESTING.md`, updated tester guide.
+
+Still to do by a person: run the Windows checklist; run the eval smoke subset with a real (free-tier or local) model and score it;
+decide what to do about the unsigned-build friction (see SIGNING.md - nothing free removes it).

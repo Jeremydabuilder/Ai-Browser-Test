@@ -43,6 +43,13 @@ install, live-provider, or screen-reader pass; see *What no test can show* below
 | Visual fallback | Tested with fakes | `tests/test_visual_*` | Experimental; always asks for confirmation |
 | Knowledge Graph | Tested | graph suites | Experimental |
 | AI Team (planning, handoffs, review, templates, follow-ups, steering) | Tested with fakes | `tests/test_team_*` | Real-model quality, real search unverified; three-run lifetime cap in place |
+| Team/AI Mode use the provider you set up (Anthropic, OpenAI, Gemini, Groq, OpenRouter, Ollama, LM Studio, local OpenAI-compatible) | Tested with fakes (client class + config built; no live call) | `tests/test_team_provider.py` | Previously only Groq/OpenAI/OpenRouter/Gemini worked here. Local-model quality for team runs is unverified |
+| **Requirements survive** planning, review and the final result (user-stated, verbatim, labelled in the criteria check) | Tested with fakes | `tests/test_comparison_workflow.py` | Whether a real model *honours* them in prose is unmeasured - see the eval pack |
+| Evidence in the result: URL, opened-page vs snippet, retrieval date, conflicts, unreadable sources, "not stated" figures | Tested with fakes (structure and appendix); prompt guidance for conflicts/uncertainty is untested against a real model | `tests/test_comparison_workflow.py`, `test_team_e2e_missions.py` | Model prose may still smooth over a conflict; the automatic check flags only figure/wording mismatches |
+| Mission -> Team hand-off and **Save summary to Mission** (explicit, bounded) | Tested (real window + real stores; scripted model) | `tests/test_comparison_ui.py` | Link by id only: the browsing Mission's agent and the Team do not share live state. Mission pages that are not open in a tab are listed, not fetched |
+| Resume after a failure or restart without redoing finished work | Tested with fakes | `test_team_*`, `test_comparison_workflow.py` | No real-process-kill test; the interrupted state is simulated by saving and reloading |
+| Offline sample result (`pybrowser://demo/`) | Tested (served, script-free, labelled) | `tests/test_first_run.py` | Hand-written with fictional products; never presented as model output |
+| Optional live evaluation pack (24 tasks, rubric, results/competitor sheets) | Harness tested; **no live run has been made** | `evals/`, `tests/test_eval_harness.py` | Run results are the only evidence of model quality; none exist yet |
 | Team web research: HTML and **PDF** text, SSRF protection | Tested | `test_team_webfetch*.py`, `test_team_pdf_claims.py` | JS-rendered pages and sign-in walls are reported as unreadable, never bypassed; scanned PDFs need OCR (not done) |
 | Team citations: existence check + **claim-to-source check** | Tested | `app/team/claimcheck.py`, `test_team_pdf_claims.py` | Lexical only: finds whether wording and figures appear in the held text. Not a fact check; cannot judge truth, paraphrase, or entailment. Snippet-only support is labelled |
 | MCP client (external tools) | Tested with fakes | `test_mcp_*` | Third-party servers vary |
@@ -65,6 +72,13 @@ install, live-provider, or screen-reader pass; see *What no test can show* below
 | macOS app/dmg | Built in CI | `release.yml` | Unsigned, not notarized; unverified on a real Mac |
 | Code signing / notarization | **Unverified** | `packaging/SIGNING.md` | Needs an Authenticode certificate and an Apple Developer ID — external |
 | Release publishing | Manual | — | No workflow publishes a stable release; the tester workflow publishes a labelled pre-release only when run |
+
+## Checklists
+
+| Platform | Document | State |
+|---|---|---|
+| Windows (priority) | `docs/WINDOWS_CLEAN_MACHINE_CHECKLIST.md` | Written; **never run on a clean machine** |
+| macOS | `docs/MACOS_TESTING.md` | CI builds an unsigned `.app`/`.dmg`; **nothing verified on a real Mac**; volunteer checklist provided |
 
 ## Accessibility
 
