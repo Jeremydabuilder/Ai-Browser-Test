@@ -632,18 +632,18 @@ about the sandbox, not about the browser. Zero genuine browser failures.
 ## 14. Known limitations
 
 * Prompt injection is mitigated, not solved (§9).
-* Content inside **iframes is invisible** to the agent. The page script runs in
-  every frame, but inspection and element references address the main frame
-  only, so a control inside an embedded frame cannot be seen or clicked. This
-  is the largest remaining compatibility gap.
+* Content inside **iframes** is captured as part of one logical page snapshot and
+  element references resolve in their own frame (`app/browser/controller.py`,
+  covered by the iframe tests). Cross-origin frames, closed shadow roots and
+  sites that block automation can still defeat it; real-site coverage is
+  limited (see `CAPABILITY_MATRIX.md`).
 * **Closed** shadow roots are invisible. Open ones are fully supported
   (including nested roots); closed ones are private by the platform's design
   and there is no supported way in.
 * The sensitivity classifier is heuristic and English-biased (§9).
 * An in-flight Claude request cannot be aborted mid-HTTP; its result is
   discarded instead (§6).
-* No streaming — the panel shows a turn when it completes, not as it is written.
-* No prompt caching yet, so long tasks re-send the system prompt each turn.
+* Responses stream and prompt caching is used (`app/agent/claude_client.py`, `session.py`); both are tested against scripted transports only - live-provider behaviour is unverified.
 * One conversation per window; history is trimmed rather than summarised.
 * The agent cannot solve CAPTCHAs, and should not be asked to.
 * A `target="_blank"` click reports the new tab, but the agent must switch to it
