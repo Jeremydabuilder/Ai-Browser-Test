@@ -38,9 +38,10 @@ class Template:
 
 TEMPLATES: tuple[Template, ...] = (
     Template(
-        "compare_tabs", "Compare tabs",
-        "Compare the products or pages in these tabs and write a recommendation.",
-        "Reads the tabs you attach, compares them point by point and recommends one.",
+        "compare_tabs", "Compare products",
+        "Compare the products or pages in these tabs against my requirements, check the important claims "
+        "against the sources, and recommend one.",
+        "Reads the tabs you attach, checks each of your requirements against them, compares the options and recommends one.",
         (AgentId.RESEARCHER, AgentId.WRITER, AgentId.REVIEWER),
         (Need("tabs", REQUIRED, "2 or more open tabs", 2), Need("web", OPTIONAL, "web search for outside facts"))),
     Template(

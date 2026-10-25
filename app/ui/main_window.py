@@ -175,6 +175,7 @@ class MainWindow(QMainWindow):
                                    downloads=profile.downloads)
         # Generated files go through the same Downloads system as everything else.
         self.team.file_saved.connect(lambda message: self.notice.show_message(message))
+        self.team.mission_sink = self._save_team_summary_to_mission
         #: MCP client core (Phase 1, read-only). Owned here for the same
         #: reason as Missions: it must outlive the agent panel and every
         #: rebuilt AgentSession, and connections should stay live across a
@@ -478,6 +479,8 @@ class MainWindow(QMainWindow):
             ai_menu, "Show &AI Agent", "Ctrl+Shift+A", self._toggle_agent_panel, ai=True)
         self._agent_action.setCheckable(True)
         self._add_action(ai_menu, "AI &Team…", None, self._open_team, ai=True)
+        self._add_action(ai_menu, "Continue Mission in AI Team…", None,
+                         self._continue_mission_in_team, ai=True)
         self._add_action(ai_menu, "&Configure AI Agent…", None, self._configure_agent, ai=True)
         self._add_action(ai_menu, "Agent &Diagnostics…", None, self._show_diagnostics, ai=True)
         ai_menu.addSeparator()
@@ -2902,6 +2905,31 @@ class MainWindow(QMainWindow):
         if show_team is not None:
             show_team()
 
+    def _continue_mission_in_team(self) -> None:
+        """Start an AI Team run from the active Mission: its goal, its stated
+        requirements, its saved notes and pages carry over instead of being
+        retyped. Nothing starts until the person presses Start team."""
+        from app.team.handback import handoff_from_mission
+
+        active = self.missions.active
+        mission = self.mission_store.get(active.id) if active is not None else None
+        if mission is None:
+            QMessageBox.information(
+                self, "Continue in AI Team",
+                "Open or start a Mission first. The team can then pick up its goal, requirements, "
+                "notes and pages.")
+            return
+        self._open_team()
+        self.team.offer_handoff(handoff_from_mission(mission))
+
+    def _save_team_summary_to_mission(self, mission_id: int, text: str) -> str | None:
+        if self.mission_store.get(mission_id, with_pages=False) is None:
+            return "The Mission this run came from no longer exists."
+        if not self.mission_store.set_result(mission_id, text):
+            return "The summary could not be saved to the Mission."
+        self.missions._refresh()
+        return None
+
     def _toggle_agent_panel(self) -> None:
         """Show or hide the agent. Built lazily, on first use."""
         if self._side_panel is not None:
@@ -3485,7 +3513,7 @@ def _ai_only(method):
 
 
 for _name in (
-    "_toggle_agent_panel", "_open_agent_with", "_open_team", "_configure_agent", "_show_diagnostics",
+    "_toggle_agent_panel", "_open_agent_with", "_open_team", "_continue_mission_in_team", "_configure_agent", "_show_diagnostics",
     "_ask_py_about_local_file", "_ask_py_about_local_image", "_ask_py_about_screenshot",
     "_show_mission_library", "_show_skills_library", "_show_research_graph", "_show_task_center",
     "_toggle_workflow_recording", "_show_watches", "_run_multi_agent_mission", "_toggle_teaching",

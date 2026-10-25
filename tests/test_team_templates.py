@@ -34,7 +34,7 @@ class Store(dict):
 class TemplateData(unittest.TestCase):
     def test_the_five_templates_exist_with_sensible_routing(self) -> None:
         self.assertEqual([t.label for t in tpl.TEMPLATES],
-                         ["Compare tabs", "Research a topic", "Study guide", "Review code", "Draft a report"])
+                         ["Compare products", "Research a topic", "Study guide", "Review code", "Draft a report"])
         study = tpl.BY_ID["study_guide"]
         self.assertEqual(study.agents, (AgentId.RESEARCHER, AgentId.WRITER))          # simple: no reviewer, no coder
         self.assertNotIn(AgentId.CODER, tpl.BY_ID["compare_tabs"].agents)

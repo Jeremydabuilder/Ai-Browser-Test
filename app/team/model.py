@@ -235,6 +235,14 @@ class Mission:
     created_at: float = field(default_factory=now)
     updated_at: float = field(default_factory=now)
     success_criteria: list[str] = field(default_factory=list)
+    #: Requirements the USER stated, verbatim ("under $120", "must ship to Canada").
+    #: They are put at the head of ``success_criteria`` whatever the Coordinator's
+    #: plan says, so they reach the writers, the reviewer's checklist and the
+    #: final result; the model can add criteria but never drop or reword these.
+    requirements: list[str] = field(default_factory=list)
+    #: The browsing Mission (app.missions) this run was started from, or 0. The
+    #: link is by id only: the Team keeps its own evidence and result store.
+    linked_mission_id: int = 0
     sources: list[Source] = field(default_factory=list)
     tasks: list[Task] = field(default_factory=list)
     artifacts: list[Artifact] = field(default_factory=list)

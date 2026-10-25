@@ -397,6 +397,10 @@ class TeamEngine(FollowUpMixin):
                 f"{self._manifest()}\n\nCAPABILITIES:\n- " + "\n- ".join(self.capabilities.describe(
                     web_enabled=m.web_search,
                     fetch_pages=self.limits.max_fetch_pages if self.capabilities.fetcher else 0)))
+        if m.requirements:
+            user += ("\n\nTHE USER'S REQUIREMENTS (stated by the user; every one must be checked against the "
+                     "evidence and reported as met, not met or not found in the sources):\n"
+                     + "\n".join(f"- {r}" for r in m.requirements))
         if m.steering:
             user += "\n\nTHE USER'S UPDATED INSTRUCTIONS:\n" + "\n".join(f"- {s['text']}" for s in m.steering)
         allowed = tuple(a for a in m.allowed_agents if a in AgentId.ASSIGNABLE)
@@ -427,7 +431,9 @@ class TeamEngine(FollowUpMixin):
                     has_code_intent=agent_defs.looks_like_code_mission(m.goal), execution_available=execution),
                     allowed)
         with self._lock:
-            m.success_criteria = plan.success_criteria or ["The mission's request is fully addressed"]
+            planned = plan.success_criteria or ["The mission's request is fully addressed"]
+            # The user's own requirements lead, verbatim; the plan can only add to them.
+            m.success_criteria = list(m.requirements) + [c for c in planned if c not in m.requirements]
             m.tasks = [Task(id=t.id, title=t.title, agent=t.agent, instructions=t.instructions,
                             acceptance=t.acceptance, depends_on=t.depends_on, sources=t.sources)
                        for t in plan.tasks]
@@ -1547,7 +1553,8 @@ class TeamEngine(FollowUpMixin):
                 out.append(f"- `{a.meta.get('path') or a.title}` ({a.id}) - {state}")
         if m.criteria_check:
             out.append("\n## Success criteria check")
-            out += [f"- {'Met' if c.get('met') else 'NOT met'}: {c.get('criterion')}"
+            out += [f"- {'Met' if c.get('met') else 'NOT met'}: "
+                    f"{'Your requirement - ' if c.get('criterion') in m.requirements else ''}{c.get('criterion')}"
                     + (f" - {c.get('note')}" if c.get("note") else "") for c in m.criteria_check]
         if m.suggestions:
             out.append("\n## Optional improvements (from the Reviewer)")

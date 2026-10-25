@@ -12,11 +12,13 @@ from __future__ import annotations
 
 import os
 import threading
+from datetime import date
 from typing import Any, Callable
 
 from PySide6.QtCore import QObject, Signal
 
 from app.gui_dispatch import GuiDispatcher, GuiDispatchShutdown
+from app.team import handback
 from app.team import sandbox as sandbox_mod
 from app.team import websearch
 from app.team.engine import Capabilities, TeamEngine
@@ -88,7 +90,8 @@ def collect_tab_sources(browser, tab_ids: list[int], sources: list[Source],
             status = SourceStatus.TRUNCATED
         readable = ok and bool(text.strip())
         source = Source(next_source_id(taken), SourceKind.TAB, tab.get("title") or tab.get("url") or "Tab",
-                        tab.get("url", ""), text[:MAX_SOURCE_CHARS] if readable else "", status, error)
+                        tab.get("url", ""), text[:MAX_SOURCE_CHARS] if readable else "", status, error,
+                        retrieved=date.today().isoformat() if readable else "")
         taken.append(source)
         return source
 
@@ -153,6 +156,8 @@ class TeamController(QObject):
     environment_changed = Signal()
     #: A generated file was written through the Downloads manager (message for a notice).
     file_saved = Signal(str)
+    #: A browsing Mission offered a goal/requirements/notes to start a run from.
+    handoff_ready = Signal()
     #: A follow-up question failed (message is safe to show) - or finished (empty string).
     followup_finished = Signal(str)
 
@@ -184,6 +189,9 @@ class TeamController(QObject):
         self._sandbox_key: bool | None = None
         self._closed = False
         self._asking = False
+        self._handoff = None
+        #: ``(mission_id, text) -> error or None``; set by the window, which owns the Mission store.
+        self.mission_sink: Callable[[int, str], str | None] | None = None
         if store is not None:
             try:
                 if store.recover_after_restart():
@@ -363,13 +371,44 @@ class TeamController(QObject):
         if self._engine is not None and self._asking:
             self._engine.cancel_followup()
 
+    # -- hand-off with the browsing Mission (see app/team/handback.py) -------
+    def offer_handoff(self, handoff) -> None:
+        self._handoff = handoff
+        self.handoff_ready.emit()
+
+    def take_handoff(self):
+        handoff, self._handoff = self._handoff, None
+        return handoff
+
+    def can_save_to_mission(self) -> bool:
+        view = self.snapshot()
+        return bool(view and view.linked_mission_id and not self.is_running
+                    and handback.summary_for_mission(view) is not None)
+
+    def save_to_linked_mission(self) -> str:
+        """Write this run's bounded summary into the Mission it came from.
+        Returns a message for the person (success or the reason it did not)."""
+        view = self.snapshot()
+        if view is None or not view.linked_mission_id:
+            return "This run was not started from a Mission."
+        text = handback.summary_for_mission(view)
+        if text is None:
+            return "There is no finished result to save yet."
+        if self.mission_sink is None:
+            return "Saving to a Mission is not available here."
+        error = self.mission_sink(view.linked_mission_id, text)
+        return error or "Saved to the Mission as its result (replacing any earlier result)."
+
     def start(self, goal: str, sources: list[Source], workspace_path: str = "",
               web_search: bool = False, *, template_id: str = "",
-              allowed_agents: tuple[str, ...] | list[str] = ()) -> Mission | None:
+              allowed_agents: tuple[str, ...] | list[str] = (),
+              requirements: tuple[str, ...] | list[str] = (), linked_mission_id: int = 0) -> Mission | None:
         if self.is_running or self._asking or self._closed:
             return None
         status = self.provider_status()
+        cleaned = [r.strip()[:300] for r in requirements if r and r.strip()][:10]
         mission = Mission(goal=goal.strip(), sources=list(sources), status=MissionStatus.PLANNING,
+                          requirements=cleaned, linked_mission_id=linked_mission_id,
                           workspace_path=workspace_path, web_search=web_search,
                           template_id=template_id, allowed_agents=list(allowed_agents),
                           model_label=f"{status.label} · {status.model}".strip(" ·"))

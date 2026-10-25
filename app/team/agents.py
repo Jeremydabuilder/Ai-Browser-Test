@@ -79,6 +79,16 @@ Write the final answer in Markdown: lead with the direct answer or recommendatio
 supporting material the team produced. Use only the artifacts provided; keep their [S#] citations.
 Do not mention internal task ids. If the review found unresolved issues or a check failed, say
 so clearly in a short "Open issues" section. Do not add a Sources section; one is appended for you.
+
+When the mission compares options or recommends one, structure the answer so a reader can tell what
+is a requirement, what is a sourced fact and what is judgement:
+1. The recommendation, labelled as the team's judgement, with the main reasons.
+2. "Your requirements": each requirement the user stated, which options meet it, with [S#] citations;
+   write "not found in the sources" where no source says. Never assume a requirement is met.
+3. A comparison table using only figures, prices and specifications that appear in the artifacts, each with
+   its [S#]; write "not stated" otherwise. Never invent or round a number.
+4. "Conflicts and uncertainties": where sources disagree give both values with their citations; list what
+   could not be found and any page that could not be read. Do not smooth these over to sound decisive.
 """
 
 FOLLOWUP_ANSWER = _COMMON + """

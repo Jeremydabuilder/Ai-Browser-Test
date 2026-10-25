@@ -137,6 +137,7 @@ class TeamPanel(QWidget):
         self._view = "answer"
         self._template_id = ""
         self._provider_ready = True
+        self._linked_mission_id = 0
         m = theme.METRICS
         self._m = m
         self._c = theme.palette_for(QApplication.instance())
@@ -192,7 +193,9 @@ class TeamPanel(QWidget):
         controller.history_changed.connect(self._refresh_history)
         controller.environment_changed.connect(self._refresh_env)
         controller.followup_finished.connect(self._on_followup_finished)
+        controller.handoff_ready.connect(self._apply_handoff)
         self._refresh_env()
+        self._apply_handoff()
         self._refresh_history()
         self.refresh()
 
@@ -232,6 +235,14 @@ class TeamPanel(QWidget):
         QShortcut(QKeySequence("Ctrl+Return"), self.goal, activated=self._start_if_ready, context=Qt.ShortcutContext.WidgetShortcut)
         QShortcut(QKeySequence("Ctrl+Enter"), self.goal, activated=self._start_if_ready, context=Qt.ShortcutContext.WidgetShortcut)
         box.addWidget(self.goal)
+
+        self.requirements = QPlainTextEdit(page)
+        self.requirements.setPlaceholderText(
+            "Your requirements (optional, one per line), e.g. “under $120” or “must ship to Canada”. "
+            "Each one is checked against the evidence and reported as met, not met, or not found.")
+        self.requirements.setAccessibleName("Requirements, one per line")
+        self.requirements.setMaximumHeight(84)
+        box.addWidget(self.requirements)
 
         # Templates: an editable starting sentence, what it needs, and which agents it will use.
         templates = FlowLayout(spacing=m.space_1)
@@ -547,6 +558,12 @@ class TeamPanel(QWidget):
         self.copy_button = QPushButton("Copy", page)
         self.copy_button.setProperty("kind", "chip")
         self.copy_button.clicked.connect(self._copy_current)
+        self.mission_button = QPushButton("Save summary to Mission", page)
+        self.mission_button.setProperty("kind", "chip")
+        self.mission_button.setToolTip("Writes the recommendation and your requirement check into the browsing "
+                                       "Mission this run came from, replacing that Mission's result. "
+                                       "The full evidence stays in this run.")
+        self.mission_button.clicked.connect(self._save_to_mission)
         self.more_button = QPushButton("More", page)
         self.more_button.setProperty("kind", "chip")
         menu = QMenu(self.more_button)
@@ -558,7 +575,7 @@ class TeamPanel(QWidget):
         self.save_files_action.triggered.connect(self._save_all_files)
         self.more_button.setMenu(menu)
         self._more_menu = menu
-        for button in (self.save_button, self.copy_button, self.more_button):
+        for button in (self.save_button, self.copy_button, self.mission_button, self.more_button):
             actions.addWidget(button)
         self.actions_box = QWidget(page)
         self.actions_box.setLayout(actions)
@@ -943,12 +960,16 @@ class TeamPanel(QWidget):
             self.compose_error.show()
             return
         template = self._template()
+        requirements = [line.strip() for line in self.requirements.toPlainText().splitlines() if line.strip()]
         mission = self._controller.start(goal, list(self._sources), self._workspace_path,
                                          web_search=self._web_available and self.web_check.isChecked(),
                                          template_id=template.id if template else "",
-                                         allowed_agents=template.agents if template else ())
+                                         allowed_agents=template.agents if template else (),
+                                         requirements=requirements, linked_mission_id=self._linked_mission_id)
         if mission is None:
             return
+        self._linked_mission_id = 0
+        self.requirements.clear()
         self._sources = []
         self._workspace_path = ""
         self._template_id = ""
@@ -1385,6 +1406,7 @@ class TeamPanel(QWidget):
         self.save_as_action.setEnabled(saveable)
         self.export_html_action.setEnabled(saveable)
         self.copy_button.setEnabled(saveable)
+        self.mission_button.setVisible(self._controller.can_save_to_mission())
 
     # -- follow-up questions ------------------------------------------------------------
     def _ask_ready(self, mission: Mission | None) -> tuple[bool, str]:
@@ -1518,6 +1540,45 @@ class TeamPanel(QWidget):
                 ArtifactKind.NOTES: "team-research-notes", ArtifactKind.TEST_REPORT: "team-test-report",
                 ArtifactKind.REVIEW: "team-review", ArtifactKind.PLAN: "team-plan"}.get(artifact.kind, "team-output")
         return f"{stem}-{artifact.id}.md"
+
+    def _save_to_mission(self) -> None:
+        message = self._controller.save_to_linked_mission()
+        self.saved_note.setText(message)
+        self.saved_note.show()
+
+    # -- starting from a browsing Mission ------------------------------------------------
+    def _apply_handoff(self) -> None:
+        """Pre-fill the compose page from a Mission: its goal, its requirements,
+        its saved notes (as clearly-labelled notes, not evidence) and whichever of
+        its pages are open in a tab. Pages that are not open are listed, never
+        silently fetched or dropped."""
+        if self._controller.is_running:
+            return
+        handoff = self._controller.take_handoff()
+        if handoff is None:
+            return
+        self.pages.setCurrentIndex(0)
+        self._linked_mission_id = handoff.linked_mission_id
+        self.goal.setPlainText(handoff.goal)
+        self.requirements.setPlainText("\n".join(handoff.requirements))
+        if handoff.notes and len(self._sources) < MAX_SOURCES:
+            self._sources.append(paste_source(self._sources, handoff.notes, "Notes saved on your Mission"))
+        open_tabs = {t.get("url"): t["tab_id"] for t in (self._browser.list_tabs() if self._browser else [])}
+        wanted = [open_tabs[u] for u in handoff.urls if u in open_tabs]
+        missing = [u for u in handoff.urls if u not in open_tabs]
+        if wanted:
+            self._add_tab_ids(wanted)
+        else:
+            self._refresh_included()
+        if missing:
+            shown = "\n".join(f"  {_elide(u, 70)}" for u in missing[:5]) + (f"\n  …and {len(missing) - 5} more" if len(missing) > 5 else "")
+            self.compose_error.setText(
+                f"{len(missing)} page(s) saved on the Mission are not open in a tab, so they are not "
+                f"included yet. Open them and use “Add tabs…”, or let the team search the web:\n{shown}")
+            self.compose_error.show()
+        else:
+            self.compose_error.hide()
+        self._sync_start()
 
     def _mission_id(self) -> int:
         mission = self._controller.snapshot()
