@@ -1443,6 +1443,8 @@ class MainWindow(QMainWindow):
             self._workflow_runner = WorkflowRunner(session, self.controller, session.tool_registry, self)
             self._workflow_runner.paused.connect(self._on_workflow_paused)
             self._workflow_runner.completed.connect(self._on_workflow_completed)
+            self._workflow_runner.step_skipped.connect(self._on_workflow_step_skipped)
+        self._workflow_skipped = []
         self._workflow_runner.run(workflow, values)
         self._show_status(f"Running automation: {skill.name}")
 
@@ -1480,10 +1482,25 @@ class MainWindow(QMainWindow):
         return clicked is run_here_button
 
     def _on_workflow_paused(self, reason: str, message: str) -> None:
-        self._show_status(f"PyBrowser needs your help: {message}")
+        # The runner's message already begins "PyBrowser needs your help:". A
+        # stopped automation is something to read, not a status-bar blink.
+        self._show_status(message)
+        self.notice.show_message(f"Automation stopped. {message}", level="warning")
+
+    def _on_workflow_step_skipped(self, progress) -> None:
+        self._workflow_skipped = [*getattr(self, "_workflow_skipped", []),
+                                  progress.label or f"step {progress.index + 1}"]
 
     def _on_workflow_completed(self) -> None:
-        self._show_status("Automation finished.")
+        skipped = getattr(self, "_workflow_skipped", [])
+        if skipped:
+            shown = ", ".join(skipped[:3]) + (f" and {len(skipped) - 3} more" if len(skipped) > 3 else "")
+            self._show_status("Automation finished.")
+            self.notice.show_message(
+                f"Automation finished, but {len(skipped)} optional step(s) failed and were skipped: {shown}.",
+                level="warning")
+        else:
+            self._show_status("Automation finished.")
 
     def _branch_mission(self, mission_id: int) -> None:
         """Fork a Mission: an independent copy of its findings and decision.
