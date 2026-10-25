@@ -169,7 +169,13 @@ class ApiKeyDialog(QDialog):
         self.provider_box.setAccessibleName("AI provider")
         for info in PROVIDERS:
             self.provider_box.addItem(info.label, info.id)
-        index = self.provider_box.findData(self._initial_provider or current.provider)
+        # Nothing ever chosen: start on the free-tier option rather than the paid default,
+        # so a first run is not a request to pay before anything has been tried.
+        from app.agent.config import KEY_AGENT_PROVIDER, PROVIDER_GEMINI
+
+        never_chosen = not (self._settings.get(KEY_AGENT_PROVIDER, "") if self._settings is not None else "")
+        first = self._initial_provider or (PROVIDER_GEMINI if never_chosen else current.provider)
+        index = self.provider_box.findData(first)
         if index < 0:
             index = self.provider_box.findData(current.provider)
         self.provider_box.setCurrentIndex(index if index >= 0 else 0)

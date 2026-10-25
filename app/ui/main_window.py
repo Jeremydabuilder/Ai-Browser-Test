@@ -479,6 +479,8 @@ class MainWindow(QMainWindow):
             ai_menu, "Show &AI Agent", "Ctrl+Shift+A", self._toggle_agent_panel, ai=True)
         self._agent_action.setCheckable(True)
         self._add_action(ai_menu, "AI &Team…", None, self._open_team, ai=True)
+        self._add_action(ai_menu, "See a sample result (offline demo)", None,
+                         lambda: self.tabs.new_tab("pybrowser://demo/"), ai=True)
         self._add_action(ai_menu, "Continue Mission in AI Team…", None,
                          self._continue_mission_in_team, ai=True)
         self._add_action(ai_menu, "&Configure AI Agent…", None, self._configure_agent, ai=True)
@@ -855,6 +857,10 @@ class MainWindow(QMainWindow):
             controller.refresh_environment()
         elif name == "settings":
             self._show_settings()
+        elif name == "demo":
+            from app.browser.demo import DEMO_URL
+
+            self.tabs.new_tab(DEMO_URL)
 
     def _open_team_settings(self) -> None:
         from app.ui.team_settings import TeamSettingsDialog

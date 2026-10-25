@@ -198,9 +198,55 @@ class CredentialResolutionTests(unittest.TestCase):
             self.assertEqual(resolve_provider(self.Settings(agent_model_groq="qwen/qwen3.6-27b")).model,
                              "qwen/qwen3.6-27b")
 
-    def test_an_unsupported_provider_falls_back_to_groq(self) -> None:
+    def test_an_unknown_provider_name_falls_back_to_a_usable_one(self) -> None:
         with patch.dict(os.environ, {"GROQ_API_KEY": KEY}):
-            self.assertEqual(resolve_provider(self.Settings(team_provider="anthropic")).provider, "groq")
+            self.assertEqual(resolve_provider(self.Settings(team_provider="nonsense")).provider, "groq")
+
+    def test_with_nothing_chosen_the_team_follows_the_provider_set_up_for_the_assistant(self) -> None:
+        settings = self.Settings(agent_provider="gemini", agent_model_gemini="gemini-2.0-flash")
+        with patch.dict(os.environ, {"GEMINI_API_KEY": KEY, "GROQ_API_KEY": "other-key-value"}):
+            status = resolve_provider(settings)
+        self.assertEqual((status.provider, status.model, status.available), ("gemini", "gemini-2.0-flash", True))
+
+    def test_an_explicit_team_provider_beats_the_assistants(self) -> None:
+        settings = self.Settings(agent_provider="gemini", team_provider="groq", agent_model_gemini="m")
+        with patch.dict(os.environ, {"GEMINI_API_KEY": KEY, "GROQ_API_KEY": KEY}):
+            self.assertEqual(resolve_provider(settings).provider, "groq")
+
+    def test_anthropic_works_for_the_team_and_builds_the_real_claude_client(self) -> None:
+        from app.agent.claude_client import ClaudeClient
+        settings = self.Settings(agent_provider="anthropic")
+        with patch.dict(os.environ, {"ANTHROPIC_API_KEY": KEY}):
+            status = resolve_provider(settings)
+            client = make_client_factory(status, settings)()
+        self.assertEqual((status.provider, status.available), ("anthropic", True))
+        self.assertTrue(status.model)
+        self.assertIsInstance(client, ClaudeClient)
+
+    def test_a_local_model_needs_no_key_and_says_it_stays_on_this_computer(self) -> None:
+        from app.agent.local_providers import OllamaClient
+        settings = self.Settings(agent_provider="ollama", agent_model_ollama="llama3.1:8b")
+        with patch.dict(os.environ, {}, clear=False):
+            status = resolve_provider(settings)
+            client = make_client_factory(status, settings)()
+        self.assertTrue(status.available)
+        self.assertIn("this computer", status.detail)
+        self.assertIsInstance(client, OllamaClient)
+        self.assertEqual(client.config.model, "llama3.1:8b")
+
+    def test_a_local_provider_without_a_model_asks_for_one(self) -> None:
+        status = resolve_provider(self.Settings(agent_provider="ollama"))
+        self.assertFalse(status.available)
+        self.assertIn("model", status.detail)
+
+    def test_nothing_configured_says_how_to_start_for_free(self) -> None:
+        from app.agent.credentials import Credential, Mode
+        none = Credential(Mode.NONE, "none", provider="groq")
+        with patch("app.agent.credentials.resolve_for", return_value=none), \
+                patch("app.agent.credentials.resolve", return_value=none):
+            status = resolve_provider(self.Settings())
+        self.assertFalse(status.available)
+        self.assertIn("free tier", status.detail)
 
     def test_the_client_factory_builds_the_real_groq_client_without_exposing_the_key(self) -> None:
         with patch.dict(os.environ, {"GROQ_API_KEY": KEY}):

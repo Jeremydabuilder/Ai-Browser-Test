@@ -24,7 +24,7 @@ from PySide6.QtWebEngineCore import (
 )
 
 from app.browser.downloads import DownloadManager
-from app.browser import missions_page, newtab
+from app.browser import demo, missions_page, newtab  # noqa: F401 - importing registers the page
 from app.browser.internal import claim_scheme
 from app.config import cache_path, downloads_path, profile_storage_path
 

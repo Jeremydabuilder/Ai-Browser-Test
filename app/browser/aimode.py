@@ -274,7 +274,10 @@ _TEMPLATE = """<!doctype html>
       send.disabled = true; box.disabled = true; return;
     }
     if (!state.providerReady) {
-      thread.appendChild(banner("setup", "Set up an AI provider to use AI Mode. Your key stays in your system keyring.", "Set up\\u2026", "setup"));
+      thread.appendChild(banner("setup", "Set up an AI provider to use AI Mode. Your key stays in your system keyring. Gemini, Groq and OpenRouter have free tiers; a model on your own computer (Ollama, LM Studio) needs no key.", "Set up\\u2026", "setup"));
+      var sample = el("button", "chip", "See a sample result (offline demonstration)"); sample.type = "button";
+      sample.addEventListener("click", function () { act("demo", {}); });
+      thread.appendChild(sample);
     } else if (!state.searchReady && !turns.length) {
       thread.appendChild(banner("warn", "Web search isn\\u2019t set up, so answers come from the model\\u2019s general knowledge and aren\\u2019t checked against sources.", "Set up web search\\u2026", "search-setup"));
     }

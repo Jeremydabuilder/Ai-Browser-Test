@@ -17,7 +17,10 @@ from app.team import sandbox as sandbox_mod
 from app.team import websearch
 from app.team.limits import TeamLimits
 
-PROVIDERS = (("groq", "Groq (default)"), ("openai", "OpenAI"), ("openrouter", "OpenRouter"), ("gemini", "Gemini"))
+PROVIDERS = (("", "Same as the assistant (recommended)"), ("anthropic", "Anthropic (Claude)"),
+             ("gemini", "Google Gemini"), ("groq", "Groq"), ("openrouter", "OpenRouter"), ("openai", "OpenAI"),
+             ("ollama", "Ollama (local)"), ("lmstudio", "LM Studio (local)"),
+             ("local_openai", "Local OpenAI-compatible"))
 BACKENDS = (("auto", "Automatic (recommended)"), ("native", "Built-in sandbox only"),
             ("container", "Docker / Podman container only"))
 
@@ -80,7 +83,7 @@ class TeamSettingsDialog(QDialog):
         self.provider = QComboBox(body)
         for ident, label in PROVIDERS:
             self.provider.addItem(label, ident)
-        self.provider.setCurrentIndex(max(0, self.provider.findData(self._get("team_provider") or "groq")))
+        self.provider.setCurrentIndex(max(0, self.provider.findData(self._get("team_provider") or "")))
         form.addRow("Provider", self.provider)
         self.model = QLineEdit(body)
         self.model.setPlaceholderText("Same model as the AI agent for this provider")
@@ -290,7 +293,7 @@ class TeamSettingsDialog(QDialog):
     def _save(self) -> None:
         for name, widget in self._inputs.items():
             self._settings.set(f"team_{name}", str(int(widget.value())))
-        self._settings.set("team_provider", self.provider.currentData() or "groq")
+        self._settings.set("team_provider", self.provider.currentData() or "")
         self._settings.set("team_model", self.model.text().strip())
         self._settings.set("team_search_provider", self._chosen_search())
         before = (self._get("team_sandbox_backend"), self._get("team_container_image"))

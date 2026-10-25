@@ -249,12 +249,26 @@ class ProviderStatus:
     secret: str = field(default="", repr=False)
 
 
+#: Tried, in this order, when nothing was chosen explicitly: providers a person can use on a
+#: free tier come first so a first run lands on the cheapest working option.
+_FALLBACK_ORDER = ("groq", "gemini", "openrouter", "openai", "anthropic")
+
+
 def resolve_provider(settings=None, env: dict | None = None) -> ProviderStatus:
     """Resolve provider, model and credential exactly as the rest of the
-    browser does. Never raises; ``available`` False explains why."""
+    browser does. Never raises; ``available`` False explains why.
+
+    Which provider: ``PYBROWSER_TEAM_PROVIDER`` / the Team's own ``team_provider`` if set;
+    otherwise the one chosen in Configure AI Agent (so a person sets up ONE provider and
+    the assistant, AI Mode and the Team all use it); otherwise the first provider that has
+    a key. Every provider the assistant supports works here, local models included.
+    """
     import os
 
-    from app.agent.config import PROVIDER_IDS, model_settings_key
+    from app.agent.config import (
+        KEY_AGENT_PROVIDER, LOCAL_PROVIDER_IDS, PROVIDER_IDS, model_settings_key,
+    )
+    from app.agent.config import describe_provider
     from app.agent.credentials import PROVIDER_KEY_INFO, resolve_for
 
     source = env if env is not None else os.environ
@@ -265,40 +279,58 @@ def resolve_provider(settings=None, env: dict | None = None) -> ProviderStatus:
         except Exception:  # noqa: BLE001
             return default
 
-    provider = (source.get("PYBROWSER_TEAM_PROVIDER") or stored("team_provider", "")
-                or DEFAULT_TEAM_PROVIDER).strip().lower()
-    if provider not in PROVIDER_IDS or provider not in ("groq", "openai", "openrouter", "gemini"):
-        # The Team speaks the OpenAI-compatible wire format the browser already
-        # uses for Groq and friends; anything else falls back to the default.
-        provider = DEFAULT_TEAM_PROVIDER
-    label = PROVIDER_KEY_INFO.get(provider, (provider.title(),))[0]
+    def usable(candidate: str) -> bool:
+        if candidate in LOCAL_PROVIDER_IDS:
+            return True            # no key; whether it answers is what Test connection shows
+        return bool(resolve_for(candidate).available)
+
+    explicit = (source.get("PYBROWSER_TEAM_PROVIDER") or stored("team_provider", "")).strip().lower()
+    provider = explicit if explicit in PROVIDER_IDS else ""
+    if not provider:
+        chosen = stored(KEY_AGENT_PROVIDER, "").strip().lower()
+        if chosen in PROVIDER_IDS and usable(chosen):
+            provider = chosen
+    if not provider:
+        provider = next((p for p in _FALLBACK_ORDER if usable(p)), DEFAULT_TEAM_PROVIDER)
+    label = PROVIDER_KEY_INFO.get(provider, (None,))[0] or describe_provider(provider).label
+    local = provider in LOCAL_PROVIDER_IDS
     model = (source.get("PYBROWSER_TEAM_MODEL") or stored("team_model", "")
              or stored(model_settings_key(provider), "")
              or (DEFAULT_GROQ_MODEL if provider == DEFAULT_TEAM_PROVIDER else "")).strip()
-    credential = resolve_for(provider)
+    if not model and provider == "anthropic":
+        from app.agent.config import DEFAULT_MODEL
+        model = DEFAULT_MODEL
     if not model:
         return ProviderStatus(provider, label, "", False,
-                              f"No {label} model is chosen. Pick one in Tools → Configure AI Agent.")
+                              f"No {label} model is chosen. Pick one in Tools → AI → Configure AI Agent.")
+    if local:
+        return ProviderStatus(provider, label, model, True,
+                              "A model running on this computer; nothing is sent to a cloud service. "
+                              "Quality varies a lot by model - team runs need one that follows "
+                              "formatting instructions well.")
+    credential = resolve_for(provider)
     if not credential.available:
         env_var = PROVIDER_KEY_INFO.get(provider, ("", "", ""))[1]
         return ProviderStatus(
             provider, label, model, False,
-            f"No {label} API key is configured. Add one in Tools → Configure AI Agent "
+            f"No {label} API key is configured. Add one in Tools → AI → Configure AI Agent "
             f"(stored in your OS keyring), or set the {env_var} environment variable "
-            "before starting the browser.")
+            "before starting the browser. Gemini, Groq and OpenRouter have free tiers; "
+            "a local model (Ollama, LM Studio) needs no key.")
     return ProviderStatus(provider, label, model, True, credential.describe(),
                           secret=credential.secret or "")
 
 
 def make_client_factory(status: ProviderStatus, settings=None, limits: TeamLimits | None = None):
-    """A zero-argument factory building the provider client on first use."""
+    """A zero-argument factory building the provider client on first use, through the same
+    dispatch the assistant uses (``build_transport``), so every supported provider works."""
 
     def factory():
-        from app.agent.config import AgentConfig
+        from types import SimpleNamespace
+
+        from app.agent.config import LOCAL_PROVIDER_IDS, AgentConfig
         from app.agent.credentials import resolve_for
-        from app.agent.openai_compatible import (
-            GeminiClient, GroqClient, OpenAIClient, OpenRouterClient,
-        )
+        from app.ui.agent_setup import build_transport
 
         if not status.available:
             raise TeamError(ErrorKind.NO_CREDENTIAL, status.detail)
@@ -307,11 +339,17 @@ def make_client_factory(status: ProviderStatus, settings=None, limits: TeamLimit
         config.model = status.model
         config.max_tokens = (limits or TeamLimits()).max_output_tokens
         config.request_timeout_s = 90.0
-        client_class = {"groq": GroqClient, "openai": OpenAIClient,
-                        "openrouter": OpenRouterClient, "gemini": GeminiClient}.get(status.provider)
-        if client_class is None:
-            raise TeamError(ErrorKind.PROVIDER,
-                            f"Team runs do not support the '{status.provider}' provider.")
-        return client_class(resolve_for(status.provider).secret or "", config)
+        if status.provider in LOCAL_PROVIDER_IDS:
+            from app.agent.config import default_local_endpoint, local_endpoint_settings_key
+            try:
+                config.local_endpoint = ((settings.get(local_endpoint_settings_key(status.provider), "")
+                                          if settings is not None else "")
+                                         or default_local_endpoint(status.provider)).strip()
+            except Exception:  # noqa: BLE001
+                config.local_endpoint = default_local_endpoint(status.provider)
+            credential = SimpleNamespace(provider=status.provider, secret="")
+        else:
+            credential = resolve_for(status.provider)
+        return build_transport(credential, config)
 
     return factory
