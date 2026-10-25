@@ -41,6 +41,8 @@ class PauseReason:
     BUSY = "busy"
     DECLINED = "declined"
     TIMED_OUT = "timed_out"
+    TAB_LOST = "tab_lost"
+    TAB_AMBIGUOUS = "tab_ambiguous"
 
 
 _HUMAN_REASON = {
@@ -53,6 +55,8 @@ _HUMAN_REASON = {
     PauseReason.VISUAL_FALLBACK: "PyBrowser needs your help: this step relies on visual matching and needs you to confirm it.",
     PauseReason.BUSY: "PyBrowser is busy with another task right now.",
     PauseReason.DECLINED: "This step was not approved, so the workflow stopped.",
+    PauseReason.TAB_LOST: "PyBrowser needs your help: the tab this workflow was working in is gone.",
+    PauseReason.TAB_AMBIGUOUS: "PyBrowser needs your help: more than one new tab opened, so it cannot tell which one to continue in.",
     PauseReason.TIMED_OUT: "PyBrowser needs your help: the page did not answer in time, so the workflow stopped.",
 }
 
@@ -60,6 +64,16 @@ _HUMAN_REASON = {
 #: Deliberately not applied to the step itself: a step waiting for the
 #: person's approval can take as long as the person takes.
 RESOLVE_TIMEOUT_MS = 20_000
+
+#: Tab-following. A replay works in ONE tab: the one that was active when it
+#: started (or the one the caller named), never "whichever tab is active now" -
+#: switching tabs while it runs must not redirect it. When a step that can open
+#: a tab does open exactly one, the replay follows into it; more than one is
+#: ambiguous and stops. A tab the user opens on their own after a step that
+#: cannot open tabs is ignored.
+_TAB_OPENING_TOOLS = {"browser_click", "browser_open_tab", "browser_type", "browser_press_key"}
+#: Tools that manage tabs themselves, or have no tab argument at all.
+_NO_TAB_ARG = {"browser_open_tab", "browser_select_tab", "browser_close_tab", "browser_list_tabs"}
 
 #: Visual tools carry no ``ref`` and can never be re-resolved structurally -
 #: see recorder.py. Replaying one unattended would mean either doing
@@ -104,6 +118,8 @@ class WorkflowRunner(QObject):
         #: act on a different run.
         self._generation = 0
         self._dispatched = False
+        self._known_tabs: set[int] = set()
+        self._last_tool = ""
         self._watchdog = QTimer(self)
         self._watchdog.setSingleShot(True)
         self._watchdog.timeout.connect(self._on_timeout)
@@ -128,6 +144,13 @@ class WorkflowRunner(QObject):
             self._values.setdefault(parameter.name, parameter.default)
         self._index = 0
         self._tab_id = tab_id
+        self._last_tool = ""
+        tabs = self._tab_snapshot()
+        self._known_tabs = {t["tab_id"] for t in tabs if isinstance(t.get("tab_id"), int)}
+        if self._tab_id is None:
+            active = next((t for t in tabs if t.get("active")), None)
+            if active is not None and isinstance(active.get("tab_id"), int):
+                self._tab_id = active["tab_id"]
         self._advance()
         return True
 
@@ -170,7 +193,37 @@ class WorkflowRunner(QObject):
         self.step_started.emit(ReplayProgress(self._index, len(workflow.steps), step.label))
         self._resolve_and_run(step)
 
+    def _tab_snapshot(self) -> list[dict]:
+        try:
+            return list(self._browser.list_tabs())
+        except Exception:  # noqa: BLE001 - no tab info means the old behaviour, not a crash
+            return []
+
+    def _follow_tabs(self) -> str | None:
+        """Update the working tab before a step. Returns a PauseReason to stop
+        with, or None to carry on."""
+        if self._tab_id is None:
+            return None
+        tabs = self._tab_snapshot()
+        ids = {t["tab_id"] for t in tabs if isinstance(t.get("tab_id"), int)}
+        if not ids:
+            return None
+        new = ids - self._known_tabs
+        self._known_tabs = ids
+        if new and self._last_tool in _TAB_OPENING_TOOLS:
+            if len(new) > 1:
+                return PauseReason.TAB_AMBIGUOUS
+            self._tab_id = next(iter(new))
+            return None
+        if self._tab_id not in ids:
+            return PauseReason.TAB_LOST
+        return None
+
     def _resolve_and_run(self, step: RecordedStep) -> None:
+        lost = self._follow_tabs()
+        if lost is not None:
+            self._pause(lost)
+            return
         if step.tool_name in _VISUAL_TOOLS:
             self._pause(PauseReason.VISUAL_FALLBACK)
             return
@@ -217,6 +270,10 @@ class WorkflowRunner(QObject):
         self._dispatch(step.tool_name, args)
 
     def _dispatch(self, tool_name: str, args: dict[str, Any]) -> None:
+        if (self._tab_id is not None and tool_name.startswith("browser_")
+                and tool_name not in _NO_TAB_ARG and "tab_id" not in args):
+            args = {**args, "tab_id": self._tab_id}
+        self._last_tool = tool_name
         self._dispatched = True
         if not self._session.run_routine([(tool_name, args)]):
             self._pause(PauseReason.BUSY)

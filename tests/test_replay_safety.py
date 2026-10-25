@@ -133,5 +133,113 @@ class ReplaySafety(unittest.TestCase):
         self.assertEqual(self.paused, [])
 
 
+class _TabbedBrowser(_FakeBrowser):
+    def __init__(self) -> None:
+        super().__init__()
+        self.tab_list = [{"tab_id": 1, "active": True, "url": "https://a.example"}]
+        self.finds: list = []
+
+    def list_tabs(self):
+        return [dict(t) for t in self.tab_list]
+
+    def find_elements(self, queries, role=None, tab_id=None):
+        self.finds.append(tab_id)
+        return super().find_elements(queries, role, tab_id)
+
+
+class _ScriptedSession(_FakeSession):
+    """Runs a callback when a routine is dispatched, e.g. to open tabs."""
+
+    def __init__(self, on_run=None) -> None:
+        super().__init__()
+        self.on_run = on_run
+
+    def run_routine(self, steps):
+        if self.on_run is not None:
+            self.on_run(steps)
+        return super().run_routine(steps)
+
+
+class TabFollowing(unittest.TestCase):
+    def build(self, on_run=None):
+        self.browser = _TabbedBrowser()
+        self.session = _ScriptedSession(on_run)
+        self.runner = WorkflowRunner(self.session, self.browser, _FakeTools())
+        self.paused, self.done = [], []
+        self.runner.paused.connect(lambda r, _m: self.paused.append(r))
+        self.runner.completed.connect(lambda: self.done.append(1))
+
+    def nav(self, i=0):
+        return RecordedStep(id=i, tool_name="browser_navigate", args={"url": "https://a.example/x"})
+
+    def click(self, i=0):
+        return RecordedStep(id=i, tool_name="browser_click", args={}, target=SemanticTarget(name="Go"))
+
+    def used_tab_ids(self):
+        return [call[0][1].get("tab_id") for call in self.session.calls]
+
+    def test_starts_in_the_active_tab_and_ignores_the_user_switching_tabs(self):
+        self.build()
+        self.browser.tab_list.append({"tab_id": 2, "active": False, "url": "https://b.example"})
+        def switch(_steps):
+            for t in self.browser.tab_list:
+                t["active"] = t["tab_id"] == 2        # the person clicks another tab mid-run
+        self.session.on_run = switch
+        self.runner.run(new_workflow([self.nav(0), self.nav(1)]))
+        _wait_until(lambda: self.done or self.paused)
+        self.assertEqual(self.used_tab_ids(), [1, 1])
+
+    def test_follows_exactly_one_tab_opened_by_a_click(self):
+        self.build()
+        self.browser.matches = [{"ref": "e1"}]
+        def open_one(steps):
+            if steps[0][0] == "browser_click":
+                self.browser.tab_list.append({"tab_id": 7, "active": False, "url": "https://n.example"})
+        self.session.on_run = open_one
+        self.runner.run(new_workflow([self.click(0), self.nav(1)]))
+        _wait_until(lambda: self.done or self.paused)
+        self.assertEqual(self.used_tab_ids(), [1, 7])
+        self.assertEqual(self.paused, [])
+
+    def test_two_new_tabs_after_a_click_stop_the_replay(self):
+        self.build()
+        self.browser.matches = [{"ref": "e1"}]
+        def open_two(steps):
+            self.browser.tab_list += [{"tab_id": 7, "active": False, "url": "u"},
+                                      {"tab_id": 8, "active": False, "url": "u"}]
+        self.session.on_run = open_two
+        self.runner.run(new_workflow([self.click(0), self.nav(1)]))
+        _wait_until(lambda: self.paused or self.done)
+        self.assertEqual(self.paused, [PauseReason.TAB_AMBIGUOUS])
+        self.assertEqual(len(self.session.calls), 1)
+
+    def test_a_tab_the_person_opens_after_a_navigation_is_not_followed(self):
+        self.build()
+        def stray(_steps):
+            self.browser.tab_list.append({"tab_id": 9, "active": False, "url": "u"})
+        self.session.on_run = stray
+        self.runner.run(new_workflow([self.nav(0), self.nav(1)]))
+        _wait_until(lambda: self.done or self.paused)
+        self.assertEqual(self.used_tab_ids(), [1, 1])
+
+    def test_closing_the_working_tab_stops_instead_of_acting_elsewhere(self):
+        self.build()
+        self.browser.tab_list.append({"tab_id": 2, "active": False, "url": "https://b.example"})
+        def close(_steps):
+            self.browser.tab_list = [t for t in self.browser.tab_list if t["tab_id"] != 1]
+        self.session.on_run = close
+        self.runner.run(new_workflow([self.nav(0), self.nav(1)]))
+        _wait_until(lambda: self.paused or self.done)
+        self.assertEqual(self.paused, [PauseReason.TAB_LOST])
+        self.assertEqual(len(self.session.calls), 1)
+
+    def test_element_lookup_uses_the_working_tab(self):
+        self.build()
+        self.browser.matches = [{"ref": "e1"}]
+        self.runner.run(new_workflow([self.click(0)]))
+        _wait_until(lambda: self.done or self.paused)
+        self.assertEqual(self.browser.finds, [1])
+
+
 if __name__ == "__main__":
     unittest.main()

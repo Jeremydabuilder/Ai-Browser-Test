@@ -11,7 +11,7 @@ Branch: `claude/python-desktop-browser-n20ht5`. Tests: `python tests/run.py [mod
 3. Updater: `app/updater/download.py` (bounded, cancellable, keeps `.exe`), https-only manifest URLs, channel match.
 4. Sync: engine tolerates damaged/partial/wrong-key records (`SyncResult.failed`, token held), offline mid-pass, tombstone ordering; `LocalFolderProvider` atomic writes + self-healing manifest.
 5. Collaboration: fixed MainWindow handing the Mission *service* instead of the store; role enforcement local + on receipt; dialog states advisory limits.
-6. Replay: step timeout, run-generation guard, declines always stop, skipped steps announced.
+6. Replay: tab following (pinned working tab, follows one new tab, stops on several/lost), step timeout, run-generation guard, declines always stop, skipped steps announced.
 7. Team research: PDF extraction; `claimcheck.py` + "Citation check (automatic)" appendix.
 8. MCP server follows the AI master switch.
 9. Docs: capability matrix, release-checklist/packaging README corrections.
@@ -26,4 +26,4 @@ Branch: `claude/python-desktop-browser-n20ht5`. Tests: `python tests/run.py [mod
 ## Next candidates
 
 - Real two-machine sync trial; real NVDA pass; tester feedback from the pre-release build.
-- Optional: pin the replay tab id at start; OCR for scanned PDFs (would be a new dependency).
+- Optional: OCR for scanned PDFs (would be a new dependency).
