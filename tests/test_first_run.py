@@ -84,6 +84,15 @@ class SetupStartsFree(unittest.TestCase):
     def test_an_existing_choice_is_kept(self):
         self.assertEqual(self.dialog(agent_provider="anthropic").provider_box.currentData(), "anthropic")
 
+    def test_every_providers_panel_has_named_controls(self):
+        from app.ui import a11y
+        d = self.dialog()
+        d.show()
+        for i in range(d.provider_box.count()):
+            d.provider_box.setCurrentIndex(i)
+            pump()
+            self.assertEqual(a11y.missing_names(d), [], d.provider_box.currentData())
+
     def test_a_feature_can_still_ask_for_a_specific_provider(self):
         from app.ui.agent_setup import ApiKeyDialog
         d = ApiKeyDialog(None, None, initial_provider="groq")

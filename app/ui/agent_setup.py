@@ -239,6 +239,7 @@ class ApiKeyDialog(QDialog):
         layout.addWidget(explanation)
 
         self.field = QLineEdit(box)
+        self.field.setAccessibleName("Anthropic API key")
         self.field.setEchoMode(QLineEdit.EchoMode.Password)
         self.field.setPlaceholderText("sk-ant-…")
         layout.addWidget(self.field)
@@ -329,6 +330,7 @@ class ApiKeyDialog(QDialog):
 
         layout.addWidget(QLabel("<b>API key</b>", box))
         self._other_field = QLineEdit(box)
+        self._other_field.setAccessibleName("API key")
         self._other_field.setEchoMode(QLineEdit.EchoMode.Password)
         layout.addWidget(self._other_field)
 
@@ -360,6 +362,7 @@ class ApiKeyDialog(QDialog):
         layout.addWidget(self._other_custom_check)
 
         self._other_custom_field = QLineEdit(box)
+        self._other_custom_field.setAccessibleName("Custom model id")
         self._other_custom_field.setPlaceholderText("exact model id, e.g. some-org/some-model")
         self._other_custom_field.setVisible(False)
         layout.addWidget(self._other_custom_field)
@@ -408,6 +411,7 @@ class ApiKeyDialog(QDialog):
 
         layout.addWidget(QLabel("<b>Endpoint</b>", box))
         self._local_endpoint_field = QLineEdit(box)
+        self._local_endpoint_field.setAccessibleName("Local endpoint address")
         layout.addWidget(self._local_endpoint_field)
         save_endpoint = QPushButton("Save endpoint", box)
         save_endpoint.clicked.connect(self._save_local_endpoint)
@@ -415,6 +419,7 @@ class ApiKeyDialog(QDialog):
 
         layout.addWidget(QLabel("<b>API key (optional)</b>", box))
         self._local_key_field = QLineEdit(box)
+        self._local_key_field.setAccessibleName("Local server API key (optional)")
         self._local_key_field.setEchoMode(QLineEdit.EchoMode.Password)
         self._local_key_field.setPlaceholderText("leave blank if this endpoint needs none")
         layout.addWidget(self._local_key_field)
@@ -432,6 +437,7 @@ class ApiKeyDialog(QDialog):
         self._local_custom_check.toggled.connect(self._toggle_local_custom_model)
         layout.addWidget(self._local_custom_check)
         self._local_custom_field = QLineEdit(box)
+        self._local_custom_field.setAccessibleName("Custom local model id")
         self._local_custom_field.setPlaceholderText("exact model id")
         self._local_custom_field.setVisible(False)
         layout.addWidget(self._local_custom_field)
@@ -1301,6 +1307,7 @@ class ApiKeyDialog(QDialog):
         column.addWidget(heading)
 
         self.workspace_field = QLineEdit(box)
+        self.workspace_field.setAccessibleName("Anthropic workspace id (optional)")
         self.workspace_field.setPlaceholderText("leave blank if not required")
         self.workspace_field.setText(current.workspace_id)
         column.addWidget(self.workspace_field)
